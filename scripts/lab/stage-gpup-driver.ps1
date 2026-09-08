@@ -20,12 +20,50 @@ function Assert-File {
     }
 }
 
-function Copy-MappedFile {
+function Get-NumericFileVersion {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    return [version]::new(
+        [math]::Max(0, $info.FileMajorPart),
+        [math]::Max(0, $info.FileMinorPart),
+        [math]::Max(0, $info.FileBuildPart),
+        [math]::Max(0, $info.FilePrivatePart)
+    )
+}
+
+function Test-SourceIsNewer {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        return $true
+    }
+
+    $sourceItem = Get-Item -LiteralPath $Source
+    $destinationItem = Get-Item -LiteralPath $Destination
+    $extension = [IO.Path]::GetExtension($Destination).ToLowerInvariant()
+
+    if ($extension -in @('.dll', '.exe')) {
+        $sourceVersion = Get-NumericFileVersion -Path $Source
+        $destinationVersion = Get-NumericFileVersion -Path $Destination
+
+        if ($sourceVersion -gt $destinationVersion) { return $true }
+        if ($sourceVersion -lt $destinationVersion) { return $false }
+    }
+
+    return $sourceItem.LastWriteTimeUtc -gt $destinationItem.LastWriteTimeUtc
+}
+
+function Copy-WhenNewerMappedFile {
     param(
         [Parameter(Mandatory)][string]$SourceRoot,
         [Parameter(Mandatory)][string]$SourceRelativePath,
         [Parameter(Mandatory)][string]$DestinationDirectory,
-        [Parameter(Mandatory)][string]$DestinationName
+        [Parameter(Mandatory)][string]$DestinationName,
+        [Parameter(Mandatory)][string]$BackupDirectory
     )
 
     $source = Join-Path $SourceRoot $SourceRelativePath
@@ -33,6 +71,19 @@ function Copy-MappedFile {
 
     New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
     $destination = Join-Path $DestinationDirectory $DestinationName
+
+    if (-not (Test-SourceIsNewer -Source $source -Destination $destination)) {
+        Write-Host ("SKIP {0} -> {1} (destination is same/newer)" -f $SourceRelativePath, $destination)
+        return
+    }
+
+    if (Test-Path -LiteralPath $destination -PathType Leaf) {
+        New-Item -ItemType Directory -Path $BackupDirectory -Force | Out-Null
+        $backupPath = Join-Path $BackupDirectory $DestinationName
+        Copy-Item -LiteralPath $destination -Destination $backupPath -Force
+        Write-Host ("BACKUP {0} -> {1}" -f $destination, $backupPath)
+    }
+
     Copy-Item -LiteralPath $source -Destination $destination -Force
 
     $srcHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
@@ -41,7 +92,34 @@ function Copy-MappedFile {
         throw "SHA256 mismatch after copy: $SourceRelativePath -> $destination"
     }
 
-    Write-Host ("OK  {0} -> {1}" -f $SourceRelativePath, $destination)
+    Write-Host ("OK   {0} -> {1}" -f $SourceRelativePath, $destination)
+}
+
+function Copy-ExactFile {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination,
+        [Parameter(Mandatory)][string]$BackupDirectory
+    )
+
+    Assert-File $Source
+    $destinationDirectory = Split-Path -Parent $Destination
+    New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        New-Item -ItemType Directory -Path $BackupDirectory -Force | Out-Null
+        $backupPath = Join-Path $BackupDirectory (Split-Path -Leaf $Destination)
+        Copy-Item -LiteralPath $Destination -Destination $backupPath -Force
+        Write-Host ("BACKUP {0} -> {1}" -f $Destination, $backupPath)
+    }
+
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    $srcHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
+    $dstHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+    if ($srcHash -ne $dstHash) {
+        throw "SHA256 mismatch after copy: $Source -> $Destination"
+    }
+    Write-Host ("OK   {0} -> {1}" -f $Source, $Destination)
 }
 
 $vm = Get-VM -Name $VMName -ErrorAction Stop
@@ -66,6 +144,7 @@ Write-Host "Source NVIDIA repository: $sourceRepo"
 Write-Host "nvlddmkm.sys version:    $driverVersion"
 
 # Exact mappings observed from NVIDIA 616.56 nvmdsi.inf / adapter registry.
+# Each pair is SourceRelativePath -> guest destination filename.
 $system32Mappings = @(
     @{ Source = 'nvcudadebugger.dll'; Destination = 'nvcudadebugger.dll' },
     @{ Source = 'nvcuda_loader64.dll'; Destination = 'nvcuda.dll' },
@@ -86,8 +165,8 @@ $syswow64Mappings = @(
     @{ Source = 'vulkan-1-x86.dll';    Destination = 'vulkan-1.dll' }
 )
 
-# nvidia-smi is not a CopyToVm registry entry, but NVIDIA installs it to System32
-# and it is useful for validating NVML/CUDA visibility in the guest.
+# nvidia-smi is not a CopyToVm registry entry. NVIDIA's normal package installs
+# it to System32; we stage it solely as a guest-side NVML diagnostic executable.
 Assert-File (Join-Path $sourceRepo 'nvidia-smi.exe')
 
 $vmDisks = @(Get-VMHardDiskDrive -VMName $VMName | Where-Object { $_.Path -and $_.Path -match '\.vhdx?$' })
@@ -141,6 +220,10 @@ try {
 
     Write-Host "Guest Windows root:     $guestRoot"
 
+    $backupRoot = Join-Path $guestRoot ('ProgramData\vllm-windows-native\gpup-driver-backup\' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $backupSystem32 = Join-Path $backupRoot 'System32'
+    $backupSysWOW64 = Join-Path $backupRoot 'SysWOW64'
+
     Write-Step 'Stage NVIDIA DriverStore payload into HostDriverStore'
     $guestHostDriverStore = Join-Path $guestRoot 'Windows\System32\HostDriverStore\FileRepository'
     $guestRepo = Join-Path $guestHostDriverStore $DriverRepositoryDirectory
@@ -158,23 +241,23 @@ try {
     Write-Host "Source file count: $sourceFileCount"
     Write-Host "Guest file count:  $guestFileCount"
     if ($sourceFileCount -ne $guestFileCount) {
-        throw "File count mismatch after repository copy."
+        throw 'File count mismatch after repository copy.'
     }
 
     Write-Step 'Apply CopyToVmWhenNewer mappings to guest System32'
     $guestSystem32 = Join-Path $guestRoot 'Windows\System32'
     foreach ($mapping in $system32Mappings) {
-        Copy-MappedFile -SourceRoot $sourceRepo -SourceRelativePath $mapping.Source -DestinationDirectory $guestSystem32 -DestinationName $mapping.Destination
+        Copy-WhenNewerMappedFile -SourceRoot $sourceRepo -SourceRelativePath $mapping.Source -DestinationDirectory $guestSystem32 -DestinationName $mapping.Destination -BackupDirectory $backupSystem32
     }
 
     Write-Step 'Apply CopyToVmWhenNewerWow64 mappings to guest SysWOW64'
     $guestSysWOW64 = Join-Path $guestRoot 'Windows\SysWOW64'
     foreach ($mapping in $syswow64Mappings) {
-        Copy-MappedFile -SourceRoot $sourceRepo -SourceRelativePath $mapping.Source -DestinationDirectory $guestSysWOW64 -DestinationName $mapping.Destination
+        Copy-WhenNewerMappedFile -SourceRoot $sourceRepo -SourceRelativePath $mapping.Source -DestinationDirectory $guestSysWOW64 -DestinationName $mapping.Destination -BackupDirectory $backupSysWOW64
     }
 
     Write-Step 'Stage nvidia-smi diagnostic executable'
-    Copy-MappedFile -SourceRoot $sourceRepo -SourceRelativePath 'nvidia-smi.exe' -DestinationDirectory $guestSystem32 -DestinationName 'nvidia-smi.exe'
+    Copy-ExactFile -Source (Join-Path $sourceRepo 'nvidia-smi.exe') -Destination (Join-Path $guestSystem32 'nvidia-smi.exe') -BackupDirectory $backupSystem32
 
     Write-Step 'Verify staged files'
     $verify = @(
@@ -193,6 +276,9 @@ try {
 
     Write-Host ''
     Write-Host 'GPU-P driver staging completed successfully.'
+    if (Test-Path -LiteralPath $backupRoot) {
+        Write-Host "Backups of replaced guest files: $backupRoot"
+    }
 }
 finally {
     if ($temporaryAccessPath -and $null -ne $diskNumber) {
