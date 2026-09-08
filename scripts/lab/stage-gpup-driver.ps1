@@ -169,8 +169,17 @@ $syswow64Mappings = @(
 # it to System32; we stage it solely as a guest-side NVML diagnostic executable.
 Assert-File (Join-Path $sourceRepo 'nvidia-smi.exe')
 
-$vmDisks = @(Get-VMHardDiskDrive -VMName $VMName | Where-Object { $_.Path -and $_.Path -match '\.vhdx?$' })
+$vmDisks = @(
+    Get-VMHardDiskDrive -VMName $VMName |
+        Where-Object {
+            $_.Path -and ([IO.Path]::GetExtension([string]$_.Path).ToLowerInvariant() -in @('.vhd', '.vhdx'))
+        }
+)
 if ($vmDisks.Count -ne 1) {
+    Write-Host 'Attached VM hard disks:'
+    Get-VMHardDiskDrive -VMName $VMName |
+        Select-Object ControllerType, ControllerNumber, ControllerLocation, Path |
+        Format-Table -AutoSize | Out-String | Write-Host
     throw "Expected exactly one VHD/VHDX attached to '$VMName'; found $($vmDisks.Count)."
 }
 
