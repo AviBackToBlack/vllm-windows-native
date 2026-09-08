@@ -1,0 +1,25 @@
+# Local configuration
+config.psd1
+
+# Runtime/install state
+runtime/
+python/
+tools/
+cache/
+models/
+downloads/
+logs/
+work/
+forensic/
+state/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# PowerShell/editor noise
+*.tmp
+*.log
+.vscode/
+.idea/
