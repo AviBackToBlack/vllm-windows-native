@@ -1,0 +1,3564 @@
+From 9f18048a2052072166ccc3b0ffef364e72bb4d11 Mon Sep 17 00:00:00 2001
+From: AviBackToBlack <AviBackToBlack@users.noreply.github.com>
+Date: Wed, 9 Sep 2026 11:11:33 +0100
+Subject: [PATCH] Windows: native CUDA port for v0.27.1 on SM120
+
+Establish the first fully accepted native Windows milestone on RTX 5090 / Blackwell SM120.
+
+Includes Windows build/runtime support for the core vLLM extensions plus FlashAttention 2, FlashKDA, QuTLASS and DeepGEMM plumbing; CUDA 13 / PyTorch cu130 dependency metadata; Windows filesystem, IPC, asyncio, signal/process cleanup and optional-dependency compatibility fixes.
+
+Validated from a pristine wheel install with 9 native extensions, default-performance offline generation, Inductor/AOT/CUDAGraphs, and OpenAI-compatible /v1/models and /v1/completions HTTP generation.
+
+DeepGEMM binary/JIT plumbing is present, but upstream DeepGEMM 2.6.1 still has no SM120 runtime kernel dispatch. FA3 is intentionally absent because upstream FA3 does not support SM120.
+---
+ CMakeLists.txt                                |   68 +-
+ cmake/external_projects/deepgemm.cmake        |   60 +-
+ cmake/external_projects/flashkda.cmake        |   44 +-
+ cmake/external_projects/qutlass.cmake         |   45 +-
+ cmake/external_projects/vllm_flash_attn.cmake |   48 +
+ csrc/cumem_allocator.cpp                      |    4 +
+ csrc/fs_io.cpp                                |   81 +-
+ csrc/libtorch_stable/activation_kernels.cu    |    8 +-
+ .../attention/merge_attn_states.cu            |    8 +-
+ csrc/libtorch_stable/core/math.hpp            |    8 +-
+ .../fused_qknorm_rope_kernel.cu               |    3 +
+ .../mamba/selective_scan_fwd.cu               |   71 +-
+ .../moe/grouped_topk_kernels.cu               |   24 +-
+ .../moe/marlin_moe_wna16/generate_kernels.py  |    9 +-
+ .../moe/topk_softplus_sqrt_kernels.cu         |   30 +-
+ csrc/libtorch_stable/persistent_topk.cuh      |    4 +
+ .../quantization/activation_kernels.cu        |   46 +-
+ .../quantization/awq/gemm_kernels.cu          |   20 +-
+ .../fused_silu_mul_block_quant.cu             |    2 +-
+ .../fused_kernels/layernorm_utils.cuh         |    4 +-
+ .../fused_kernels/quant_conversions.cuh       |    2 +-
+ .../quantization/marlin/generate_kernels.py   |    9 +-
+ .../quantization/w8a8/fp8/common.cu           |    4 +-
+ csrc/libtorch_stable/torch_utils.h            |    4 +
+ csrc/quantization/utils.cuh                   |    9 +-
+ csrc/quantization/w8a8/fp8/common.cuh         |    2 +-
+ csrc/spinloop.cpp                             |   41 +-
+ cutlass-windows.patch                         |   12 +
+ deepgemm-cutlass-windows.patch                |   38 +
+ deepgemm-windows.patch                        | 1049 +++++++++++++++++
+ flashkda-cutlass-windows.patch                |   13 +
+ qutlass-windows.patch                         |   98 ++
+ requirements/cuda.txt                         |   26 +-
+ setup.py                                      |   37 +-
+ tools/build_deepgemm_C.py                     |   92 +-
+ vllm-flash-attn-cutlass-windows.patch         |   13 +
+ vllm/benchmarks/throughput.py                 |    2 +-
+ vllm/compilation/decorators.py                |   17 +-
+ vllm/entrypoints/cli/launch.py                |    3 +-
+ vllm/entrypoints/cli/serve.py                 |    3 +-
+ vllm/entrypoints/grpc_server.py               |    3 +-
+ vllm/entrypoints/launcher.py                  |   14 +-
+ vllm/entrypoints/openai/api_server.py         |    2 +-
+ vllm/entrypoints/openai/dp_supervisor.py      |    2 +-
+ vllm/entrypoints/serve/utils/api_utils.py     |   26 +-
+ .../model_loader/weight_utils.py              |    5 +-
+ vllm/parser/__init__.py                       |   18 +-
+ vllm/parser/harmony.py                        |   55 +-
+ vllm/tool_parsers/structural_tag_registry.py  |   73 +-
+ vllm/utils/network_utils.py                   |    4 +
+ vllm/utils/system_utils.py                    |   11 +-
+ vllm/utils/uvloop_compat.py                   |   22 +
+ vllm/v1/engine/utils.py                       |   18 +-
+ vllm/v1/sample/ops/topk_topp_sampler.py       |   24 +-
+ vllm/v1/structured_output/backend_guidance.py |    1 +
+ vllm/v1/structured_output/backend_xgrammar.py |    1 +
+ vllm/v1/utils.py                              |    6 +-
+ 57 files changed, 2101 insertions(+), 245 deletions(-)
+ create mode 100644 cutlass-windows.patch
+ create mode 100644 deepgemm-cutlass-windows.patch
+ create mode 100644 deepgemm-windows.patch
+ create mode 100644 flashkda-cutlass-windows.patch
+ create mode 100644 qutlass-windows.patch
+ create mode 100644 vllm-flash-attn-cutlass-windows.patch
+ create mode 100644 vllm/utils/uvloop_compat.py
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 54374c2d0..a0d8830d4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,9 @@
+ cmake_minimum_required(VERSION 3.26)
+ 
++if(POLICY CMP0219)
++  cmake_policy(SET CMP0219 NEW)
++endif()
++
+ # When building directly using CMake, make sure you run the install step
+ # (it places the .so files in the correct location).
+ #
+@@ -20,6 +24,7 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+ set(CMAKE_HIP_STANDARD 20)
+ set(CMAKE_HIP_STANDARD_REQUIRED ON)
+ 
++
+ # PyTorch headers require C++20; GCC < 11.3 has incomplete C++20 support.
+ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "11.3")
+   message(FATAL_ERROR
+@@ -85,7 +90,7 @@ endif()
+ # `VLLM_PYTHON_EXECUTABLE` and is one of the supported versions.
+ #
+ if (VLLM_PYTHON_EXECUTABLE)
+-  find_python_from_executable(${VLLM_PYTHON_EXECUTABLE} "${PYTHON_SUPPORTED_VERSIONS}")
++  find_python_from_executable("${VLLM_PYTHON_EXECUTABLE}" "${PYTHON_SUPPORTED_VERSIONS}")
+ else()
+   message(FATAL_ERROR
+     "Please set VLLM_PYTHON_EXECUTABLE to the path of the desired python version"
+@@ -275,9 +280,29 @@ endif()
+ # Set CUDA include flags for CXX compiler.
+ #
+ if(VLLM_GPU_LANG STREQUAL "CUDA")
+-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include")
++  if(MSVC)
++    include_directories("${CUDA_TOOLKIT_ROOT_DIR}/include")
++  else()
++    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include")
++  endif()
+   if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
+-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include/cccl")
++    include_directories("${CUDA_TOOLKIT_ROOT_DIR}/include/cccl")
++  endif()
++
++  # Some Windows CUDA Toolkit installs omit optional math-library development
++  # headers. Allow the bootstrap to provide the official cuSOLVER
++  # redistributable from a project-managed location without mutating Program Files.
++  if(NOT VLLM_CUSOLVER_ROOT AND DEFINED ENV{VLLM_CUSOLVER_ROOT})
++    set(VLLM_CUSOLVER_ROOT "$ENV{VLLM_CUSOLVER_ROOT}" CACHE PATH
++        "Path to an external cuSOLVER redistributable root")
++  endif()
++  if(VLLM_CUSOLVER_ROOT)
++    if(NOT EXISTS "${VLLM_CUSOLVER_ROOT}/include/cusolverDn.h")
++      message(FATAL_ERROR
++        "VLLM_CUSOLVER_ROOT=${VLLM_CUSOLVER_ROOT} does not contain include/cusolverDn.h")
++    endif()
++    include_directories("${VLLM_CUSOLVER_ROOT}/include")
++    message(STATUS "Using external cuSOLVER headers from ${VLLM_CUSOLVER_ROOT}")
+   endif()
+ endif()
+ 
+@@ -478,6 +503,38 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
+     endif()
+     FetchContent_MakeAvailable(cutlass)
+ 
++    # Windows/MSVC: patch CUTLASS host/device annotation incompatibility.
++    # Keep this as a source-controlled dependency patch so clean builds are reproducible.
++    if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/cutlass-windows.patch")
++      set(_vllm_cutlass_win_patch "${CMAKE_SOURCE_DIR}/cutlass-windows.patch")
++      execute_process(
++        COMMAND git apply --check "${_vllm_cutlass_win_patch}"
++        WORKING_DIRECTORY "${cutlass_SOURCE_DIR}"
++        RESULT_VARIABLE _vllm_cutlass_patch_check
++        OUTPUT_QUIET ERROR_QUIET)
++      if(_vllm_cutlass_patch_check EQUAL 0)
++        message(STATUS "Applying cutlass-windows.patch")
++        execute_process(
++          COMMAND git apply "${_vllm_cutlass_win_patch}"
++          WORKING_DIRECTORY "${cutlass_SOURCE_DIR}"
++          RESULT_VARIABLE _vllm_cutlass_patch_apply)
++        if(NOT _vllm_cutlass_patch_apply EQUAL 0)
++          message(FATAL_ERROR "Failed to apply cutlass-windows.patch")
++        endif()
++      else()
++        execute_process(
++          COMMAND git apply --reverse --check "${_vllm_cutlass_win_patch}"
++          WORKING_DIRECTORY "${cutlass_SOURCE_DIR}"
++          RESULT_VARIABLE _vllm_cutlass_patch_reverse_check
++          OUTPUT_QUIET ERROR_QUIET)
++        if(_vllm_cutlass_patch_reverse_check EQUAL 0)
++          message(STATUS "cutlass-windows.patch already applied")
++        else()
++          message(FATAL_ERROR "cutlass-windows.patch does not match fetched CUTLASS")
++        endif()
++      endif()
++    endif()
++
+     list(APPEND VLLM_STABLE_EXT_SRC
+       "csrc/libtorch_stable/cutlass_extensions/common.cpp"
+       "csrc/libtorch_stable/quantization/w8a8/cutlass/scaled_mm_entry.cu"
+@@ -1154,6 +1211,11 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
+   # Needed to use cuda/hip APIs from C-shim
+   if(VLLM_GPU_LANG STREQUAL "CUDA")
+     target_compile_definitions(_C_stable_libtorch PRIVATE USE_CUDA)
++    # q_gemm.cu calls cuBLAS directly (cublasHgemm). On Windows the
++    # import library is not pulled in transitively through torch_cuda.
++    if(MSVC)
++      target_link_libraries(_C_stable_libtorch PRIVATE CUDA::cublas)
++    endif()
+     if(COOPERATIVE_TOPK_ARCHS)
+       target_compile_definitions(_C_stable_libtorch PRIVATE
+         VLLM_ENABLE_COOPERATIVE_TOPK=1)
+diff --git a/cmake/external_projects/deepgemm.cmake b/cmake/external_projects/deepgemm.cmake
+index be0eccd45..562a0bba6 100644
+--- a/cmake/external_projects/deepgemm.cmake
++++ b/cmake/external_projects/deepgemm.cmake
+@@ -58,6 +58,59 @@ else()
+   message(STATUS "DeepGEMM is available at ${deepgemm_SOURCE_DIR}")
+ endif()
+ 
++# Native Windows/MSVC: apply the host/JIT portability patch to DeepGEMM and
++# the host-parse PTX guard to its vendored CUTLASS submodule. Keep both hooks
++# idempotent so an already-patched FetchContent tree is accepted unchanged.
++if(MSVC)
++  set(_vllm_deepgemm_win_patch "${CMAKE_SOURCE_DIR}/deepgemm-windows.patch")
++  set(_vllm_deepgemm_cutlass_win_patch "${CMAKE_SOURCE_DIR}/deepgemm-cutlass-windows.patch")
++  set(_vllm_deepgemm_cutlass_dir "${deepgemm_SOURCE_DIR}/third-party/cutlass")
++
++  foreach(_vllm_dg_patch_kind IN ITEMS deepgemm cutlass)
++    if(_vllm_dg_patch_kind STREQUAL "deepgemm")
++      set(_vllm_dg_patch "${_vllm_deepgemm_win_patch}")
++      set(_vllm_dg_workdir "${deepgemm_SOURCE_DIR}")
++    else()
++      set(_vllm_dg_patch "${_vllm_deepgemm_cutlass_win_patch}")
++      set(_vllm_dg_workdir "${_vllm_deepgemm_cutlass_dir}")
++    endif()
++
++    if(NOT EXISTS "${_vllm_dg_patch}")
++      message(FATAL_ERROR "Required Windows patch not found: ${_vllm_dg_patch}")
++    endif()
++    if(NOT IS_DIRECTORY "${_vllm_dg_workdir}")
++      message(FATAL_ERROR "DeepGEMM patch working directory not found: ${_vllm_dg_workdir}")
++    endif()
++
++    execute_process(
++      COMMAND git apply --check "${_vllm_dg_patch}"
++      WORKING_DIRECTORY "${_vllm_dg_workdir}"
++      RESULT_VARIABLE _vllm_dg_patch_check
++      OUTPUT_QUIET ERROR_QUIET)
++    if(_vllm_dg_patch_check EQUAL 0)
++      message(STATUS "Applying ${_vllm_dg_patch_kind} Windows patch: ${_vllm_dg_patch}")
++      execute_process(
++        COMMAND git apply "${_vllm_dg_patch}"
++        WORKING_DIRECTORY "${_vllm_dg_workdir}"
++        RESULT_VARIABLE _vllm_dg_patch_apply)
++      if(NOT _vllm_dg_patch_apply EQUAL 0)
++        message(FATAL_ERROR "Failed to apply ${_vllm_dg_patch}")
++      endif()
++    else()
++      execute_process(
++        COMMAND git apply --reverse --check "${_vllm_dg_patch}"
++        WORKING_DIRECTORY "${_vllm_dg_workdir}"
++        RESULT_VARIABLE _vllm_dg_patch_reverse_check
++        OUTPUT_QUIET ERROR_QUIET)
++      if(_vllm_dg_patch_reverse_check EQUAL 0)
++        message(STATUS "${_vllm_dg_patch_kind} Windows patch already applied")
++      else()
++        message(FATAL_ERROR "${_vllm_dg_patch} does not match fetched DeepGEMM sources")
++      endif()
++    endif()
++  endforeach()
++endif()
++
+ # DeepGEMM requires CUDA 12.3+ for SM90, 12.9+ for SM100 (official upstream),
+ # and 12.8+ for SM120 / SM12x. CUDA 13+ can use the family-specific SM12x
+ # arch; CUDA 12.x builds the arch-specific SM120/SM121 variants.
+@@ -155,10 +208,15 @@ if(DEEPGEMM_ARCHS)
+       COMMENT "Building DeepGEMM _C for ${_pybin}"
+       VERBATIM)
+     list(APPEND _dg_markers "${_dg_marker}")
++    if(WIN32)
++      set(_dg_extension_pattern "_C*.pyd")
++    else()
++      set(_dg_extension_pattern "_C.cpython-*.so")
++    endif()
+     install(DIRECTORY "${_dg_dir}/"
+       DESTINATION vllm/third_party/deep_gemm
+       COMPONENT _deep_gemm_C
+-      FILES_MATCHING PATTERN "_C.cpython-*.so")
++      FILES_MATCHING PATTERN "${_dg_extension_pattern}")
+   endforeach()
+   add_custom_target(_deep_gemm_C ALL DEPENDS ${_dg_markers})
+ 
+diff --git a/cmake/external_projects/flashkda.cmake b/cmake/external_projects/flashkda.cmake
+index 28b471a9e..047bb415b 100644
+--- a/cmake/external_projects/flashkda.cmake
++++ b/cmake/external_projects/flashkda.cmake
+@@ -20,6 +20,40 @@ else()
+ endif()
+ 
+ FetchContent_MakeAvailable(flashkda)
++
++# Windows/MSVC: FlashKDA carries its own CUTLASS submodule, so the main vLLM
++# CUTLASS patch does not affect it. Apply the matching host/device annotation fix
++# reproducibly to the vendored copy.
++if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/flashkda-cutlass-windows.patch")
++  set(_vllm_flashkda_cutlass_win_patch "${CMAKE_SOURCE_DIR}/flashkda-cutlass-windows.patch")
++  set(_vllm_flashkda_cutlass_dir "${flashkda_SOURCE_DIR}/cutlass")
++  execute_process(
++    COMMAND git apply --check "${_vllm_flashkda_cutlass_win_patch}"
++    WORKING_DIRECTORY "${_vllm_flashkda_cutlass_dir}"
++    RESULT_VARIABLE _vllm_flashkda_cutlass_patch_check
++    OUTPUT_QUIET ERROR_QUIET)
++  if(_vllm_flashkda_cutlass_patch_check EQUAL 0)
++    message(STATUS "Applying flashkda-cutlass-windows.patch")
++    execute_process(
++      COMMAND git apply "${_vllm_flashkda_cutlass_win_patch}"
++      WORKING_DIRECTORY "${_vllm_flashkda_cutlass_dir}"
++      RESULT_VARIABLE _vllm_flashkda_cutlass_patch_apply)
++    if(NOT _vllm_flashkda_cutlass_patch_apply EQUAL 0)
++      message(FATAL_ERROR "Failed to apply flashkda-cutlass-windows.patch")
++    endif()
++  else()
++    execute_process(
++      COMMAND git apply --reverse --check "${_vllm_flashkda_cutlass_win_patch}"
++      WORKING_DIRECTORY "${_vllm_flashkda_cutlass_dir}"
++      RESULT_VARIABLE _vllm_flashkda_cutlass_patch_reverse_check
++      OUTPUT_QUIET ERROR_QUIET)
++    if(_vllm_flashkda_cutlass_patch_reverse_check EQUAL 0)
++      message(STATUS "flashkda-cutlass-windows.patch already applied")
++    else()
++      message(FATAL_ERROR "flashkda-cutlass-windows.patch does not match fetched FlashKDA CUTLASS")
++    endif()
++  endif()
++endif()
+ message(STATUS "FlashKDA is available at ${flashkda_SOURCE_DIR}")
+ 
+ set(FLASH_KDA_SUPPORT_ARCHS)
+@@ -52,6 +86,14 @@ if(FLASH_KDA_ARCHS)
+     SRCS "${FLASH_KDA_SOURCES}"
+     CUDA_ARCHS "${FLASH_KDA_ARCHS}")
+ 
++  set(_FLASH_KDA_PYTHON_ABI_ARGS USE_SABI 3)
++  if(MSVC)
++    # FlashKDA includes torch/extension.h and explicitly undefines
++    # Py_LIMITED_API below, so on Windows it must link against the
++    # version-specific CPython import library rather than python3.lib.
++    set(_FLASH_KDA_PYTHON_ABI_ARGS)
++  endif()
++
+   define_extension_target(
+     _flashkda_C
+     DESTINATION vllm
+@@ -60,7 +102,7 @@ if(FLASH_KDA_ARCHS)
+     COMPILE_FLAGS ${VLLM_GPU_FLAGS}
+     ARCHITECTURES ${VLLM_GPU_ARCHES}
+     INCLUDE_DIRECTORIES ${FLASH_KDA_INCLUDES}
+-    USE_SABI 3
++    ${_FLASH_KDA_PYTHON_ABI_ARGS}
+     WITH_SOABI)
+ 
+   target_compile_options(_flashkda_C PRIVATE
+diff --git a/cmake/external_projects/qutlass.cmake b/cmake/external_projects/qutlass.cmake
+index cd3665c88..486b8fcd6 100644
+--- a/cmake/external_projects/qutlass.cmake
++++ b/cmake/external_projects/qutlass.cmake
+@@ -53,6 +53,39 @@ if(NOT qutlass_SOURCE_DIR)
+ endif()
+ message(STATUS "[QUTLASS] QuTLASS is available at ${qutlass_SOURCE_DIR}")
+ 
++# Windows/MSVC: QuTLASS has a few CUDA-front-end portability issues in its
++# fused quantization epilogue. Keep the dependency fix reproducible and fail
++# loudly if the pinned source no longer matches the patch.
++if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/qutlass-windows.patch")
++  set(_vllm_qutlass_win_patch "${CMAKE_SOURCE_DIR}/qutlass-windows.patch")
++  execute_process(
++    COMMAND git apply --check "${_vllm_qutlass_win_patch}"
++    WORKING_DIRECTORY "${qutlass_SOURCE_DIR}"
++    RESULT_VARIABLE _vllm_qutlass_patch_check
++    OUTPUT_QUIET ERROR_QUIET)
++  if(_vllm_qutlass_patch_check EQUAL 0)
++    message(STATUS "Applying qutlass-windows.patch")
++    execute_process(
++      COMMAND git apply "${_vllm_qutlass_win_patch}"
++      WORKING_DIRECTORY "${qutlass_SOURCE_DIR}"
++      RESULT_VARIABLE _vllm_qutlass_patch_apply)
++    if(NOT _vllm_qutlass_patch_apply EQUAL 0)
++      message(FATAL_ERROR "Failed to apply qutlass-windows.patch")
++    endif()
++  else()
++    execute_process(
++      COMMAND git apply --reverse --check "${_vllm_qutlass_win_patch}"
++      WORKING_DIRECTORY "${qutlass_SOURCE_DIR}"
++      RESULT_VARIABLE _vllm_qutlass_patch_reverse_check
++      OUTPUT_QUIET ERROR_QUIET)
++    if(_vllm_qutlass_patch_reverse_check EQUAL 0)
++      message(STATUS "qutlass-windows.patch already applied")
++    else()
++      message(FATAL_ERROR "qutlass-windows.patch does not match fetched QuTLASS")
++    endif()
++  endif()
++endif()
++
+ if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+   cuda_archs_loose_intersection(QUTLASS_SM120_ARCHS "12.0f" "${CUDA_ARCHS}")
+   if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.4)
+@@ -92,10 +125,18 @@ if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND QUTLASS_ARCHS)
+     ${qutlass_SOURCE_DIR}/qutlass/csrc/gemm_ada.cu
+     ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_mx.cu
+     ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_nv.cu
+-    ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_mx_sm100.cu
+-    ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_nv_sm100.cu
+   )
+ 
++  # These two translation units instantiate ArchTag=Sm100 and their entry
++  # points are referenced only by the TARGET_CUDA_ARCH 100/101/110 branch in
++  # QuTLASS bindings.cpp. Do not compile dead SM100 kernels into an SM120-only
++  # extension.
++  if(QUTLASS_TARGET_CC EQUAL 100)
++    list(APPEND QUTLASS_SOURCES
++      ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_mx_sm100.cu
++      ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_nv_sm100.cu)
++  endif()
++
+   set(QUTLASS_INCLUDES
+     ${qutlass_SOURCE_DIR}
+     ${qutlass_SOURCE_DIR}/qutlass
+diff --git a/cmake/external_projects/vllm_flash_attn.cmake b/cmake/external_projects/vllm_flash_attn.cmake
+index c7ebbb7fd..5202ad606 100644
+--- a/cmake/external_projects/vllm_flash_attn.cmake
++++ b/cmake/external_projects/vllm_flash_attn.cmake
+@@ -57,6 +57,54 @@ install(CODE "set(CMAKE_INSTALL_PREFIX \"\${CMAKE_INSTALL_PREFIX}/vllm/\")" ALL_
+ FetchContent_MakeAvailable(vllm-flash-attn)
+ message(STATUS "vllm-flash-attn is available at ${vllm-flash-attn_SOURCE_DIR}")
+ 
++# Windows/MSVC: vllm-flash-attn carries its own CUTLASS copy. Apply only the
++# compiler-proven host/device annotation fix to that vendored tree.
++if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/vllm-flash-attn-cutlass-windows.patch")
++  set(_vllm_fa_cutlass_win_patch "${CMAKE_SOURCE_DIR}/vllm-flash-attn-cutlass-windows.patch")
++  set(_vllm_fa_cutlass_dir "${vllm-flash-attn_SOURCE_DIR}/csrc/cutlass")
++  execute_process(
++    COMMAND git apply --check "${_vllm_fa_cutlass_win_patch}"
++    WORKING_DIRECTORY "${_vllm_fa_cutlass_dir}"
++    RESULT_VARIABLE _vllm_fa_cutlass_patch_check
++    OUTPUT_QUIET ERROR_QUIET)
++  if(_vllm_fa_cutlass_patch_check EQUAL 0)
++    message(STATUS "Applying vllm-flash-attn-cutlass-windows.patch")
++    execute_process(
++      COMMAND git apply "${_vllm_fa_cutlass_win_patch}"
++      WORKING_DIRECTORY "${_vllm_fa_cutlass_dir}"
++      RESULT_VARIABLE _vllm_fa_cutlass_patch_apply)
++    if(NOT _vllm_fa_cutlass_patch_apply EQUAL 0)
++      message(FATAL_ERROR "Failed to apply vllm-flash-attn-cutlass-windows.patch")
++    endif()
++  else()
++    execute_process(
++      COMMAND git apply --reverse --check "${_vllm_fa_cutlass_win_patch}"
++      WORKING_DIRECTORY "${_vllm_fa_cutlass_dir}"
++      RESULT_VARIABLE _vllm_fa_cutlass_patch_reverse_check
++      OUTPUT_QUIET ERROR_QUIET)
++    if(_vllm_fa_cutlass_patch_reverse_check EQUAL 0)
++      message(STATUS "vllm-flash-attn-cutlass-windows.patch already applied")
++    else()
++      message(FATAL_ERROR "vllm-flash-attn-cutlass-windows.patch does not match fetched vllm-flash-attn CUTLASS")
++    endif()
++  endif()
++endif()
++
++# MSVC keeps __cplusplus at its legacy value unless /Zc:__cplusplus is enabled,
++# while CUTLASS also uses _MSVC_LANG. That mismatch makes C++17 type-trait
++# aliases disappear from platform.h while exmy_base.h still expects them.
++# Scope the fix to FlashAttention targets so unrelated incremental objects stay cached.
++if(MSVC)
++  foreach(_vllm_fa_target _vllm_fa2_C _vllm_fa3_C)
++    if(TARGET ${_vllm_fa_target})
++      target_compile_options(${_vllm_fa_target} PRIVATE
++        $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>
++        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>)
++      target_compile_definitions(${_vllm_fa_target} PRIVATE _USE_MATH_DEFINES)
++    endif()
++  endforeach()
++endif()
++
+ # Restore the install prefix after FA's install rules
+ install(CODE "set(CMAKE_INSTALL_PREFIX \"\${OLD_CMAKE_INSTALL_PREFIX}\")" ALL_COMPONENTS)
+ install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)
+diff --git a/csrc/cumem_allocator.cpp b/csrc/cumem_allocator.cpp
+index 720c99045..7c2e10815 100644
+--- a/csrc/cumem_allocator.cpp
++++ b/csrc/cumem_allocator.cpp
+@@ -1,3 +1,7 @@
++#ifdef _MSC_VER
++#include <BaseTsd.h>
++typedef SSIZE_T ssize_t;
++#endif
+ // A CUDAPluggableAllocator based on cumem* APIs.
+ // Important: allocation size, CUdeviceptr and CUmemGenericAllocationHandle*
+ // need to be unsigned long long
+diff --git a/csrc/fs_io.cpp b/csrc/fs_io.cpp
+index 6b7c8d7fe..fd5645fe2 100644
+--- a/csrc/fs_io.cpp
++++ b/csrc/fs_io.cpp
+@@ -3,14 +3,19 @@
+ 
+ #include <Python.h>
+ 
+-#include <errno.h>
+-#include <fcntl.h>
+-#include <unistd.h>
+-
++#include <cerrno>
++#include <cstdio>
+ #include <filesystem>
++#include <fstream>
+ #include <string>
++#include <system_error>
+ #include <vector>
+ 
++#ifndef _WIN32
++#include <fcntl.h>
++#include <unistd.h>
++#endif
++
+ #if defined(O_DIRECT)
+ constexpr int kODirectFlag = O_DIRECT;
+ #else
+@@ -24,7 +29,7 @@ namespace {
+ // Returns 0 on success, or the std::error_code's POSIX-compatible value on
+ // failure, mirroring the errno convention used by the syscalls below.
+ inline int ensure_parent_dirs(const std::string& path) {
+-  const auto parent = std::filesystem::path(path).parent_path();
++  const auto parent = std::filesystem::u8path(path).parent_path();
+   if (parent.empty()) {
+     return 0;
+   }
+@@ -39,6 +44,46 @@ inline int ensure_parent_dirs(const std::string& path) {
+ // file is removed.
+ inline int _store_block(const char* tmp_path, const char* dest_path,
+                         const char* src, size_t size, bool use_o_direct) {
++#ifdef _WIN32
++  std::error_code ec;
++  const auto tmp = std::filesystem::u8path(tmp_path);
++  const auto dest = std::filesystem::u8path(dest_path);
++  if (std::filesystem::exists(dest, ec)) {
++    return 0;
++  }
++  ec.clear();
++  if (const int err = ensure_parent_dirs(dest_path); err != 0) {
++    return err;
++  }
++  if (std::filesystem::exists(tmp, ec)) {
++    return EEXIST;
++  }
++
++  std::ofstream output(tmp, std::ios::binary | std::ios::trunc);
++  if (!output) {
++    return errno ? errno : EIO;
++  }
++  output.write(src, static_cast<std::streamsize>(size));
++  output.close();
++  if (!output) {
++    std::filesystem::remove(tmp, ec);
++    return EIO;
++  }
++
++  std::filesystem::rename(tmp, dest, ec);
++  if (ec) {
++    // Another writer may have won the race after our initial lookup.
++    std::error_code exists_ec;
++    if (std::filesystem::exists(dest, exists_ec)) {
++      std::filesystem::remove(tmp, exists_ec);
++      return 0;
++    }
++    const int err = ec.value();
++    std::filesystem::remove(tmp, ec);
++    return err;
++  }
++  return 0;
++#else
+   if (access(dest_path, F_OK) == 0) {
+     return 0;  // Already present.
+   }
+@@ -75,6 +120,7 @@ inline int _store_block(const char* tmp_path, const char* dest_path,
+   }
+ 
+   return 0;
++#endif
+ }
+ 
+ // Core single-block load: dst/size are raw pointer + byte count. Returns 0
+@@ -82,6 +128,24 @@ inline int _store_block(const char* tmp_path, const char* dest_path,
+ // the source file is removed since a partially-read block should not be reused.
+ inline int _load_block(const char* source_path, char* dst, size_t size,
+                        bool use_o_direct) {
++#ifdef _WIN32
++  const auto source = std::filesystem::u8path(source_path);
++  std::ifstream input(source, std::ios::binary);
++  if (!input) {
++    std::error_code ec;
++    std::filesystem::remove(source, ec);
++    return errno ? errno : ENOENT;
++  }
++  input.read(dst, static_cast<std::streamsize>(size));
++  const auto bytes_read = input.gcount();
++  input.close();
++  if (bytes_read != static_cast<std::streamsize>(size)) {
++    std::error_code ec;
++    std::filesystem::remove(source, ec);
++    return EIO;
++  }
++  return 0;
++#else
+   const int o_direct_flag = use_o_direct ? kODirectFlag : 0;
+   const int fd = open(source_path, O_RDONLY | o_direct_flag, 0);
+   if (fd < 0) {
+@@ -105,12 +169,15 @@ inline int _load_block(const char* source_path, char* dst, size_t size,
+   }
+ 
+   return 0;
++#endif
+ }
+ 
+ inline void _batch_lookup(const std::vector<const char*>& paths,
+                           std::vector<int>& exists_flags) {
+   for (size_t i = 0; i < paths.size(); i++) {
+-    exists_flags[i] = (access(paths[i], F_OK) == 0) ? 1 : 0;
++    std::error_code error;
++    const auto path = std::filesystem::u8path(paths[i]);
++    exists_flags[i] = std::filesystem::exists(path, error) ? 1 : 0;
+   }
+ }
+ 
+@@ -155,7 +222,7 @@ inline void release_buffer_list(std::vector<Py_buffer>& buffers) {
+ /// @brief Check file existence for a batch of paths.
+ /// @param paths list[str] – absolute paths to check.
+ /// @return list[bool] – True if the corresponding path exists, False otherwise.
+-/// @note Releases the GIL for the entire batch. File existence via access(2).
++/// @note Releases the GIL for the entire batch.
+ static PyObject* batch_lookup(PyObject* /*self*/, PyObject* args) {
+   PyObject* path_list;
+   if (!PyArg_ParseTuple(args, "O!", &PyList_Type, &path_list)) {
+diff --git a/csrc/libtorch_stable/activation_kernels.cu b/csrc/libtorch_stable/activation_kernels.cu
+index aa2c1b6b9..76cdb0eb6 100644
+--- a/csrc/libtorch_stable/activation_kernels.cu
++++ b/csrc/libtorch_stable/activation_kernels.cu
+@@ -175,7 +175,7 @@ __device__ __forceinline__ T gelu_kernel(const T& x, const float /*alpha*/) {
+   // Refer to:
+   // https://github.com/pytorch/pytorch/blob/8ac9b20d4b090c213799e81acf48a55ea8d437d6/aten/src/ATen/native/cuda/ActivationGeluKernel.cu#L36-L38
+   const float f = (float)x;
+-  constexpr float ALPHA = M_SQRT1_2;
++  constexpr float ALPHA = 0.70710678118654752440f;
+   return (T)(f * 0.5f * (1.0f + ::erf(f * ALPHA)));
+ }
+ 
+@@ -185,7 +185,7 @@ __device__ __forceinline__ packed_t packed_gelu_kernel(const packed_t& val,
+   // Equivalent to PyTorch GELU with 'none' approximation.
+   // Refer to:
+   // https://github.com/pytorch/pytorch/blob/8ac9b20d4b090c213799e81acf48a55ea8d437d6/aten/src/ATen/native/cuda/ActivationGeluKernel.cu#L36-L38
+-  constexpr float ALPHA = M_SQRT1_2;
++  constexpr float ALPHA = 0.70710678118654752440f;
+   float2 fval = cast_to_float2(val);
+   fval.x = fval.x * 0.5f * (1.0f + ::erf(fval.x * ALPHA));
+   fval.y = fval.y * 0.5f * (1.0f + ::erf(fval.y * ALPHA));
+@@ -199,7 +199,7 @@ __device__ __forceinline__ T gelu_tanh_kernel(const T& x,
+   // Refer to:
+   // https://github.com/pytorch/pytorch/blob/8ac9b20d4b090c213799e81acf48a55ea8d437d6/aten/src/ATen/native/cuda/ActivationGeluKernel.cu#L25-L30
+   const float f = (float)x;
+-  constexpr float BETA = M_SQRT2 * M_2_SQRTPI * 0.5f;
++  constexpr float BETA = 0.79788456080286535588f;
+   constexpr float KAPPA = 0.044715;
+   float x_cube = f * f * f;
+   float inner = BETA * (f + KAPPA * x_cube);
+@@ -213,7 +213,7 @@ packed_gelu_tanh_kernel(const packed_t& val, const float /*alpha*/) {
+   // Refer to:
+   // https://github.com/pytorch/pytorch/blob/8ac9b20d4b090c213799e81acf48a55ea8d437d6/aten/src/ATen/native/cuda/ActivationGeluKernel.cu#L25-L30
+   float2 fval = cast_to_float2(val);
+-  constexpr float BETA = M_SQRT2 * M_2_SQRTPI * 0.5f;
++  constexpr float BETA = 0.79788456080286535588f;
+   constexpr float KAPPA = 0.044715;
+ 
+   float x_cube = fval.x * fval.x * fval.x;
+diff --git a/csrc/libtorch_stable/attention/merge_attn_states.cu b/csrc/libtorch_stable/attention/merge_attn_states.cu
+index cc89397f6..37b6fbacb 100644
+--- a/csrc/libtorch_stable/attention/merge_attn_states.cu
++++ b/csrc/libtorch_stable/attention/merge_attn_states.cu
+@@ -10,6 +10,8 @@
+ #include "attention_utils.cuh"
+ #include "../../quantization/w8a8/fp8/common.cuh"
+ 
++using uint = unsigned int;
++
+ namespace vllm {
+ 
+ // Implements section 2.2 of https://www.arxiv.org/pdf/2501.01005
+@@ -100,8 +102,8 @@ __global__ void merge_attn_states_kernel(
+                            token_idx * prefix_lse_token_stride];
+   float s_lse = suffix_lse[head_idx * suffix_lse_head_stride +
+                            token_idx * suffix_lse_token_stride];
+-  p_lse = std::isinf(p_lse) ? -std::numeric_limits<float>::infinity() : p_lse;
+-  s_lse = std::isinf(s_lse) ? -std::numeric_limits<float>::infinity() : s_lse;
++  p_lse = isinf(p_lse) ? -std::numeric_limits<float>::infinity() : p_lse;
++  s_lse = isinf(s_lse) ? -std::numeric_limits<float>::infinity() : s_lse;
+ 
+   const float max_lse = fmaxf(p_lse, s_lse);
+ 
+@@ -113,7 +115,7 @@ __global__ void merge_attn_states_kernel(
+      prefix_output (expected to be all zeros) and prefix_lse (-inf) to fix
+      this problem.
+   */
+-  if (std::isinf(max_lse)) {
++  if (isinf(max_lse)) {
+     if (pack_offset < head_size) {
+       input_pack_t p_out_pack = reinterpret_cast<const input_pack_t*>(
+           prefix_head_ptr)[pack_offset / pack_size];
+diff --git a/csrc/libtorch_stable/core/math.hpp b/csrc/libtorch_stable/core/math.hpp
+index 6764e1fd6..c6345f72f 100644
+--- a/csrc/libtorch_stable/core/math.hpp
++++ b/csrc/libtorch_stable/core/math.hpp
+@@ -5,7 +5,13 @@
+ 
+ inline constexpr uint32_t next_pow_2(uint32_t const num) {
+   if (num <= 1) return num;
+-  return 1 << (CHAR_BIT * sizeof(num) - __builtin_clz(num - 1));
++  uint32_t v = num - 1;
++  v |= v >> 1;
++  v |= v >> 2;
++  v |= v >> 4;
++  v |= v >> 8;
++  v |= v >> 16;
++  return v + 1;
+ }
+ 
+ template <typename A, typename B>
+diff --git a/csrc/libtorch_stable/fused_qknorm_rope_kernel.cu b/csrc/libtorch_stable/fused_qknorm_rope_kernel.cu
+index a8e6d32a1..b1cc2d71a 100644
+--- a/csrc/libtorch_stable/fused_qknorm_rope_kernel.cu
++++ b/csrc/libtorch_stable/fused_qknorm_rope_kernel.cu
+@@ -18,6 +18,9 @@
+ #include <cuda_runtime.h>
+ #include <type_traits>
+ 
++#ifdef _MSC_VER
++typedef unsigned int uint;
++#endif
+ #include "torch_utils.h"
+ 
+ #include "async_util.cuh"
+diff --git a/csrc/libtorch_stable/mamba/selective_scan_fwd.cu b/csrc/libtorch_stable/mamba/selective_scan_fwd.cu
+index c17b06a79..80ed2390b 100644
+--- a/csrc/libtorch_stable/mamba/selective_scan_fwd.cu
++++ b/csrc/libtorch_stable/mamba/selective_scan_fwd.cu
+@@ -245,7 +245,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
+             for (int r = 0; r < kNRows; ++r) {
+                 A_val[r] = A[state_idx * params.A_dstate_stride + r * params.A_d_stride];
+                 // Multiply the real part of A with LOG2E so we can use exp2f instead of expf.
+-                constexpr float kLog2e = M_LOG2E;
++                constexpr float kLog2e = 1.44269504088896340736f;
+                 A_val[r] *= kLog2e;
+             }
+             // This variable holds B * C if both B and C are constant across seqlen. If only B varies
+@@ -390,35 +390,58 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
+     }
+ }
+ 
+-template<int kNThreads, int kNItems, typename input_t, typename weight_t, typename state_t>
+-void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
+-    // Only kNRows == 1 is tested for now, which ofc doesn't differ from previously when we had each block
+-    // processing 1 row.
++// Helper to avoid nested BOOL_SWITCH lambdas: MSVC doesn't propagate
++// constexpr through lambda captures, so template args must be real constants.
++template<int kNThreads, int kNItems, typename input_t, typename weight_t, typename state_t,
++         bool kIsEvenLen, bool kHasZ, bool kVarlen>
++void selective_scan_fwd_dispatch(SSMParamsBase &params, cudaStream_t stream) {
+     constexpr int kNRows = 1;
+-    // kIsVariableB, kIsVariableC and kHasZ are all set to True to reduce binary size
+     constexpr bool kIsVariableB = true;
+     constexpr bool kIsVariableC = true;
+-    BOOL_SWITCH(params.seqlen % (kNThreads * kNItems) == 0, kIsEvenLen, [&] {
+-        BOOL_SWITCH(params.z_ptr != nullptr , kHasZ, [&] {
+-            BOOL_SWITCH(params.query_start_loc_ptr != nullptr , kVarlen, [&] {
+-                using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ,  kVarlen, input_t, weight_t, state_t>;
+-                constexpr int kSmemSize = Ktraits::kSmemSize + kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t);
+-                dim3 grid(params.batch, params.dim / kNRows);
+-                auto kernel = &selective_scan_fwd_kernel<Ktraits>;
+-                if (kSmemSize >= 48 * 1024) {
++    using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ, kVarlen, input_t, weight_t, state_t>;
++    constexpr int kSmemSize = Ktraits::kSmemSize + kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t);
++    dim3 grid(params.batch, params.dim / kNRows);
++    auto kernel = &selective_scan_fwd_kernel<Ktraits>;
++    if (kSmemSize >= 48 * 1024) {
+ #ifdef USE_ROCM
+-                    STD_CUDA_CHECK(hipFuncSetAttribute(
+-                        reinterpret_cast<const void*>(kernel), hipFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
++        STD_CUDA_CHECK(hipFuncSetAttribute(
++            reinterpret_cast<const void*>(kernel), hipFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+ #else
+-                    STD_CUDA_CHECK(cudaFuncSetAttribute(
+-                        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
++        STD_CUDA_CHECK(cudaFuncSetAttribute(
++            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+ #endif
+-                }
+-                kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
+-                STD_CUDA_KERNEL_LAUNCH_CHECK();
+-            });
+-        });
+-    });
++    }
++    kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
++    STD_CUDA_KERNEL_LAUNCH_CHECK();
++}
++
++template<int kNThreads, int kNItems, typename input_t, typename weight_t, typename state_t>
++void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
++    const bool isEvenLen = params.seqlen % (kNThreads * kNItems) == 0;
++    const bool hasZ = params.z_ptr != nullptr;
++    const bool varlen = params.query_start_loc_ptr != nullptr;
++
++    #define DISPATCH_SSM(el, hz, vl) \
++        selective_scan_fwd_dispatch<kNThreads, kNItems, input_t, weight_t, state_t, el, hz, vl>(params, stream)
++
++    if (isEvenLen) {
++        if (hasZ) {
++            if (varlen) DISPATCH_SSM(true, true, true);
++            else        DISPATCH_SSM(true, true, false);
++        } else {
++            if (varlen) DISPATCH_SSM(true, false, true);
++            else        DISPATCH_SSM(true, false, false);
++        }
++    } else {
++        if (hasZ) {
++            if (varlen) DISPATCH_SSM(false, true, true);
++            else        DISPATCH_SSM(false, true, false);
++        } else {
++            if (varlen) DISPATCH_SSM(false, false, true);
++            else        DISPATCH_SSM(false, false, false);
++        }
++    }
++    #undef DISPATCH_SSM
+ }
+ 
+ template<typename input_t, typename weight_t, typename state_t>
+diff --git a/csrc/libtorch_stable/moe/grouped_topk_kernels.cu b/csrc/libtorch_stable/moe/grouped_topk_kernels.cu
+index e329e067b..c7f6c5da5 100644
+--- a/csrc/libtorch_stable/moe/grouped_topk_kernels.cu
++++ b/csrc/libtorch_stable/moe/grouped_topk_kernels.cu
+@@ -691,11 +691,11 @@ __global__ void grouped_topk_fused_small_expert_count_kernel(
+ #endif
+   // declare shared memory structure
+   // number of experts is bounded by number of threads
+-  __shared__ float __attribute((aligned(128))) smemScoreSigmoid[MaxNumExperts];
+-  __shared__ float __attribute((aligned(128))) smemScoreBias[MaxNumExperts];
++  __shared__ float __align__(128) smemScoreSigmoid[MaxNumExperts];
++  __shared__ float __align__(128) smemScoreBias[MaxNumExperts];
+   // number of expert groups is bounded by number of warps
+   int constexpr NumWarps = MaxNumExperts / WARP_SIZE;
+-  __shared__ float __attribute((aligned(128))) smemGroupScores[NumWarps];
++  __shared__ float __align__(128) smemGroupScores[NumWarps];
+ 
+   // needed for warp reduce
+   auto block = cg::this_thread_block();
+@@ -802,10 +802,8 @@ __global__ void grouped_topk_fused_small_expert_count_kernel(
+ 
+     int constexpr NumExpertWarps = (MaxNumExperts - 1) / MaxNumExpertsUnit + 1;
+     int constexpr NumInterTopK = NumExpertWarps * MaxNumTopExperts;
+-    __shared__ float
+-        __attribute((aligned(128))) smemInterTopScores[NumInterTopK];
+-    __shared__ int32_t
+-        __attribute((aligned(128))) smemInterTopExperts[NumInterTopK];
++    __shared__ float __align__(128) smemInterTopScores[NumInterTopK];
++    __shared__ int32_t __align__(128) smemInterTopExperts[NumInterTopK];
+     if (warpIdx < NumExpertWarps) {
+       int offset = warpIdx * WARP_SIZE * MaxNumTopGroups;
+ #pragma unroll
+@@ -899,7 +897,7 @@ namespace detail {
+ 
+ static constexpr int BlockDim = 256;
+ static constexpr uint32_t FullWarpMask = 0xffffffffU;
+-static constexpr float InvalidScore = -INFINITY;
++static constexpr float InvalidScore = -cuda::std::numeric_limits<float>::infinity();
+ 
+ // TopK-only tuning: use wider workers and keep these tiers on the block path.
+ template <int MaxNumExperts, int MaxNumTopExperts>
+@@ -996,8 +994,8 @@ __global__ void __launch_bounds__(BlockDim)
+   }
+ #endif
+ 
+-  __shared__ float __attribute((aligned(128))) biased_scores[MaxNumExperts];
+-  __shared__ float __attribute((aligned(128))) unbiased_scores[MaxNumExperts];
++  alignas(128) __shared__ float biased_scores[MaxNumExperts];
++  alignas(128) __shared__ float unbiased_scores[MaxNumExperts];
+ 
+   int32_t const token = static_cast<int32_t>(blockIdx.x);
+   int32_t const lane = static_cast<int32_t>(threadIdx.x) % WARP_SIZE;
+@@ -1017,10 +1015,8 @@ __global__ void __launch_bounds__(BlockDim)
+   auto warp = cg::tiled_partition<WARP_SIZE>(cg::this_thread_block());
+ 
+   if constexpr (UseHierarchicalLaneTopK) {
+-    __shared__ float
+-        __attribute((aligned(128))) intermediate_scores[NumIntermediate];
+-    __shared__ int32_t
+-        __attribute((aligned(128))) intermediate_indices[NumIntermediate];
++    alignas(128) __shared__ float intermediate_scores[NumIntermediate];
++    alignas(128) __shared__ int32_t intermediate_indices[NumIntermediate];
+ 
+     if (warp_id < NumWorkerWarps) {
+       float local_scores[WorkerValuesPerLane];
+diff --git a/csrc/libtorch_stable/moe/marlin_moe_wna16/generate_kernels.py b/csrc/libtorch_stable/moe/marlin_moe_wna16/generate_kernels.py
+index 64b47b607..4233f8b2e 100644
+--- a/csrc/libtorch_stable/moe/marlin_moe_wna16/generate_kernels.py
++++ b/csrc/libtorch_stable/moe/marlin_moe_wna16/generate_kernels.py
+@@ -3,7 +3,6 @@
+ import glob
+ import itertools
+ import os
+-import subprocess
+ import sys
+ 
+ import jinja2
+@@ -164,10 +163,12 @@ QUANT_CONFIGS = [
+ 
+ def remove_old_kernels():
+     for filename in glob.glob(os.path.dirname(__file__) + "/*kernel_*.cu"):
+-        subprocess.call(["rm", "-f", filename])
++        if os.path.exists(filename):
++            os.remove(filename)
+ 
+     filename = os.path.dirname(__file__) + "/kernel_selector.h"
+-    subprocess.call(["rm", "-f", filename])
++    if os.path.exists(filename):
++        os.remove(filename)
+ 
+ 
+ def generate_new_kernels():
+@@ -264,7 +265,7 @@ def generate_new_kernels():
+                 if kernel_selector_str == FILE_HEAD_COMMENT:
+                     kernel_selector_str += f"if ({conditions})\n  kernel = "
+                 else:
+-                    kernel_selector_str += f"else if ({conditions})\n  kernel = "
++                    kernel_selector_str += f"if ({conditions})\n  kernel = "
+ 
+                 kernel_template2 = (
+                     "Marlin<{{a_type_id}}, {{b_type_id}}, {{c_type_id}}, "
+diff --git a/csrc/libtorch_stable/moe/topk_softplus_sqrt_kernels.cu b/csrc/libtorch_stable/moe/topk_softplus_sqrt_kernels.cu
+index 976eebac3..6836a56f4 100644
+--- a/csrc/libtorch_stable/moe/topk_softplus_sqrt_kernels.cu
++++ b/csrc/libtorch_stable/moe/topk_softplus_sqrt_kernels.cu
+@@ -586,12 +586,33 @@ void topkGatingSoftplusSqrtLauncherHelper(
+   const int num_warps = (num_rows + ROWS_PER_WARP - 1) / ROWS_PER_WARP;
+   const int num_blocks = (num_warps + WARPS_PER_TB - 1) / WARPS_PER_TB;
+   dim3 block_dim(WARP_SIZE_PARAM, WARPS_PER_TB);
++#if defined(_WIN32)
++  DISPATCH_HASH(use_hash, USE_HASH, {
++    auto* kernel =
++        &topkGatingSoftplusSqrt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,
++                                WARP_SIZE_PARAM, USE_HASH, IndType, HashIndType,
++                                InputType>;
++    kernel<<<num_blocks, block_dim, 0, stream>>>(
++        input, finished, output, num_rows, indices, source_row, k, start_expert,
++        end_expert, renormalize, routed_scaling_factor, correction_bias,
++        input_ids, tid2eid, is_padding);
++  })
++#elif defined(USE_ROCM)
++  DISPATCH_HASH(use_hash, USE_HASH, {
++    auto* kernel =
++        &topkGatingSoftplusSqrt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,
++                                WARP_SIZE_PARAM, USE_HASH, IndType, InputType>;
++    kernel<<<num_blocks, block_dim, 0, stream>>>(
++        input, finished, output, num_rows, indices, source_row, k, start_expert,
++        end_expert, renormalize, routed_scaling_factor, correction_bias,
++        input_ids, tid2eid, is_padding);
++  })
++#else
+   DISPATCH_HASH(use_hash, USE_HASH, {
+     auto* kernel =
+         &topkGatingSoftplusSqrt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,
+                                 WARP_SIZE_PARAM, USE_HASH, IndType, HashIndType,
+                                 InputType>;
+-#ifndef USE_ROCM
+     cudaLaunchConfig_t config = {};
+     config.gridDim = num_blocks;
+     config.blockDim = block_dim;
+@@ -606,13 +627,8 @@ void topkGatingSoftplusSqrtLauncherHelper(
+                        indices, source_row, k, start_expert, end_expert,
+                        renormalize, routed_scaling_factor, correction_bias,
+                        input_ids, tid2eid, is_padding);
+-#else
+-    kernel<<<num_blocks, block_dim, 0, stream>>>(
+-        input, finished, output, num_rows, indices, source_row, k, start_expert,
+-        end_expert, renormalize, routed_scaling_factor, correction_bias,
+-        input_ids, tid2eid, is_padding);
+-#endif
+   })
++#endif
+ }
+ 
+ #ifndef USE_ROCM
+diff --git a/csrc/libtorch_stable/persistent_topk.cuh b/csrc/libtorch_stable/persistent_topk.cuh
+index 85618feeb..baeba060b 100644
+--- a/csrc/libtorch_stable/persistent_topk.cuh
++++ b/csrc/libtorch_stable/persistent_topk.cuh
+@@ -958,7 +958,11 @@ namespace hist4096 = topk_histogram_4096;
+     }                                   \
+   }
+ 
++#ifdef _MSC_VER
++#define FLASHINFER_INLINE __forceinline __device__
++#else
+ #define FLASHINFER_INLINE inline __attribute__((always_inline)) __device__
++#endif
+ 
+ template <typename T, size_t N>
+ struct vec_t {
+diff --git a/csrc/libtorch_stable/quantization/activation_kernels.cu b/csrc/libtorch_stable/quantization/activation_kernels.cu
+index 822a41969..0e5e1eb57 100644
+--- a/csrc/libtorch_stable/quantization/activation_kernels.cu
++++ b/csrc/libtorch_stable/quantization/activation_kernels.cu
+@@ -208,9 +208,9 @@ constexpr __nv_bfloat16 get_fp8_max() {
+   static_assert(std::is_same_v<T, c10::Float8_e4m3fn> ||
+                 std::is_same_v<T, c10::Float8_e4m3fnuz>);
+   if constexpr (std::is_same_v<T, c10::Float8_e4m3fn>) {
+-    return __nv_bfloat16(__nv_bfloat16_raw{.x = 17376});
++    return __nv_bfloat16(__nv_bfloat16_raw{17376});
+   } else {
+-    return __nv_bfloat16(__nv_bfloat16_raw{.x = 17264});
++    return __nv_bfloat16(__nv_bfloat16_raw{17264});
+   }
+ }
+ 
+@@ -219,9 +219,9 @@ constexpr __nv_bfloat16 get_fp8_min() {
+   static_assert(std::is_same_v<T, c10::Float8_e4m3fn> ||
+                 std::is_same_v<T, c10::Float8_e4m3fnuz>);
+   if constexpr (std::is_same_v<T, c10::Float8_e4m3fn>) {
+-    return __nv_bfloat16(__nv_bfloat16_raw{.x = 50144});
++    return __nv_bfloat16(__nv_bfloat16_raw{50144});
+   } else {
+-    return __nv_bfloat16(__nv_bfloat16_raw{.x = 50032});
++    return __nv_bfloat16(__nv_bfloat16_raw{50032});
+   }
+ }
+ 
+@@ -291,7 +291,7 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
+   static constexpr int COMPUTE_STAGE_SIZE = 2 * GROUP_SIZE / 4;
+   static constexpr int COMPUTE_STAGE_MOD = COMPUTE_STAGE_SIZE * NUM_STAGES;
+ 
+-  extern __shared__ __align__(16) __int128_t smem_128[];
++  extern __shared__ __align__(16) int4 smem_128[];
+ 
+   int* s_expert_offsets =
+       reinterpret_cast<int*>(smem_128 + (SMEM_SIZE_BYTES_Y / 16));
+@@ -299,7 +299,7 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
+   static constexpr __nv_bfloat16 fp8_min = get_fp8_min<fp8_type>();
+   static constexpr __nv_bfloat16 fp8_max = get_fp8_max<fp8_type>();
+   // We assign EPS with it's 16-bit unsigned counterpart to allow constexpr.
+-  static constexpr __nv_bfloat16 EPS = (__nv_bfloat16_raw{.x = 11996});
++  static constexpr __nv_bfloat16 EPS = (__nv_bfloat16_raw{11996});
+   int tid = threadIdx.x;
+   int warp_id = tid >> 5;
+   int lane_id = tid & 0x1f;
+@@ -343,8 +343,8 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
+   // updiv(n_tokens, NUM_PARALLEL_TOKENS) for better scheduling.
+ 
+   // Each warp will get space to store its hidden dim for gate and up.
+-  __int128_t* s_hidden_load = smem_128 + warp_id * ((2 * 128 / 8) * NUM_STAGES);
+-  __int128_t* smem_load_ptr = s_hidden_load + lane_id;
++  int4* s_hidden_load = smem_128 + warp_id * ((2 * 128 / 8) * NUM_STAGES);
++  int4* smem_load_ptr = s_hidden_load + lane_id;
+ 
+   const __nv_bfloat16 fp8_inv = __hdiv(__float2bfloat16(1.f), fp8_max);
+ 
+@@ -352,11 +352,11 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
+   int32_t load_stage_offset{};
+   const __nv_bfloat16 one_bf16 = __float2bfloat16_rn(1.f);
+ 
+-  __int64_t* smem_compute_ptr = reinterpret_cast<__int64_t*>(smem_128) +
+-                                warp_id * (2 * (GROUP_SIZE / 4) * NUM_STAGES) +
+-                                lane_id;
+-  __int64_t* s_gate64_ptr = smem_compute_ptr;
+-  __int64_t* s_up64_ptr = smem_compute_ptr + GROUP_SIZE / 4;
++  int64_t* smem_compute_ptr = reinterpret_cast<int64_t*>(smem_128) +
++                              warp_id * (2 * (GROUP_SIZE / 4) * NUM_STAGES) +
++                              lane_id;
++  int64_t* s_gate64_ptr = smem_compute_ptr;
++  int64_t* s_up64_ptr = smem_compute_ptr + GROUP_SIZE / 4;
+ 
+   int tokens_lower, tokens_upper;
+ 
+@@ -383,10 +383,10 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
+   const Idx_t gate_warp_offset =
+       warp_id * ((stride_i_h * H) / (8 * NUM_WARPS)) + (lane_id & 0b1111);
+ 
+-  const __int128_t* input_128_ptr =
+-      reinterpret_cast<const __int128_t*>(_input) + gate_warp_offset +
++  const int4* input_128_ptr =
++      reinterpret_cast<const int4*>(_input) + gate_warp_offset +
+       ((lane_id < 16) ? 0 : ((H * stride_i_h) / 8));
+-  __int128_t* load_ptr = const_cast<__int128_t*>(input_128_ptr + base_i);
++  int4* load_ptr = const_cast<int4*>(input_128_ptr + base_i);
+ 
+   auto token_offset = token_id - expert_offset;
+ 
+@@ -425,15 +425,15 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
+ 
+         base_i = expert_id * (stride_i_e / 8);
+         token_offset = 0;
+-        load_ptr = const_cast<__int128_t*>(input_128_ptr + base_i);
++        load_ptr = const_cast<int4*>(input_128_ptr + base_i);
+       } else {
+         // We remain within the same expert, so just
+-        // move by H/4 __int128_t (2 * H/8).
++        // move by H/4 int4 (2 * H/8).
+         base_i += stride_yq_t / 4;
+         token_offset++;
+       }
+ 
+-      load_ptr = const_cast<__int128_t*>(input_128_ptr + base_i);
++      load_ptr = const_cast<int4*>(input_128_ptr + base_i);
+ 
+       auto smem_load_ptr_staged = smem_load_ptr + load_stage_offset;
+ 
+@@ -487,15 +487,15 @@ __global__ void silu_mul_fp8_quant_deep_gemm_kernel(
+       __syncthreads();
+       load_and_advance_y_pred();
+ 
+-      __int64_t* gate64_ptr = s_gate64_ptr + compute_pipeline_offset_64;
+-      __int64_t* up64_ptr = s_up64_ptr + compute_pipeline_offset_64;
++      int64_t* gate64_ptr = s_gate64_ptr + compute_pipeline_offset_64;
++      int64_t* up64_ptr = s_up64_ptr + compute_pipeline_offset_64;
+ 
+       // COMPUTE_STAGE_SIZE/MOD must also be constexpr!
+       compute_pipeline_offset_64 += COMPUTE_STAGE_SIZE;
+       compute_pipeline_offset_64 %= COMPUTE_STAGE_MOD;
+ 
+-      __int64_t gate64 = *gate64_ptr;
+-      __int64_t up64 = *up64_ptr;
++      int64_t gate64 = *gate64_ptr;
++      int64_t up64 = *up64_ptr;
+ 
+       // Compute
+       __nv_bfloat162 res[2];
+diff --git a/csrc/libtorch_stable/quantization/awq/gemm_kernels.cu b/csrc/libtorch_stable/quantization/awq/gemm_kernels.cu
+index 43301f0fe..820a92f1c 100644
+--- a/csrc/libtorch_stable/quantization/awq/gemm_kernels.cu
++++ b/csrc/libtorch_stable/quantization/awq/gemm_kernels.cu
+@@ -177,7 +177,7 @@ __global__ void __launch_bounds__(64)
+     for (int k_0_1 = 0; k_0_1 < 2; ++k_0_1) {
+       {
+         unsigned int addr;
+-        __asm__ __volatile__(
++        asm volatile(
+             "{ .reg .u64 addr; cvta.to.shared.u64 addr, %1; cvt.u32.u64 %0, "
+             "addr; }\n"
+             : "=r"(addr)
+@@ -185,7 +185,7 @@ __global__ void __launch_bounds__(64)
+                           (((((int)threadIdx.x) & 15) * 40) +
+                            ((((int)threadIdx.x) >> 4) * 8)))));
+ 
+-        __asm__ __volatile__(
++        asm volatile(
+             "ldmatrix.sync.aligned.m8n8.x4.shared.b16"
+             "{%0, %1, %2, %3}, [%4];\n"
+             : "=r"(((unsigned*)(A_shared_warp + 0))[0]),
+@@ -198,7 +198,7 @@ __global__ void __launch_bounds__(64)
+       for (int ax1_0 = 0; ax1_0 < N / 32; ++ax1_0) {
+         {
+           unsigned int addr;
+-          __asm__ __volatile__(
++          asm volatile(
+               "{ .reg .u64 addr; cvta.to.shared.u64 addr, %1; cvt.u32.u64 %0, "
+               "addr; }\n"
+               : "=r"(addr)
+@@ -207,7 +207,7 @@ __global__ void __launch_bounds__(64)
+                                          (ax1_0 * 16))])) +
+                             (((((int)threadIdx.x) & 15) * (N + 8)) +
+                              ((((int)threadIdx.x) >> 4) * 8)))));
+-          __asm__ __volatile__(
++          asm volatile(
+               "ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16"
+               "{%0, %1, %2, %3}, [%4];\n"
+               : "=r"(((unsigned*)(B_shared_warp + (ax1_0 * 8)))[0]),
+@@ -220,7 +220,7 @@ __global__ void __launch_bounds__(64)
+       for (int j_0_4 = 0; j_0_4 < N / 32; ++j_0_4) {
+   #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
+         {
+-          __asm__ __volatile__(
++          asm volatile(
+               "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+               "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+               : "=f"(((float*)(C_warp + (j_0_4 * 8)))[0]),
+@@ -237,7 +237,7 @@ __global__ void __launch_bounds__(64)
+         }
+ 
+         {
+-          __asm__ __volatile__(
++          asm volatile(
+               "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+               "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+               : "=f"(((float*)(C_warp + ((j_0_4 * 8) + 4)))[0]),
+@@ -254,7 +254,7 @@ __global__ void __launch_bounds__(64)
+         }
+ 
+         {
+-          __asm__ __volatile__(
++          asm volatile(
+               "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+               "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+               : "=f"(((float*)(C_warp + (j_0_4 * 8)))[0]),
+@@ -271,7 +271,7 @@ __global__ void __launch_bounds__(64)
+         }
+ 
+         {
+-          __asm__ __volatile__(
++          asm volatile(
+               "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+               "{%0, %1, %2, %3}, {%4, %5}, {%6}, {%7, %8, %9, %10};\n"
+               : "=f"(((float*)(C_warp + ((j_0_4 * 8) + 4)))[0]),
+@@ -288,7 +288,7 @@ __global__ void __launch_bounds__(64)
+         }
+   #else
+         {
+-          __asm__ __volatile__(
++          asm volatile(
+               "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32"
+               "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, "
+               "%13};\n"
+@@ -309,7 +309,7 @@ __global__ void __launch_bounds__(64)
+         }
+ 
+         {
+-          __asm__ __volatile__(
++          asm volatile(
+               "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32"
+               "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, "
+               "%13};\n"
+diff --git a/csrc/libtorch_stable/quantization/fused_kernels/fused_silu_mul_block_quant.cu b/csrc/libtorch_stable/quantization/fused_kernels/fused_silu_mul_block_quant.cu
+index b32a7bd27..3d514d94c 100644
+--- a/csrc/libtorch_stable/quantization/fused_kernels/fused_silu_mul_block_quant.cu
++++ b/csrc/libtorch_stable/quantization/fused_kernels/fused_silu_mul_block_quant.cu
+@@ -76,7 +76,7 @@ __global__ void silu_and_mul_per_block_quant_kernel(
+   if (tid == 0) {
+     float group_max = shared_max[0];
+ 
+-    float const quant_range = quant_type_max_v<scalar_out_t>;
++    float const quant_range = quant_type_max_v<scalar_out_t>();
+     float group_scale = group_max / quant_range;
+ 
+     // Apply scale upper bound if provided
+diff --git a/csrc/libtorch_stable/quantization/fused_kernels/layernorm_utils.cuh b/csrc/libtorch_stable/quantization/fused_kernels/layernorm_utils.cuh
+index 0139cfbc9..39cb21597 100644
+--- a/csrc/libtorch_stable/quantization/fused_kernels/layernorm_utils.cuh
++++ b/csrc/libtorch_stable/quantization/fused_kernels/layernorm_utils.cuh
+@@ -80,7 +80,7 @@ __device__ void compute_dynamic_per_token_scales(
+     scalar_t const* __restrict__ residual = nullptr,
+     int32_t const group_size = 0, int64_t outer_scale_stride = 1) {
+   float block_absmax_val_maybe = 0.0f;
+-  constexpr scalar_out_t qmax{quant_type_max_v<scalar_out_t>};
++  constexpr scalar_out_t qmax{quant_type_max_v<scalar_out_t>()};
+   __syncthreads();
+ 
+   int64_t const input_token_offset =
+@@ -303,7 +303,7 @@ __device__ void compute_dynamic_per_token_scales(
+     int32_t const hidden_size, int32_t const input_stride,
+     scalar_t const* __restrict__ residual = nullptr,
+     int64_t outer_scale_stride = 1) {
+-  constexpr scalar_out_t qmax{quant_type_max_v<scalar_out_t>};
++  constexpr scalar_out_t qmax{quant_type_max_v<scalar_out_t>()};
+ 
+   const int VEC_SIZE = 4;
+   float block_absmax_val_maybe = 0.0f;
+diff --git a/csrc/libtorch_stable/quantization/fused_kernels/quant_conversions.cuh b/csrc/libtorch_stable/quantization/fused_kernels/quant_conversions.cuh
+index dbe38092f..37138ea0d 100644
+--- a/csrc/libtorch_stable/quantization/fused_kernels/quant_conversions.cuh
++++ b/csrc/libtorch_stable/quantization/fused_kernels/quant_conversions.cuh
+@@ -40,7 +40,7 @@ static __device__ __forceinline__ int8_t float_to_int8_rn(float const x) {
+ template <typename fp8_type>
+ static __device__ __forceinline__ fp8_type float_to_fp8(float const x) {
+   float const r =
+-      fmax(-quant_type_max_v<fp8_type>, fmin(x, quant_type_max_v<fp8_type>));
++      fmax(-quant_type_max_v<fp8_type>(), fmin(x, quant_type_max_v<fp8_type>()));
+   return static_cast<fp8_type>(r);
+ }
+ 
+diff --git a/csrc/libtorch_stable/quantization/marlin/generate_kernels.py b/csrc/libtorch_stable/quantization/marlin/generate_kernels.py
+index 2a0384798..0462570ef 100644
+--- a/csrc/libtorch_stable/quantization/marlin/generate_kernels.py
++++ b/csrc/libtorch_stable/quantization/marlin/generate_kernels.py
+@@ -3,7 +3,6 @@
+ import glob
+ import itertools
+ import os
+-import subprocess
+ import sys
+ 
+ import jinja2
+@@ -164,10 +163,12 @@ QUANT_CONFIGS = [
+ 
+ def remove_old_kernels():
+     for filename in glob.glob(os.path.dirname(__file__) + "/*kernel_*.cu"):
+-        subprocess.call(["rm", "-f", filename])
++        if os.path.exists(filename):
++            os.remove(filename)
+ 
+     filename = os.path.dirname(__file__) + "/kernel_selector.h"
+-    subprocess.call(["rm", "-f", filename])
++    if os.path.exists(filename):
++        os.remove(filename)
+ 
+ 
+ def generate_new_kernels():
+@@ -265,7 +266,7 @@ def generate_new_kernels():
+                 if kernel_selector_str == FILE_HEAD_COMMENT:
+                     kernel_selector_str += f"if ({conditions})\n  kernel = "
+                 else:
+-                    kernel_selector_str += f"else if ({conditions})\n  kernel = "
++                    kernel_selector_str += f"if ({conditions})\n  kernel = "
+ 
+                 kernel_template2 = (
+                     "Marlin<{{a_type_id}}, {{b_type_id}}, {{c_type_id}}, "
+diff --git a/csrc/libtorch_stable/quantization/w8a8/fp8/common.cu b/csrc/libtorch_stable/quantization/w8a8/fp8/common.cu
+index 86696e2f7..51bda5abd 100644
+--- a/csrc/libtorch_stable/quantization/w8a8/fp8/common.cu
++++ b/csrc/libtorch_stable/quantization/w8a8/fp8/common.cu
+@@ -110,7 +110,7 @@ __global__ void segmented_max_reduction_strided(
+ 
+   // thread 0 updates global scale (per-tensor) atomically.
+   if (tid == 0) {
+-    atomicMaxFloat(scale, cache[0] / quant_type_max_v<fp8_type>);
++    atomicMaxFloat(scale, cache[0] / quant_type_max_v<fp8_type>());
+   }
+ }
+ 
+@@ -163,7 +163,7 @@ __global__ void dynamic_per_token_scaled_fp8_quant_kernel_strided(
+   __shared__ float token_scale;
+   if (tid == 0) {
+     token_scale = scale_ub ? fminf(block_max, *scale_ub) : block_max;
+-    token_scale = fmaxf(token_scale / quant_type_max_v<fp8_type>,
++    token_scale = fmaxf(token_scale / quant_type_max_v<fp8_type>(),
+                         min_scaling_factor<fp8_type>::val());
+     scale[token_idx] = token_scale;
+   }
+diff --git a/csrc/libtorch_stable/torch_utils.h b/csrc/libtorch_stable/torch_utils.h
+index f02346739..af252f804 100644
+--- a/csrc/libtorch_stable/torch_utils.h
++++ b/csrc/libtorch_stable/torch_utils.h
+@@ -18,6 +18,10 @@
+ #define STD_TORCH_CHECK_NOT_IMPLEMENTED(cond, ...) \
+   STD_TORCH_CHECK(cond, "NotImplementedError: ", __VA_ARGS__)
+ 
++#ifndef TORCH_UTILS_CHECK
++  #define TORCH_UTILS_CHECK STD_TORCH_CHECK
++#endif
++
+ // Device properties cache for stable ABI compatibility.
+ // Uses raw CUDA/HIP APIs instead of ATen functions.
+ // Using inline ensures a single instance across all translation units.
+diff --git a/csrc/quantization/utils.cuh b/csrc/quantization/utils.cuh
+index 6bb9b9fc5..33991bd92 100644
+--- a/csrc/quantization/utils.cuh
++++ b/csrc/quantization/utils.cuh
+@@ -38,9 +38,12 @@ struct quant_type_max<torch::headeronly::Float8_e4m3fnuz> {
+   }
+ };
+ 
++// Function template instead of variable template: MSVC nvcc can't apply
++// __host__/__device__ attributes to variable templates.
+ template <typename T>
+-MAYBE_HOST_DEVICE static constexpr T quant_type_max_v =
+-    quant_type_max<T>::val();
++MAYBE_HOST_DEVICE static inline constexpr T quant_type_max_v() {
++    return quant_type_max<T>::val();
++}
+ 
+ template <typename T,
+           typename = std::enable_if_t<
+@@ -49,7 +52,7 @@ template <typename T,
+               std::is_same_v<T, int8_t>>>
+ struct min_scaling_factor {
+   C10_DEVICE C10_ALWAYS_INLINE static float val() {
+-    return 1.0f / (quant_type_max_v<T> * 512.0f);
++    return 1.0f / (quant_type_max_v<T>() * 512.0f);
+   }
+ };
+ 
+diff --git a/csrc/quantization/w8a8/fp8/common.cuh b/csrc/quantization/w8a8/fp8/common.cuh
+index 087f50991..6c0b3afa8 100644
+--- a/csrc/quantization/w8a8/fp8/common.cuh
++++ b/csrc/quantization/w8a8/fp8/common.cuh
+@@ -65,7 +65,7 @@ __device__ __forceinline__ fp8_type scaled_fp8_conversion(float const val,
+   }
+ 
+   float r =
+-      fmaxf(-quant_type_max_v<fp8_type>, fminf(x, quant_type_max_v<fp8_type>));
++      fmaxf(-quant_type_max_v<fp8_type>(), fminf(x, quant_type_max_v<fp8_type>()));
+ #ifndef USE_ROCM
+   // Use hardware cvt instruction for fp8 on nvidia
+   // Currently only support fp8_type = c10::Float8_e4m3fn
+diff --git a/csrc/spinloop.cpp b/csrc/spinloop.cpp
+index 3285b9a3d..a25bf443d 100644
+--- a/csrc/spinloop.cpp
++++ b/csrc/spinloop.cpp
+@@ -1,5 +1,10 @@
+ #include <Python.h>
+ 
++#if defined(_WIN32)
++  #define WIN32_LEAN_AND_MEAN
++  #include <windows.h>
++#endif
++
+ extern "C" {
+ 
+ #include <stdbool.h>
+@@ -10,10 +15,12 @@ extern "C" {
+   #include <x86intrin.h>
+ #endif
+ 
+-#if defined(CLOCK_MONOTONIC_RAW)
+-  #define TIMEOUT_CLOCK CLOCK_MONOTONIC_RAW
+-#else
+-  #define TIMEOUT_CLOCK CLOCK_MONOTONIC
++#if !defined(_WIN32)
++  #if defined(CLOCK_MONOTONIC_RAW)
++    #define TIMEOUT_CLOCK CLOCK_MONOTONIC_RAW
++  #else
++    #define TIMEOUT_CLOCK CLOCK_MONOTONIC
++  #endif
+ #endif
+ 
+ #define CPU_SUPPORT_NONE 0
+@@ -26,6 +33,24 @@ typedef struct {
+   unsigned int max_monitor_line_size;
+ } spinloop_state_t;
+ 
++static int get_monotonic_time(struct timespec* t) {
++#if defined(_WIN32)
++  LARGE_INTEGER frequency;
++  LARGE_INTEGER counter;
++  if (!QueryPerformanceFrequency(&frequency) ||
++      !QueryPerformanceCounter(&counter)) {
++    return -1;
++  }
++  t->tv_sec = (time_t)(counter.QuadPart / frequency.QuadPart);
++  t->tv_nsec =
++      (long)(((counter.QuadPart % frequency.QuadPart) * 1000000000LL) /
++             frequency.QuadPart);
++  return 0;
++#else
++  return clock_gettime(TIMEOUT_CLOCK, t);
++#endif
++}
++
+ static void determine_cpu_support(spinloop_state_t* state) {
+   state->cpu_support = CPU_SUPPORT_NONE;
+   state->max_monitor_line_size = 0;
+@@ -78,8 +103,8 @@ static PyObject* method_spinloop(PyObject* self, PyObject* args,
+   }
+ 
+   struct timespec t_start;
+-  if (clock_gettime(TIMEOUT_CLOCK, &t_start) != 0) {
+-    PyErr_SetString(PyExc_RuntimeError, "clock_gettime() failed!");
++  if (get_monotonic_time(&t_start) != 0) {
++    PyErr_SetString(PyExc_RuntimeError, "monotonic clock query failed!");
+     PyBuffer_Release(&buffer);
+     return NULL;
+   }
+@@ -108,8 +133,8 @@ static PyObject* method_spinloop(PyObject* self, PyObject* args,
+     // comparison cost
+     if (have_timeout && (iteration & 15u) == 0) {
+       struct timespec t_now;
+-      if (clock_gettime(TIMEOUT_CLOCK, &t_now) != 0) {
+-        PyErr_SetString(PyExc_RuntimeError, "clock_gettime() failed!");
++      if (get_monotonic_time(&t_now) != 0) {
++        PyErr_SetString(PyExc_RuntimeError, "monotonic clock query failed!");
+         error = true;
+         break;
+       }
+diff --git a/cutlass-windows.patch b/cutlass-windows.patch
+new file mode 100644
+index 000000000..fa310fa79
+--- /dev/null
++++ b/cutlass-windows.patch
+@@ -0,0 +1,12 @@
++diff --git a/include/cutlass/cuda_host_adapter.hpp b/include/cutlass/cuda_host_adapter.hpp
++--- a/include/cutlass/cuda_host_adapter.hpp
+++++ b/include/cutlass/cuda_host_adapter.hpp
++@@ -405,7 +405,7 @@ public:
++ 
++   /// Fills a buffer in Global Memory with a byte sequence copied from host memory
++   template<class FillValueType>
++-  CUTLASS_HOST_DEVICE
+++  CUTLASS_HOST
++   Status memsetDevice(
++       void* destination,
++       FillValueType fill_value, 
+diff --git a/deepgemm-cutlass-windows.patch b/deepgemm-cutlass-windows.patch
+new file mode 100644
+index 000000000..d6830d950
+--- /dev/null
++++ b/deepgemm-cutlass-windows.patch
+@@ -0,0 +1,38 @@
++diff --git a/include/cutlass/arch/memory_sm75.h b/include/cutlass/arch/memory_sm75.h
++index 040f7074..41530a7d 100644
++--- a/include/cutlass/arch/memory_sm75.h
+++++ b/include/cutlass/arch/memory_sm75.h
++@@ -240,11 +240,16 @@ struct shared_load_op<AccessType, 16> {
++   shared_load_op(AccessType &D, void const *ptr) {
++     unsigned addr = cutlass_get_smem_pointer(ptr);
++ 
+++#if defined(__CUDA_ARCH__)
++     uint4 v;
++     asm volatile ("ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];" : 
++       "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "r"(addr));
++ 
++     D = reinterpret_cast<AccessType const &>(v);
+++#else
+++    (void)D;
+++    (void)addr;
+++#endif
++   }
++ };
++ 
++@@ -256,11 +261,16 @@ struct shared_load_op<AccessType, 8> {
++   shared_load_op(AccessType &D, void const *ptr) {
++     unsigned addr = cutlass_get_smem_pointer(ptr);
++ 
+++#if defined(__CUDA_ARCH__)
++     uint2 v;
++     asm volatile ("ld.shared.v2.b32 {%0, %1}, [%2];" : 
++       "=r"(v.x), "=r"(v.y) : "r"(addr));
++ 
++     D = reinterpret_cast<AccessType const &>(v);
+++#else
+++    (void)D;
+++    (void)addr;
+++#endif
++   }
++ };
++ 
+diff --git a/deepgemm-windows.patch b/deepgemm-windows.patch
+new file mode 100644
+index 000000000..b53c6f52c
+--- /dev/null
++++ b/deepgemm-windows.patch
+@@ -0,0 +1,1049 @@
++diff --git a/csrc/jit/cache.hpp b/csrc/jit/cache.hpp
++index ddc763d..816c2af 100644
++--- a/csrc/jit/cache.hpp
+++++ b/csrc/jit/cache.hpp
++@@ -17,11 +17,12 @@ public:
++ 
++     std::shared_ptr<KernelRuntime> get(const std::filesystem::path& dir_path) {
++         // Hit the runtime cache
++-        if (const auto iterator = cache.find(dir_path); iterator != cache.end())
+++        const auto cache_key = dir_path.string();
+++        if (const auto iterator = cache.find(cache_key); iterator != cache.end())
++             return iterator->second;
++ 
++         if (KernelRuntime::check_validity(dir_path))
++-            return cache[dir_path] = std::make_shared<KernelRuntime>(dir_path);
+++            return cache[cache_key] = std::make_shared<KernelRuntime>(dir_path);
++         return nullptr;
++     }
++ };
++diff --git a/csrc/jit/compiler.hpp b/csrc/jit/compiler.hpp
++index 7d85a5f..e698a98 100644
++--- a/csrc/jit/compiler.hpp
+++++ b/csrc/jit/compiler.hpp
++@@ -3,6 +3,9 @@
++ #include <ATen/cuda/CUDAContext.h>
++ #include <cuda_runtime.h>
++ #include <fcntl.h>
+++#ifdef _WIN32
+++#include <io.h>
+++#endif
++ #include <filesystem>
++ #include <fstream>
++ #include <nvrtc.h>
++@@ -32,7 +35,11 @@ public:
++         Compiler::library_root_path = library_root_path;
++         Compiler::library_include_path = Compiler::library_root_path / "include";
++         Compiler::cuda_home = cuda_home_path_by_python;
+++        #ifdef _WIN32
+++        Compiler::cuobjdump_path = Compiler::cuda_home / "bin" / "cuobjdump.exe";
+++#else
++         Compiler::cuobjdump_path = Compiler::cuda_home / "bin" / "cuobjdump";
+++#endif
++     }
++ 
++     std::string signature, flags;
++@@ -46,7 +53,13 @@ public:
++         DG_HOST_ASSERT(not cuobjdump_path.empty());
++ 
++         // Cache settings
++-        cache_dir_path = std::filesystem::path(get_env<std::string>("HOME")) / ".deep_gemm";
+++        auto home_dir = get_env<std::string>("HOME");
+++#ifdef _WIN32
+++        if (home_dir.empty())
+++            home_dir = get_env<std::string>("USERPROFILE");
+++#endif
+++        DG_HOST_ASSERT(not home_dir.empty());
+++        cache_dir_path = std::filesystem::path(home_dir) / ".deep_gemm";
++         if (const auto env_cache_dir_path = get_env<std::string>("DG_JIT_CACHE_DIR"); not env_cache_dir_path.empty())
++             cache_dir_path = env_cache_dir_path;
++ 
++@@ -57,8 +70,13 @@ public:
++                             get_env<int>("DG_JIT_CPP_STANDARD", 20));
++         if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PTXAS_VERBOSE", 0) or get_env("DG_JIT_PTXAS_CHECK", 0))
++             flags += " --ptxas-options=--verbose,--warn-on-local-memory-usage";
++-        if (get_env("DG_JIT_WITH_LINEINFO", 0))
+++        if (get_env("DG_JIT_WITH_LINEINFO", 0)) {
+++#ifdef _WIN32
+++            flags += " -lineinfo";
+++#else
++             flags += " -Xcompiler -rdynamic -lineinfo";
+++#endif
+++        }
++     }
++ 
++     virtual ~Compiler() = default;
++@@ -68,11 +86,19 @@ public:
++     }
++ 
++     static void fsync_path(const std::filesystem::path& path) {
+++#ifdef _WIN32
+++        const auto fd = ::_wopen(path.c_str(), _O_RDONLY | _O_BINARY);
+++        if (fd >= 0) {
+++            ::_commit(fd);
+++            ::_close(fd);
+++        }
+++#else
++         const auto fd = ::open(path.c_str(), O_RDONLY);
++         if (fd >= 0) {
++             ::fsync(fd);
++             ::close(fd);
++         }
+++#endif
++     }
++ 
++     // Recursively fsync a directory: files and subdirectories first (bottom-up), then the directory itself
++@@ -150,7 +176,7 @@ public:
++ 
++     static void disassemble(const std::filesystem::path &cubin_path, const std::filesystem::path &sass_path) {
++         // Disassemble the CUBIN file to SASS
++-        const auto command = fmt::format("{} --dump-sass {} > {}", cuobjdump_path.c_str(), cubin_path.c_str(), sass_path.c_str());
+++        const auto command = fmt::format("{} --dump-sass {} > {}", shell_quote(cuobjdump_path), shell_quote(cubin_path), shell_quote(sass_path));
++         if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
++             printf("Running cuobjdump command: %s\n", command.c_str());
++         const auto [return_code, output] = call_external_command(command);
++@@ -175,7 +201,7 @@ class NVCCCompiler final: public Compiler {
++         DG_HOST_ASSERT(std::filesystem::exists(nvcc_path));
++ 
++         // Call the version command
++-        const auto command = std::string(nvcc_path) + " --version";
+++        const auto command = shell_quote(nvcc_path) + " --version";
++         const auto [return_code, output] = call_external_command(command);
++         DG_HOST_ASSERT(return_code == 0);
++ 
++@@ -193,7 +219,11 @@ class NVCCCompiler final: public Compiler {
++ public:
++     NVCCCompiler() {
++         // Override the compiler signature
+++#ifdef _WIN32
+++        nvcc_path = cuda_home / "bin" / "nvcc.exe";
+++#else
++         nvcc_path = cuda_home / "bin" / "nvcc";
+++#endif
++         if (const auto env_nvcc_path = get_env<std::string>("DG_JIT_NVCC_COMPILER"); not env_nvcc_path.empty())
++             nvcc_path = env_nvcc_path;
++         const auto [nvcc_major, nvcc_minor] = get_nvcc_version();
++@@ -202,10 +232,18 @@ public:
++         // The override the compiler flags
++         // Only NVCC >= 12.9 supports arch-specific family suffix
++         const auto arch = device_runtime->get_arch(false, nvcc_major > 12 or nvcc_minor >= 9);
+++#ifdef _WIN32
+++        flags = fmt::format("{} -I\"{}\" --gpu-architecture=sm_{} "
+++                            "-Xcompiler=/O2 -Xcompiler=/EHsc -Xcompiler=/MD "
+++                            "-Xcompiler=/Zc:__cplusplus -Xcompiler=/permissive- "
+++                            "-O3 --expt-relaxed-constexpr --expt-extended-lambda",
+++                            flags, library_include_path.string(), arch);
+++#else
++         flags = fmt::format("{} -I{} --gpu-architecture=sm_{} "
++                             "--compiler-options=-fPIC,-O3,-fconcepts,-Wno-deprecated-declarations,-Wno-abi "
++                             "-O3 --expt-relaxed-constexpr --expt-extended-lambda",
++                             flags, library_include_path.c_str(), arch);
+++#endif
++     }
++ 
++     void compile(const std::string &code, const std::filesystem::path& dir_path,
++@@ -218,8 +256,13 @@ public:
++         // Compile
++         // Avoid cwd files shadowing C++ standard library headers
++         const auto compile_dir = make_tmp_dir();
+++#ifdef _WIN32
+++        const auto command = fmt::format("cd /d {} && {} {} -cubin -o {} {}",
+++            shell_quote(compile_dir), shell_quote(nvcc_path), shell_quote(code_path), shell_quote(cubin_path), flags);
+++#else
++         const auto command = fmt::format("cd {} && {} {} -cubin -o {} {}",
++             compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), cubin_path.c_str(), flags);
+++#endif
++         if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
++             printf("Running NVCC command: %s\n", command.c_str());
++         const auto [return_code, output] = call_external_command(command);
++@@ -230,8 +273,13 @@ public:
++ 
++         // Compile to PTX if needed
++         if (ptx_path.has_value()) {
+++#ifdef _WIN32
+++            const auto ptx_command = fmt::format("cd /d {} && {} {} -ptx -o {} {}",
+++                shell_quote(compile_dir), shell_quote(nvcc_path), shell_quote(code_path), shell_quote(*ptx_path), flags);
+++#else
++             const auto ptx_command = fmt::format("cd {} && {} {} -ptx -o {} {}",
++                 compile_dir.c_str(), nvcc_path.c_str(), code_path.c_str(), ptx_path->c_str(), flags);
+++#endif
++             if (get_env("DG_JIT_DEBUG", 0) or get_env("DG_JIT_PRINT_COMPILER_COMMAND", 0))
++                 printf("Running NVCC PTX command: %s\n", ptx_command.c_str());
++             const auto [ptx_return_code, ptx_output] = call_external_command(ptx_command);
++diff --git a/csrc/jit/handle.hpp b/csrc/jit/handle.hpp
++index be3bc31..eefabb7 100644
++--- a/csrc/jit/handle.hpp
+++++ b/csrc/jit/handle.hpp
++@@ -2,7 +2,14 @@
++ 
++ #include <cuda.h>
++ #include <cuda_runtime.h>
+++#ifdef _WIN32
+++#ifndef WIN32_LEAN_AND_MEAN
+++#define WIN32_LEAN_AND_MEAN
+++#endif
+++#include <windows.h>
+++#else
++ #include <dlfcn.h>
+++#endif
++ #include <filesystem>
++ 
++ #include "../utils/exception.hpp"
++@@ -11,6 +18,17 @@
++ namespace deep_gemm {
++ 
++ // Lazy loading all driver symbols
+++#ifdef _WIN32
+++static HMODULE get_driver_handle() {
+++    static HMODULE handle = nullptr;
+++    if (handle == nullptr) {
+++        handle = LoadLibraryA("nvcuda.dll");
+++        DG_HOST_ASSERT(handle != nullptr and "Failed to load CUDA driver `nvcuda.dll`");
+++    }
+++    return handle;
+++}
+++#define DG_GET_CUDA_DRIVER_SYMBOL(name) GetProcAddress(get_driver_handle(), name)
+++#else
++ static void* get_driver_handle() {
++     static void* handle = nullptr;
++     if (handle == nullptr) {
++@@ -19,6 +37,8 @@ static void* get_driver_handle() {
++     }
++     return handle;
++ }
+++#define DG_GET_CUDA_DRIVER_SYMBOL(name) dlsym(get_driver_handle(), name)
+++#endif
++ 
++ // Macro to define wrapper functions named `lazy_cu{API name}`
++ #define DECL_LAZY_CUDA_DRIVER_FUNCTION(name) \
++@@ -27,7 +47,7 @@ static auto lazy_##name(Args&&... args) -> decltype(name(args...)) { \
++     using FuncType = decltype(&(name)); \
++     static FuncType func = nullptr; \
++     if (func == nullptr) { \
++-        func = reinterpret_cast<FuncType>(dlsym(get_driver_handle(), #name)); \
+++        func = reinterpret_cast<FuncType>(DG_GET_CUDA_DRIVER_SYMBOL(#name)); \
++         DG_HOST_ASSERT(func != nullptr and "Failed to load CUDA driver API"); \
++     } \
++     return func(std::forward<decltype(args)>(args)...); \
++@@ -59,7 +79,8 @@ static KernelHandle load_kernel(const std::filesystem::path& cubin_path, const s
++                                 LibraryHandle *library_opt = nullptr) {
++     LibraryHandle library;
++     KernelHandle kernel{};
++-    DG_CUDA_RUNTIME_CHECK(cudaLibraryLoadFromFile(&library, cubin_path.c_str(), nullptr, nullptr, 0, nullptr, nullptr, 0));
+++    const auto cubin_path_string = cubin_path.string();
+++    DG_CUDA_RUNTIME_CHECK(cudaLibraryLoadFromFile(&library, cubin_path_string.c_str(), nullptr, nullptr, 0, nullptr, nullptr, 0));
++     DG_CUDA_RUNTIME_CHECK(cudaLibraryGetKernel(&kernel, library, func_name.c_str()));
++ 
++     if (library_opt != nullptr)
++@@ -109,7 +130,7 @@ static LaunchConfigHandle construct_launch_config(const KernelHandle& kernel,
++ 
++ template<typename... ActTypes>
++ static auto launch_kernel(const KernelHandle& kernel, const LaunchConfigHandle& config, ActTypes&&... args) {
++-    void *ptr_args[] = { &args... };
+++    void *ptr_args[] = { const_cast<void*>(static_cast<const void*>(&args))... };
++     return cudaLaunchKernelExC(&config, kernel, ptr_args);
++ }
++ 
++@@ -138,14 +159,16 @@ static KernelHandle load_kernel(const std::filesystem::path& cubin_path, const s
++     KernelHandle kernel;
++ 
++ #ifdef DG_JIT_USE_LIBRARY_ENUM_KERNELS
++-    DG_CUDA_DRIVER_CHECK(lazy_cuLibraryLoadFromFile(&library, cubin_path.c_str(), nullptr, nullptr, 0, nullptr, nullptr, 0));
+++    const auto cubin_path_string = cubin_path.string();
+++    DG_CUDA_DRIVER_CHECK(lazy_cuLibraryLoadFromFile(&library, cubin_path_string.c_str(), nullptr, nullptr, 0, nullptr, nullptr, 0));
++     unsigned int num_kernels;
++     DG_CUDA_DRIVER_CHECK(lazy_cuLibraryGetKernelCount(&num_kernels, library));
++     if (num_kernels != 1) {
++         const auto dir_path = cubin_path.parent_path();
+++        const auto dir_path_string = dir_path.string();
++         printf("Corrupted JIT cache directory (expected 1 kernel, found %u): %s, "
++-               "please run `rm -rf %s` and restart your task.\n",
++-               num_kernels, dir_path.c_str(), dir_path.c_str());
+++               "please delete %s and restart your task.\n",
+++               num_kernels, dir_path_string.c_str(), dir_path_string.c_str());
++         DG_HOST_ASSERT(false and "Corrupted JIT cache directory");
++     }
++ 
++@@ -153,7 +176,8 @@ static KernelHandle load_kernel(const std::filesystem::path& cubin_path, const s
++     DG_CUDA_DRIVER_CHECK(lazy_cuLibraryEnumerateKernels(&cu_kernel, 1, library));
++     DG_CUDA_DRIVER_CHECK(lazy_cuKernelGetFunction(&kernel, cu_kernel));
++ #else
++-    DG_CUDA_DRIVER_CHECK(lazy_cuModuleLoad(&library, cubin_path.c_str()));
+++    const auto cubin_path_string = cubin_path.string();
+++    DG_CUDA_DRIVER_CHECK(lazy_cuModuleLoad(&library, cubin_path_string.c_str()));
++     DG_CUDA_DRIVER_CHECK(lazy_cuModuleGetFunction(&kernel, library, func_name.c_str()));
++ #endif
++ 
++@@ -214,7 +238,7 @@ static LaunchConfigHandle construct_launch_config(const KernelHandle& kernel,
++ 
++ template<typename... ActTypes>
++ static auto launch_kernel(const KernelHandle& kernel, const LaunchConfigHandle& config, ActTypes&&... args) {
++-    void *ptr_args[] = { &args... };
+++    void *ptr_args[] = { const_cast<void*>(static_cast<const void*>(&args))... };
++     return lazy_cuLaunchKernelEx(&config, kernel, ptr_args, nullptr);
++ }
++ #endif
++diff --git a/csrc/jit/include_parser.hpp b/csrc/jit/include_parser.hpp
++index 99f2663..4090bda 100644
++--- a/csrc/jit/include_parser.hpp
+++++ b/csrc/jit/include_parser.hpp
++@@ -56,8 +56,9 @@ public:
++     std::string get_hash_value_by_path(const std::filesystem::path& path) {
++         // Check whether hit in cache
++         // ReSharper disable once CppUseAssociativeContains
++-        if (cache.count(path) > 0) {
++-            const auto opt = cache[path];
+++        const auto cache_key = path.string();
+++        if (cache.count(cache_key) > 0) {
+++            const auto opt = cache[cache_key];
++             if (not opt.has_value())
++                 DG_HOST_UNREACHABLE(fmt::format("Circular include may occur: {}", path.string()));
++             return opt.value();
++@@ -68,8 +69,8 @@ public:
++         if (not in.is_open())
++             DG_HOST_UNREACHABLE(fmt::format("Failed to open: {}", path.string()));
++         std::string code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
++-        cache[path] = std::nullopt;
++-        return (cache[path] = get_hash_value(code, false)).value();
+++        cache[cache_key] = std::nullopt;
+++        return (cache[cache_key] = get_hash_value(code, false)).value();
++     }
++ };
++ 
++diff --git a/csrc/jit/kernel_runtime.hpp b/csrc/jit/kernel_runtime.hpp
++index 40597fb..a37c26e 100644
++--- a/csrc/jit/kernel_runtime.hpp
+++++ b/csrc/jit/kernel_runtime.hpp
++@@ -37,10 +37,16 @@ public:
++         DG_HOST_ASSERT(not cuda_home.empty());
++ 
++         // NOLINT(*-pro-type-member-init)
+++#ifdef _WIN32
+++        const auto cuobjdump_path = cuda_home / "bin" / "cuobjdump.exe";
+++#else
++         const auto cuobjdump_path = cuda_home / "bin" / "cuobjdump";
+++#endif
++         const auto cubin_path = dir_path / "kernel.cubin";
+++        const auto cubin_path_string = cubin_path.string();
+++        const auto dir_path_string = dir_path.string();
++         if (get_env<int>("DG_JIT_DEBUG"))
++-            printf("Loading CUBIN: %s\n", cubin_path.c_str());
+++            printf("Loading CUBIN: %s\n", cubin_path_string.c_str());
++ 
++         // Record start time
++         std::chrono::high_resolution_clock::time_point start_time;
++@@ -54,7 +60,7 @@ public:
++         // Find the only symbol
++         // TODO: use kernel enumeration for newer drivers
++         const std::vector<std::string> illegal_names = {"vprintf", "__instantiate_kernel", "__internal", "__assertfail"};
++-        const auto [exit_code, symbols] = call_external_command(fmt::format("{} -symbols {}", cuobjdump_path.c_str(), cubin_path.c_str()));
+++        const auto [exit_code, symbols] = call_external_command(fmt::format("{} -symbols {}", shell_quote(cuobjdump_path), shell_quote(cubin_path)));
++         DG_HOST_ASSERT(exit_code == 0);
++         std::istringstream iss(symbols);
++         std::vector<std::string> symbol_names;
++@@ -70,7 +76,7 @@ public:
++         // Print symbols
++         if (symbol_names.size() != 1 or get_env<int>("DG_JIT_DEBUG")) {
++             printf("Symbols: ");
++-            printf(" > CUBIN: %s\n", cubin_path.c_str());
+++            printf(" > CUBIN: %s\n", cubin_path_string.c_str());
++             printf(" > Raw symbols: %s\n", symbols.c_str());
++             printf(" > Parsed symbols:\n");
++             for (const auto& symbol: symbol_names)
++@@ -85,7 +91,7 @@ public:
++         // Print load time
++         if (get_env<int>("DG_JIT_DEBUG") or get_env<int>("DG_JIT_PRINT_LOAD_TIME")) {
++             std::chrono::duration<double, std::milli> load_time = std::chrono::high_resolution_clock::now() - start_time;
++-            printf("Load time (%s): %.2lf ms\n", dir_path.c_str(), load_time.count());
+++            printf("Load time (%s): %.2lf ms\n", dir_path_string.c_str(), load_time.count());
++         }
++     }
++ 
++@@ -101,9 +107,10 @@ public:
++         // because the directory is created atomically via rename
++         if (not std::filesystem::exists(dir_path / "kernel.cu") or
++             not std::filesystem::exists(dir_path / "kernel.cubin")) {
+++            const auto dir_path_string = dir_path.string();
++             printf("Corrupted JIT cache directory (missing kernel.cu or kernel.cubin): %s, "
++-                   "please run `rm -rf %s` and restart your task.\n",
++-                   dir_path.c_str(), dir_path.c_str());
+++                   "please delete %s and restart your task.\n",
+++                   dir_path_string.c_str(), dir_path_string.c_str());
++             DG_HOST_ASSERT(false and "Corrupted JIT cache directory");
++         }
++         return true;
++@@ -154,9 +161,9 @@ public:
++ 
++         // Launch in the derived class
++         if (get_env<int>("DG_JIT_DEBUG")) {
++-            printf("Launch kernel with {%d, %d} x %d, shared memory: %d bytes, cluster: %d, pdl: %d, stream: %ld\n",
+++            printf("Launch kernel with {%d, %d} x %d, shared memory: %d bytes, cluster: %d, pdl: %d, stream: %lld\n",
++                    launch_args.grid_dim.first, launch_args.grid_dim.second, launch_args.num_threads,
++-                   launch_args.smem_size, launch_args.cluster_dim, launch_args.enable_pdl, stream.id());
+++                   launch_args.smem_size, launch_args.cluster_dim, launch_args.enable_pdl, static_cast<long long>(stream.id()));
++         }
++         Derived::launch_impl(kernel, config, args);
++     }
++diff --git a/csrc/jit_kernels/impls/sm100_bf16_gemm.hpp b/csrc/jit_kernels/impls/sm100_bf16_gemm.hpp
++index f9b2f36..bb6beaa 100644
++--- a/csrc/jit_kernels/impls/sm100_bf16_gemm.hpp
+++++ b/csrc/jit_kernels/impls/sm100_bf16_gemm.hpp
++@@ -68,7 +68,7 @@ static void __instantiate_kernel() {{
++         args.gemm_desc.tc_util);
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.grouped_layout, args.gemm_desc.m, args.gemm_desc.n, args.gemm_desc.k,
++@@ -114,7 +114,7 @@ static void sm100_bf16_gemm(const torch::Tensor& a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM100BF16GemmRuntime::Args& args = {
+++    const SM100BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -301,7 +301,7 @@ static void sm100_bf16_k_grouped_gemm(const torch::Tensor& a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch kernel
++-    const SM100BF16GemmRuntime::Args& args = {
+++    const SM100BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -349,7 +349,7 @@ static void sm100_bf16_bhr_hdr_bhd(const torch::Tensor& tensor_a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM100BF16GemmRuntime::Args& args = {
+++    const SM100BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -397,7 +397,7 @@ static void sm100_bf16_bhd_hdr_bhr(const torch::Tensor& tensor_a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM100BF16GemmRuntime::Args& args = {
+++    const SM100BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++diff --git a/csrc/jit_kernels/impls/sm100_bf16_mega_moe.hpp b/csrc/jit_kernels/impls/sm100_bf16_mega_moe.hpp
++index 47df790..f4d0d55 100644
++--- a/csrc/jit_kernels/impls/sm100_bf16_mega_moe.hpp
+++++ b/csrc/jit_kernels/impls/sm100_bf16_mega_moe.hpp
++@@ -82,7 +82,7 @@ static void __instantiate_kernel() {{
++     args.fast_math ? "true" : "false");
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.y,
++diff --git a/csrc/jit_kernels/impls/sm100_bmk_bnk_mn.hpp b/csrc/jit_kernels/impls/sm100_bmk_bnk_mn.hpp
++index 65c9d50..6dd7fc8 100644
++--- a/csrc/jit_kernels/impls/sm100_bmk_bnk_mn.hpp
+++++ b/csrc/jit_kernels/impls/sm100_bmk_bnk_mn.hpp
++@@ -53,7 +53,7 @@ static void __instantiate_kernel() {{
++         args.num_stages, args.num_threads);
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.s, args.tensor_map_a, args.tensor_map_b, args.tensor_map_d));
++     }
++diff --git a/csrc/jit_kernels/impls/sm100_fp8_fp4_gemm_1d1d.hpp b/csrc/jit_kernels/impls/sm100_fp8_fp4_gemm_1d1d.hpp
++index 9e4ba58..29782d1 100644
++--- a/csrc/jit_kernels/impls/sm100_fp8_fp4_gemm_1d1d.hpp
+++++ b/csrc/jit_kernels/impls/sm100_fp8_fp4_gemm_1d1d.hpp
++@@ -80,7 +80,7 @@ static void __instantiate_kernel() {{
++         get_default_epilogue_type(args.epilogue_type));
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.grouped_layout, args.gemm_desc.m, args.gemm_desc.n, args.gemm_desc.k,
++diff --git a/csrc/jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp b/csrc/jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp
++index bdd3bf5..f55db6f 100644
++--- a/csrc/jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp
+++++ b/csrc/jit_kernels/impls/sm100_fp8_fp4_mega_moe.hpp
++@@ -95,7 +95,7 @@ static void __instantiate_kernel() {{
++     args.fast_math ? "true" : "false");
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.y,
++diff --git a/csrc/jit_kernels/impls/sm100_mqa_logits.hpp b/csrc/jit_kernels/impls/sm100_mqa_logits.hpp
++index e8c5b2f..708ed8c 100644
++--- a/csrc/jit_kernels/impls/sm100_mqa_logits.hpp
+++++ b/csrc/jit_kernels/impls/sm100_mqa_logits.hpp
++@@ -44,7 +44,7 @@ static void __instantiate_kernel() {{
++     args.split_kv, args.num_sms);
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.num_requests, args.num_q_tokens_total,
++             args.context_lens, args.indices, args.schedule_meta
++@@ -147,7 +147,7 @@ static void __instantiate_kernel() {{
++     args.weights_dtype == torch::kBFloat16 ? "__nv_bfloat16" : "float");
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.num_q_tokens, args.num_kv_tokens,
++             args.stride_logits,
++@@ -354,7 +354,7 @@ static void __instantiate_kernel() {{
++     args.weights_dtype == torch::kBFloat16 ? "__nv_bfloat16" : "float");
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.num_q_tokens_total,
++             args.logits_stride, args.block_table_stride,
++diff --git a/csrc/jit_kernels/impls/sm100_tf32_hc_prenorm_gemm.hpp b/csrc/jit_kernels/impls/sm100_tf32_hc_prenorm_gemm.hpp
++index 0071e2c..3d10865 100644
++--- a/csrc/jit_kernels/impls/sm100_tf32_hc_prenorm_gemm.hpp
+++++ b/csrc/jit_kernels/impls/sm100_tf32_hc_prenorm_gemm.hpp
++@@ -56,7 +56,7 @@ static void __instantiate_kernel() {{
++         args.num_mma_threads, args.num_cast_and_reduce_threads);
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.m, args.tensor_map_a, args.tensor_map_b, args.tensor_map_d, args.sqr_sum));
++@@ -127,7 +127,7 @@ static void sm100_tf32_hc_prenorm_gemm(const torch::Tensor& a,
++     }
++ 
++     // Launch
++-    const SM100BF16HCPrenormGemmRuntime::Args& args = {
+++    const SM100BF16HCPrenormGemmRuntime::Args args = {
++         .m = m, .n = n, .k = k,
++         .block_m = block_m, .block_n = block_n, .block_k = block_k,
++         .num_splits = num_splits,
++diff --git a/csrc/jit_kernels/impls/sm90_bf16_gemm.hpp b/csrc/jit_kernels/impls/sm90_bf16_gemm.hpp
++index 24edd46..9692945 100644
++--- a/csrc/jit_kernels/impls/sm90_bf16_gemm.hpp
+++++ b/csrc/jit_kernels/impls/sm90_bf16_gemm.hpp
++@@ -65,7 +65,7 @@ static void __instantiate_kernel() {{
++         to_string(args.gemm_desc.cd_dtype));
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.grouped_layout,
++@@ -113,7 +113,7 @@ static void sm90_bf16_gemm(const torch::Tensor& a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM90BF16GemmRuntime::Args& args = {
+++    const SM90BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -183,7 +183,7 @@ static void sm90_m_grouped_bf16_gemm_contiguous(const torch::Tensor& a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM90BF16GemmRuntime::Args& args = {
+++    const SM90BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -243,7 +243,7 @@ static void sm90_bf16_m_grouped_gemm_masked(const torch::Tensor& a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM90BF16GemmRuntime::Args& args = {
+++    const SM90BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -310,7 +310,7 @@ static void sm90_bf16_k_grouped_gemm(const torch::Tensor& a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch kernel
++-    const SM90BF16GemmRuntime::Args& args = {
+++    const SM90BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -362,7 +362,7 @@ static void sm90_bf16_bhr_hdr_bhd(const torch::Tensor& tensor_a,
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM90BF16GemmRuntime::Args& args = {
+++    const SM90BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -413,7 +413,7 @@ static void sm90_bf16_bhd_hdr_bhr(const torch::Tensor& tensor_a,
++                                                 tensor_d.stride(0), tensor_d.stride(1),
++                                                 config.storage_config.swizzle_cd_mode);
++     // Launch
++-    const SM90BF16GemmRuntime::Args& args = {
+++    const SM90BF16GemmRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++diff --git a/csrc/jit_kernels/impls/sm90_bmk_bnk_mn.hpp b/csrc/jit_kernels/impls/sm90_bmk_bnk_mn.hpp
++index 473677b..45bcd3b 100644
++--- a/csrc/jit_kernels/impls/sm90_bmk_bnk_mn.hpp
+++++ b/csrc/jit_kernels/impls/sm90_bmk_bnk_mn.hpp
++@@ -52,7 +52,7 @@ static void __instantiate_kernel() {{
++         args.num_tma_threads, args.num_math_threads);
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.s, args.tensor_map_a, args.tensor_map_b, args.d));
++     }
++@@ -111,7 +111,7 @@ static void sm90_bmn_bnk_mn_gemm(const torch::Tensor &a,
++     const auto tensor_map_a = make_tma_2d_desc(a, k, s * m, block_k, block_m, k, swizzle_ab_mode);
++     const auto tensor_map_b = make_tma_2d_desc(b, k, s * n, block_k, block_n, k, swizzle_ab_mode);
++ 
++-    const SM90BmkBnkMnRuntime::Args& args = {
+++    const SM90BmkBnkMnRuntime::Args args = {
++         .s = s, .m = m, .n = n, .k = k,
++         .block_m = block_m, .block_n = block_n, .block_k = block_k,
++         .split_factor = split_factor,
++diff --git a/csrc/jit_kernels/impls/sm90_fp8_gemm_1d1d.hpp b/csrc/jit_kernels/impls/sm90_fp8_gemm_1d1d.hpp
++index 120b91f..14b5d25 100644
++--- a/csrc/jit_kernels/impls/sm90_fp8_gemm_1d1d.hpp
+++++ b/csrc/jit_kernels/impls/sm90_fp8_gemm_1d1d.hpp
++@@ -63,7 +63,7 @@ static void __instantiate_kernel() {{
++         to_string(args.gemm_desc.cd_dtype));
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.gmem_a_ptr, args.gmem_b_ptr,
++             args.grouped_layout,
++@@ -121,7 +121,7 @@ static void sm90_fp8_gemm_1d1d(const torch::Tensor& a, const torch::Tensor& sfa,
++                                                 0);
++ 
++     // Launch
++-    const SM90FP8Gemm1D1DRuntime::Args& args = {
+++    const SM90FP8Gemm1D1DRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -204,7 +204,7 @@ static void sm90_k_grouped_fp8_gemm_1d1d(const torch::Tensor& a, const torch::Te
++                                                 config.storage_config.swizzle_cd_mode);
++ 
++     // Launch
++-    const SM90FP8Gemm1D1DRuntime::Args& args = {
+++    const SM90FP8Gemm1D1DRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++diff --git a/csrc/jit_kernels/impls/sm90_fp8_gemm_1d2d.hpp b/csrc/jit_kernels/impls/sm90_fp8_gemm_1d2d.hpp
++index 892edae..a405dbb 100644
++--- a/csrc/jit_kernels/impls/sm90_fp8_gemm_1d2d.hpp
+++++ b/csrc/jit_kernels/impls/sm90_fp8_gemm_1d2d.hpp
++@@ -68,7 +68,7 @@ static void __instantiate_kernel() {{
++         get_default_epilogue_type(args.epilogue_type));
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.sfb, args.grouped_layout,
++@@ -124,7 +124,7 @@ static void sm90_fp8_gemm_1d2d(const torch::Tensor& a, const torch::Tensor& sfa,
++                                                  config.layout.block_m, config.layout.block_k, 1, 0);
++ 
++     // Launch
++-    const SM90FP8Gemm1D2DRuntime::Args& args = {
+++    const SM90FP8Gemm1D2DRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -201,7 +201,7 @@ static void sm90_m_grouped_fp8_gemm_contiguous_1d2d(const torch::Tensor& a, cons
++                                                  config.layout.block_m, config.layout.block_k, 1, 0);
++ 
++     // Launch
++-    const SM90FP8Gemm1D2DRuntime::Args& args = {
+++    const SM90FP8Gemm1D2DRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -268,7 +268,7 @@ static void sm90_m_grouped_fp8_gemm_masked_1d2d(const torch::Tensor& a, const to
++                                                  config.layout.block_m, config.layout.block_k, num_groups, 0);
++ 
++     // Launch
++-    const SM90FP8Gemm1D2DRuntime::Args& args = {
+++    const SM90FP8Gemm1D2DRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++@@ -339,7 +339,7 @@ static void sm90_fp8_bmm(const torch::Tensor& a, const torch::Tensor& sfa,
++                                                  config.layout.block_m, config.layout.block_k, batch_size, 0);
++ 
++     // Launch
++-    const SM90FP8Gemm1D2DRuntime::Args& args = {
+++    const SM90FP8Gemm1D2DRuntime::Args args = {
++         .gemm_desc = desc,
++         .gemm_config = config,
++         .launch_args = LaunchArgs(config.launch_config.num_sms, config.launch_config.num_threads,
++diff --git a/csrc/jit_kernels/impls/sm90_fp8_mqa_logits.hpp b/csrc/jit_kernels/impls/sm90_fp8_mqa_logits.hpp
++index 7e3cea5..4e99335 100644
++--- a/csrc/jit_kernels/impls/sm90_fp8_mqa_logits.hpp
+++++ b/csrc/jit_kernels/impls/sm90_fp8_mqa_logits.hpp
++@@ -68,7 +68,7 @@ static void __instantiate_kernel() {{
++     to_string(args.logits_dtype));
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.seq_len, args.seq_len_kv,
++             args.max_seqlen_k, args.stride_logits,
++@@ -184,7 +184,7 @@ static void __instantiate_kernel() {{
++ )", args.aligned_batch_size, args.split_kv, args.num_sms, args.is_varlen ? "true" : "false");
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.batch_size,
++             args.next_n,
++@@ -211,7 +211,7 @@ static void sm90_paged_mqa_logits_metadata(const torch::Tensor& context_lens,
++     const int smem_size = num_smem_ints * static_cast<int>(sizeof(int));
++     DG_HOST_ASSERT(smem_size <= SM90ArchSpec::smem_capacity);
++ 
++-    const SM90PagedMQALogitsMetadataRuntime::Args& args = {
+++    const SM90PagedMQALogitsMetadataRuntime::Args args = {
++         .aligned_batch_size = aligned_batch_size,
++         .split_kv = split_kv,
++         .num_sms = num_sms,
++@@ -293,7 +293,7 @@ static void __instantiate_kernel() {{
++     to_string(args.logits_dtype));
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.batch_size,
++             args.logits_stride, args.block_table_stride,
++diff --git a/csrc/jit_kernels/impls/sm90_tf32_hc_prenorm_gemm.hpp b/csrc/jit_kernels/impls/sm90_tf32_hc_prenorm_gemm.hpp
++index c17d1b5..0cfd864 100644
++--- a/csrc/jit_kernels/impls/sm90_tf32_hc_prenorm_gemm.hpp
+++++ b/csrc/jit_kernels/impls/sm90_tf32_hc_prenorm_gemm.hpp
++@@ -56,7 +56,7 @@ static void __instantiate_kernel() {{
++         args.num_math_threads, args.num_tma_threads);
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         // TODO: optimize `args` copy
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.m, args.tensor_map_a, args.tensor_map_b, args.tensor_map_d, args.sqr_sum));
++@@ -130,7 +130,7 @@ static void sm90_tf32_hc_prenorm_gemm(const torch::Tensor& a,
++     smem_size = SM90ArchSpec::smem_capacity;
++ 
++     // Launch
++-    const SM90BF16HCPrenormGemmRuntime::Args& args = {
+++    const SM90BF16HCPrenormGemmRuntime::Args args = {
++         .m = m, .n = n, .k = k,
++         .block_m = block_m, .block_n = block_n, .block_k = block_k,
++         .num_splits = num_splits,
++diff --git a/csrc/jit_kernels/impls/smxx_clean_logits.hpp b/csrc/jit_kernels/impls/smxx_clean_logits.hpp
++index ebe4c7a..4973a00 100644
++--- a/csrc/jit_kernels/impls/smxx_clean_logits.hpp
+++++ b/csrc/jit_kernels/impls/smxx_clean_logits.hpp
++@@ -40,7 +40,7 @@ static void __instantiate_kernel() {{
++ )", args.next_n, args.block_kv, args.num_warps, to_string(args.logits_dtype));
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.seq_len, args.seq_len_kv, static_cast<int64_t>(args.stride_logits),
++             args.cu_seq_len_k_start, args.cu_seq_len_k_end, args.logits
++@@ -59,7 +59,7 @@ static void smxx_clean_logits(const torch::Tensor& logits,
++     const int smem_size = block_kv * sizeof(float);
++ 
++     // Launch
++-    const SMXXCleanLogitsRuntime::Args& args = {
+++    const SMXXCleanLogitsRuntime::Args args = {
++         .next_n = next_n,
++         .seq_len = seq_len,
++         .seq_len_kv = seq_len_kv,
++diff --git a/csrc/jit_kernels/impls/smxx_layout.hpp b/csrc/jit_kernels/impls/smxx_layout.hpp
++index 9942e22..f8b233b 100644
++--- a/csrc/jit_kernels/impls/smxx_layout.hpp
+++++ b/csrc/jit_kernels/impls/smxx_layout.hpp
++@@ -36,7 +36,7 @@ static void __instantiate_kernel() {{
++ )", args.launch_args.num_threads, args.block_mn, args.sf_k);
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config, args.sf, args.out, static_cast<uint32_t>(args.mn)));
++     }
++ };
++@@ -68,7 +68,7 @@ static void __instantiate_kernel() {{
++     args.num_psum_groups, args.use_psum_layout ? "true" : "false");
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config, args.sf, args.out, static_cast<uint32_t>(args.mn),
++             args.grouped_layout, static_cast<uint32_t>(args.m_alignment)));
++     }
++@@ -99,7 +99,7 @@ static void __instantiate_kernel() {{
++ )", args.num_groups, args.launch_args.num_threads, args.block_mn, args.block_packed_sf_k, "true", args.use_psum_layout ? "true" : "false");
++     }
++ 
++-    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, Args args) {
+++    static void launch_impl(const KernelHandle& kernel, const LaunchConfigHandle& config, const Args& args) {
++         DG_CUDA_UNIFIED_CHECK(launch_kernel(kernel, config,
++             args.sf, args.out, args.grouped_layout, args.mn, args.sf_k, args.packed_sf_k, args.gran_k, args.k_alignment));
++     }
++@@ -136,7 +136,7 @@ static torch::Tensor get_mn_major_tma_aligned_tensor(const torch::Tensor& sf) {
++         constexpr int block_mn = 64;
++         constexpr int num_threads = 512;
++         const auto smem_size = block_mn * (sf_k + (1 - (sf_k % 2))) * static_cast<int>(sizeof(float));
++-        const TransposeFP32Runtime::Args& args = {
+++        const TransposeFP32Runtime::Args args = {
++             .mn = mn,
++             .sf_k = sf_k,
++             .block_mn = block_mn,
++@@ -204,7 +204,7 @@ static torch::Tensor get_mn_major_tma_aligned_packed_ue8m0_tensor(const torch::T
++         constexpr int num_threads = 512;
++         const auto psum_smem_elems = use_psum_layout ? align(num_psum_groups * 2, 4) : 0;
++         const auto smem_size = block_mn * sf_k * 4 + psum_smem_elems * 4;
++-        const TransposeAndPackFP32IntoUE8M0Runtime::Args& args = {
+++        const TransposeAndPackFP32IntoUE8M0Runtime::Args args = {
++             .mn = mn,
++             .sf_k = sf_k,
++             .num_psum_groups = num_psum_groups,
++@@ -229,7 +229,7 @@ static torch::Tensor get_mn_major_tma_aligned_packed_ue8m0_tensor(const torch::T
++         constexpr int block_mn = 128;
++         constexpr int block_packed_sf_k = 16;
++         constexpr int num_threads = 512;
++-        const PackFP32IntoUE8M0Runtime::Args& args = {
+++        const PackFP32IntoUE8M0Runtime::Args args = {
++             .num_groups = 1,
++             .mn = mn,
++             .sf_k = sf_k,
++@@ -293,7 +293,7 @@ static torch::Tensor get_k_grouped_mn_major_tma_aligned_packed_ue8m0_tensor(cons
++     constexpr int block_mn = 128;
++     constexpr int block_packed_sf_k = 16;
++     constexpr int num_threads = 512;
++-    const PackFP32IntoUE8M0Runtime::Args& args = {
+++    const PackFP32IntoUE8M0Runtime::Args args = {
++         .num_groups = num_groups,
++         .mn = mn,
++         .sf_k = sf_k,
++diff --git a/csrc/utils/system.hpp b/csrc/utils/system.hpp
++index fda020b..a7041b5 100644
++--- a/csrc/utils/system.hpp
+++++ b/csrc/utils/system.hpp
++@@ -6,7 +6,12 @@
++ #include <random>
++ #include <string>
++ #include <memory>
+++#ifdef _WIN32
+++#include <process.h>
+++#else
+++#include <sys/wait.h>
++ #include <unistd.h>
+++#endif
++ 
++ #include "exception.hpp"
++ #include "format.hpp"
++@@ -34,21 +39,42 @@ static dtype_t get_env(const std::string& name, const dtype_t& default_value = d
++ 
++ static std::tuple<int, std::string> call_external_command(std::string command) {
++     command = command + " 2>&1";
++-    const auto deleter = [](FILE* f) { if (f) pclose(f); };
++-    std::unique_ptr<FILE, decltype(deleter)> pipe(popen(command.c_str(), "r"), deleter);
+++#ifdef _WIN32
+++#define DG_POPEN _popen
+++#define DG_PCLOSE _pclose
+++#else
+++#define DG_POPEN popen
+++#define DG_PCLOSE pclose
+++#endif
+++    const auto deleter = [](FILE* f) { if (f) DG_PCLOSE(f); };
+++    std::unique_ptr<FILE, decltype(deleter)> pipe(DG_POPEN(command.c_str(), "r"), deleter);
++     DG_HOST_ASSERT(pipe != nullptr);
++ 
++     std::array<char, 512> buffer;
++     std::string output;
++     while (fgets(buffer.data(), buffer.size(), pipe.get()))
++         output += buffer.data();
++-    const auto status = pclose(pipe.release());
+++    const auto status = DG_PCLOSE(pipe.release());
+++#ifdef _WIN32
+++    const auto exit_code = status;
+++#else
++     // NOTES: if the child was killed by a signal (e.g., SIGINT from Ctrl+C),
++     // WEXITSTATUS would incorrectly return 0. Treat signal death as failure.
++     const auto exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+++#endif
+++#undef DG_POPEN
+++#undef DG_PCLOSE
++     return {exit_code, output};
++ }
++ 
+++static std::string shell_quote(const std::filesystem::path& path) {
+++#ifdef _WIN32
+++    return "\"" + path.string() + "\"";
+++#else
+++    return path.string();
+++#endif
+++}
+++
++ static std::vector<std::filesystem::path> collect_files(const std::filesystem::path& root) {
++     std::vector<std::filesystem::path> files;
++     std::function<void(const std::filesystem::path&)> impl;
++@@ -74,10 +100,10 @@ static std::filesystem::path make_dirs(const std::filesystem::path& path) {
++     const bool created = std::filesystem::create_directories(path, capture);
++     if (not (created or capture.value() == 0)) {
++         DG_HOST_UNREACHABLE(fmt::format("Failed to make directory: {}, created: {}, value: {}",
++-                                        path.c_str(), created, capture.value()));
+++                                        path.string(), created, capture.value()));
++     }
++     if (created and get_env<int>("DG_JIT_DEBUG"))
++-        printf("Create directory: %s\n", path.c_str());
+++        printf("Create directory: %s\n", path.string().c_str());
++     return path;
++ }
++ 
++@@ -89,7 +115,11 @@ static std::string get_uuid() {
++     static std::uniform_int_distribution<uint32_t> dist;
++ 
++     std::stringstream ss;
+++    #ifdef _WIN32
+++    ss << _getpid() << "-"
+++#else
++     ss << getpid() << "-"
+++#endif
++        << std::hex << std::setfill('0')
++        << std::setw(8) << dist(gen) << "-"
++        << std::setw(8) << dist(gen) << "-"
++diff --git a/deep_gemm/__init__.py b/deep_gemm/__init__.py
++index 4e9c924..4882c16 100644
++--- a/deep_gemm/__init__.py
+++++ b/deep_gemm/__init__.py
++@@ -1,5 +1,6 @@
++ import os
++ import subprocess
+++import shutil
++ import torch
++ 
++ # Set some default environment provided at setup
++@@ -106,15 +107,38 @@ def _find_cuda_home() -> str:
++     # For some PyTorch versions, the original `_find_cuda_home` will initialize CUDA, which is incompatible with process forks
++     cuda_home = os.environ.get('CUDA_HOME') or os.environ.get('CUDA_PATH')
++     if cuda_home is None:
++-        # noinspection PyBroadException
++-        try:
++-            with open(os.devnull, 'w') as devnull:
++-                nvcc = subprocess.check_output(['which', 'nvcc'], stderr=devnull).decode().rstrip('\r\n')
+++        if os.name == 'nt':
+++            nvcc = shutil.which('nvcc.exe') or shutil.which('nvcc')
+++            if nvcc is not None:
++                 cuda_home = os.path.dirname(os.path.dirname(nvcc))
++-        except Exception:
++-            cuda_home = '/usr/local/cuda'
++-            if not os.path.exists(cuda_home):
++-                cuda_home = None
+++            else:
+++                cuda_base = os.path.join(
+++                    os.environ.get('ProgramFiles', r'C:\Program Files'),
+++                    'NVIDIA GPU Computing Toolkit', 'CUDA')
+++                if os.path.isdir(cuda_base):
+++                    candidates = [
+++                        os.path.join(cuda_base, name)
+++                        for name in os.listdir(cuda_base)
+++                        if os.path.isfile(os.path.join(
+++                            cuda_base, name, 'bin', 'nvcc.exe'))
+++                    ]
+++                    if candidates:
+++                        def _version_key(path: str) -> tuple[int, ...]:
+++                            try:
+++                                return tuple(int(x) for x in os.path.basename(path).lstrip('v').split('.'))
+++                            except ValueError:
+++                                return ()
+++                        cuda_home = max(candidates, key=_version_key)
+++        else:
+++            # noinspection PyBroadException
+++            try:
+++                with open(os.devnull, 'w') as devnull:
+++                    nvcc = subprocess.check_output(['which', 'nvcc'], stderr=devnull).decode().rstrip('\r\n')
+++                    cuda_home = os.path.dirname(os.path.dirname(nvcc))
+++            except Exception:
+++                cuda_home = '/usr/local/cuda'
+++                if not os.path.exists(cuda_home):
+++                    cuda_home = None
++     assert cuda_home is not None
++     return cuda_home
++ 
++diff --git a/deep_gemm/include/deep_gemm/common/exception.cuh b/deep_gemm/include/deep_gemm/common/exception.cuh
++index 78acf74..2f37a10 100644
++--- a/deep_gemm/include/deep_gemm/common/exception.cuh
+++++ b/deep_gemm/include/deep_gemm/common/exception.cuh
++@@ -13,6 +13,14 @@ CUTLASS_HOST_DEVICE void host_device_printf(const char* format, ...) {
++ #endif
++ 
++ #ifndef DG_DEVICE_ASSERT
+++#if defined(_MSC_VER) && !defined(__CUDACC__)
+++#include <cstdlib>
+++#define DG_DEVICE_ASSERT(cond) \
+++do { \
+++    if (not (cond)) \
+++        std::abort(); \
+++} while (0)
+++#else
++ #define DG_DEVICE_ASSERT(cond) \
++ do { \
++     if (not (cond)) { \
++@@ -21,14 +29,23 @@ do { \
++     } \
++ } while (0)
++ #endif
+++#endif
++ 
++ #ifndef DG_TRAP_ONLY_DEVICE_ASSERT
+++#if defined(_MSC_VER) && !defined(__CUDACC__)
+++#define DG_TRAP_ONLY_DEVICE_ASSERT(cond) \
+++do { \
+++    if (not (cond)) \
+++        std::abort(); \
+++} while (0)
+++#else
++ #define DG_TRAP_ONLY_DEVICE_ASSERT(cond) \
++ do { \
++     if (not (cond)) \
++         asm("trap;"); \
++ } while (0)
++ #endif
+++#endif
++ 
++ #ifndef DG_STATIC_ASSERT
++ #define DG_STATIC_ASSERT(cond, ...) static_assert(cond, __VA_ARGS__)
+diff --git a/flashkda-cutlass-windows.patch b/flashkda-cutlass-windows.patch
+new file mode 100644
+index 000000000..71df07461
+--- /dev/null
++++ b/flashkda-cutlass-windows.patch
+@@ -0,0 +1,13 @@
++diff --git a/include/cutlass/cuda_host_adapter.hpp b/include/cutlass/cuda_host_adapter.hpp
++index a8af62be..4ebff601 100644
++--- a/include/cutlass/cuda_host_adapter.hpp
+++++ b/include/cutlass/cuda_host_adapter.hpp
++@@ -405,7 +405,7 @@ public:
++ 
++   /// Fills a buffer in Global Memory with a byte sequence copied from host memory
++   template<class FillValueType>
++-  CUTLASS_HOST_DEVICE
+++  CUTLASS_HOST
++   Status memsetDevice(
++       void* destination,
++       FillValueType fill_value, 
+diff --git a/qutlass-windows.patch b/qutlass-windows.patch
+new file mode 100644
+index 000000000..d05df1d53
+--- /dev/null
++++ b/qutlass-windows.patch
+@@ -0,0 +1,98 @@
++diff --git a/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h b/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h
++index 56a9ceb..4c38c79 100644
++--- a/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h
+++++ b/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h
++@@ -74,7 +74,7 @@ namespace epilogue {
++ namespace threadblock {
++ ////////////////////////////////////////////////////////////////////////////////
++ 
++-CUTLASS_HOST_DEVICE
+++CUTLASS_DEVICE
++ static uint32_t fp32_vec_to_e2m1(float* array)
++ {
++     uint32_t val;
++@@ -96,7 +96,7 @@ static uint32_t fp32_vec_to_e2m1(float* array)
++     return val;
++ }
++ 
++-CUTLASS_HOST_DEVICE
+++CUTLASS_DEVICE
++ static uint8_t f32_to_e4m3_hi(float v) {
++   uint16_t packed;
++   // 0.0f → lower 8 bits, v → upper 8 bits
++@@ -108,7 +108,7 @@ static uint8_t f32_to_e4m3_hi(float v) {
++   return uint8_t(packed >> 8);
++ }
++ 
++-CUTLASS_HOST_DEVICE
+++CUTLASS_DEVICE
++ static float e4m3_to_f32(uint8_t hi) {
++     uint16_t packed = uint16_t(hi) << 8;
++     uint32_t fp16x2;
++@@ -129,7 +129,7 @@ static float e4m3_to_f32(uint8_t hi) {
++ }
++ 
++ // Fast reciprocal.
++-CUTLASS_HOST_DEVICE
+++CUTLASS_DEVICE
++ static float reciprocal_approximate_ftz(float a) {
++   float b;
++   asm volatile("rcp.approx.ftz.f32 %0, %1;\n" : "=f"(b) : "f"(a));
++@@ -439,21 +439,21 @@ private:
++   struct EpilogueOpImpl<32, Epilogue> {
++     template<typename... Args>
++     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
++-      self.template op_32(std::forward<Args>(args)...);
+++      self.op_32(std::forward<Args>(args)...);
++     }
++   };
++   template<typename Epilogue>
++   struct EpilogueOpImpl<64, Epilogue> {
++     template<typename... Args>
++     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
++-      self.template op_64(std::forward<Args>(args)...);
+++      self.op_64(std::forward<Args>(args)...);
++     }
++   };
++   template<typename Epilogue>
++   struct EpilogueOpImpl<128, Epilogue> {
++     template<typename... Args>
++     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
++-      self.template op_128(std::forward<Args>(args)...);
+++      self.op_128(std::forward<Args>(args)...);
++     }
++   };
++ 
++@@ -1532,28 +1532,28 @@ private:
++   struct EpilogueOpImpl<16, Epilogue> {
++     template<typename... Args>
++     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
++-      self.template op_16(std::forward<Args>(args)...);
+++      self.op_16(std::forward<Args>(args)...);
++     }
++   };
++   template<typename Epilogue>
++   struct EpilogueOpImpl<32, Epilogue> {
++     template<typename... Args>
++     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
++-      self.template op_32(std::forward<Args>(args)...);
+++      self.op_32(std::forward<Args>(args)...);
++     }
++   };
++   template<typename Epilogue>
++   struct EpilogueOpImpl<64, Epilogue> {
++     template<typename... Args>
++     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
++-      self.template op_64(std::forward<Args>(args)...);
+++      self.op_64(std::forward<Args>(args)...);
++     }
++   };
++   template<typename Epilogue>
++   struct EpilogueOpImpl<128, Epilogue> {
++     template<typename... Args>
++     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
++-      self.template op_128(std::forward<Args>(args)...);
+++      self.op_128(std::forward<Args>(args)...);
++     }
++   };
++ 
+diff --git a/requirements/cuda.txt b/requirements/cuda.txt
+index af1f5f61c..e399a8760 100644
+--- a/requirements/cuda.txt
++++ b/requirements/cuda.txt
+@@ -4,20 +4,23 @@
+ numba == 0.65.0 # Required for N-gram speculative decoding
+ 
+ # Dependencies for NVIDIA GPUs
+-torch==2.13.0
+-torchaudio==2.11.0
++torch==2.13.0; platform_system != "Windows"
++torch==2.13.0+cu130; platform_system == "Windows"
++torchaudio==2.11.0; platform_system != "Windows"
++torchaudio==2.11.0+cu130; platform_system == "Windows"
+ # These must be updated alongside torch
+-torchvision==0.28.0 # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
++torchvision==0.28.0; platform_system != "Windows" # Required for phi3v processor. See https://github.com/pytorch/vision?tab=readme-ov-file#installation for corresponding version
++torchvision==0.28.0+cu130; platform_system == "Windows"
+ torchcodec >= 0.14
+ PyNvVideoCodec==2.0.4
+ # FlashInfer should be updated together with the Dockerfile
+ # flashinfer-cubin is not on PyPI since 0.6.14; setup.py excludes it from
+ # install_requires so the published wheel does not carry an unresolvable pin
+ --extra-index-url https://flashinfer.ai/whl/
+-flashinfer-python==0.6.16.post3
++flashinfer-python==0.6.16.post3; platform_system != "Windows"
+ flashinfer-cubin==0.6.16.post3
+ apache-tvm-ffi==0.1.11
+-tilelang==0.1.12
++tilelang==0.1.12; platform_system != "Windows"  # Optional; Windows wheel currently exceeds MAX_PATH without Long Paths
+ nvidia-cudnn-frontend>=1.19.1
+ # Required for LLM_NVTX_SCOPES_FOR_PROFILING=1
+ nvtx==0.2.15
+@@ -25,11 +28,16 @@ nvtx==0.2.15
+ fastsafetensors >= 0.3.2
+ 
+ # QuACK and Cutlass DSL for FA4 (cute-DSL implementation)
+-nvidia-cutlass-dsl[cu13]==4.6.0
+-quack-kernels==0.6.1  # Required for CUTLASS DSL 4.6 by MSA
++# NVIDIA CUTLASS DSL binary support is currently Linux-only. Native Windows
++# falls back to the compiled FA/CUTLASS paths built into this wheel.
++nvidia-cutlass-dsl[cu13]==4.6.0; platform_system != "Windows"
++quack-kernels==0.6.1; platform_system != "Windows"  # Required for CUTLASS DSL 4.6 by MSA
+ 
+ # Tokenspeed_MLA for faster mla with spec decode
+ tokenspeed-mla==0.1.8; platform_system == "Linux"
+ 
+-# Humming kernels for quantization gemm
+-humming-kernels[cu13]==0.1.10
++# Humming kernels currently depend on the Linux `triton` distribution.
++# On native Windows use the known-good Triton Windows build directly; vLLM
++# falls back to its other kernel backends when Humming is unavailable.
++triton-windows==3.7.1.post27; platform_system == "Windows"
++humming-kernels[cu13]==0.1.10; platform_system != "Windows"
+diff --git a/setup.py b/setup.py
+index a8817a960..367cdfa43 100644
+--- a/setup.py
++++ b/setup.py
+@@ -81,6 +81,8 @@ def has_precompiled_rust_extensions() -> bool:
+ if sys.platform.startswith("darwin") and VLLM_TARGET_DEVICE != "cpu":
+     logger.warning("VLLM_TARGET_DEVICE automatically set to `cpu` due to macOS")
+     VLLM_TARGET_DEVICE = "cpu"
++elif sys.platform.startswith("win32") and VLLM_TARGET_DEVICE == "cuda":
++    logger.warning("Building CUDA extensions on Windows is experimental")
+ elif not (sys.platform.startswith("linux") or sys.platform.startswith("darwin")):
+     logger.warning(
+         "vLLM only supports Linux platform (including WSL) and MacOS."
+@@ -308,7 +310,8 @@ class cmake_build_ext(build_ext):
+             build_tool = []
+         # Make sure we use the nvcc from CUDA_HOME
+         if _is_cuda() and CUDA_HOME is not None:
+-            cmake_args += [f"-DCMAKE_CUDA_COMPILER={CUDA_HOME}/bin/nvcc"]
++            nvcc_name = "nvcc.exe" if sys.platform == "win32" else "nvcc"
++            cmake_args += [f"-DCMAKE_CUDA_COMPILER={CUDA_HOME}/bin/{nvcc_name}"]
+         elif _is_hip() and ROCM_HOME is not None:
+             cmake_args += [f"-DROCM_PATH={ROCM_HOME}"]
+ 
+@@ -1015,6 +1018,32 @@ def get_nvcc_cuda_version() -> Version:
+     return nvcc_cuda_version
+ 
+ 
++def _windows_cuda_target_supports_fa3() -> bool:
++    """Return False only when a native Windows CUDA target is known non-Hopper.
++
++    vllm-flash-attn's CMake currently restricts FA3 to SM90 and explicitly
++    documents that FA3 is not yet supported on Blackwell. Keep legacy behavior
++    when the target architecture cannot be determined (for example, a
++    cross-build host without a visible GPU).
++    """
++    if not sys.platform.startswith("win32"):
++        return True
++
++    arch_list = os.getenv("TORCH_CUDA_ARCH_LIST")
++    if arch_list:
++        arch_tokens = re.split(r"[;,\s]+", arch_list)
++        return any(
++            arch.lower().removesuffix("+ptx").startswith("9.")
++            for arch in arch_tokens
++            if arch
++        )
++
++    if torch.cuda.is_available():
++        major, _minor = torch.cuda.get_device_capability()
++        return major == 9
++
++    return True
++
+ def get_vllm_version() -> str:
+     # Allow overriding the version. This is useful to build platform-specific
+     # wheels (e.g. CPU, TPU) without modifying the source.
+@@ -1132,9 +1161,11 @@ if _is_hip():
+ if _is_cuda():
+     ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
+     if USE_PRECOMPILED_EXTENSIONS or (
+-        CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
++        CUDA_HOME
++        and get_nvcc_cuda_version() >= Version("12.3")
++        and _windows_cuda_target_supports_fa3()
+     ):
+-        # FA3 requires CUDA 12.3 or later
++        # FA3 requires CUDA 12.3+ and currently targets Hopper (SM90) only.
+         ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
+     # FA4 CuteDSL - Python-only component for FA4's cute DSL support
+     # Optional since this doesn't produce a .so file, just copies Python files
+diff --git a/tools/build_deepgemm_C.py b/tools/build_deepgemm_C.py
+index 67a527405..8c1a355ed 100644
+--- a/tools/build_deepgemm_C.py
++++ b/tools/build_deepgemm_C.py
+@@ -31,9 +31,11 @@ info = json.loads(
+         [
+             target_py,
+             "-c",
+-            "import sysconfig, json; "
+-            "print(json.dumps({k: sysconfig.get_config_var(k) "
+-            "for k in ('EXT_SUFFIX', 'INCLUDEPY')}))",
++            "import sys, sysconfig, json; "
++            "print(json.dumps({'EXT_SUFFIX': sysconfig.get_config_var('EXT_SUFFIX'), "
++            "'INCLUDEPY': sysconfig.get_config_var('INCLUDEPY'), "
++            "'VERSION_NODOT': f'{sys.version_info.major}{sys.version_info.minor}', "
++            "'GIL_DISABLED': bool(sysconfig.get_config_var('Py_GIL_DISABLED'))}))",
+         ]
+     ).decode()
+ )
+@@ -54,32 +56,58 @@ includes = [
+     *cpp_extension.include_paths(device_type="cuda"),
+ ]
+ 
+-cmd = [
+-    os.environ.get("CXX", "g++"),
+-    "-shared",
+-    "-fPIC",
+-    "-std=c++20",
+-    "-O3",
+-    "-g0",
+-    "-Wno-psabi",
+-    "-Wno-deprecated-declarations",
+-    "-DTORCH_API_INCLUDE_EXTENSION_H",
+-    "-DTORCH_EXTENSION_NAME=_C",
+-    f"-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}",
+-    *(f"-I{p}" for p in includes),
+-    str(src / "csrc/python_api.cpp"),
+-    *(f"-L{p}" for p in cpp_extension.library_paths(device_type="cuda")),
+-    f"-L{cuda_home}/lib64",
+-    "-ltorch",
+-    "-ltorch_python",
+-    "-ltorch_cpu",
+-    "-ltorch_cuda",
+-    "-lc10",
+-    "-lc10_cuda",
+-    "-lcudart",
+-    "-lnvrtc",
+-    "-o",
+-    str(out / f"_C{info['EXT_SUFFIX']}"),
+-]
+-print("[build_deepgemm_C] " + " ".join(cmd), flush=True)
+-subprocess.check_call(cmd)
++cusolver_root = os.environ.get("VLLM_CUSOLVER_ROOT")
++if cusolver_root:
++    cusolver_include = Path(cusolver_root) / "include"
++    if not (cusolver_include / "cusolverDn.h").is_file():
++        sys.exit(
++            f"VLLM_CUSOLVER_ROOT={cusolver_root} does not contain include/cusolverDn.h"
++        )
++    includes.append(str(cusolver_include))
++
++if os.name == "nt":
++    # DeepGEMM's binding uses pybind11/torch_python and is CPython-version
++    # specific. Build it with the active MSVC toolchain on native Windows.
++    python_lib_dir = Path(info["INCLUDEPY"]).parent / "libs"
++    python_lib = (
++        f"python{info['VERSION_NODOT']}"
++        f"{'t' if info['GIL_DISABLED'] else ''}.lib"
++    )
++    library_dirs = [
++        *cpp_extension.library_paths(device_type="cuda"),
++        str(python_lib_dir),
++        f"{cuda_home}/lib/x64",
++    ]
++    library_dirs = list(dict.fromkeys(library_dirs))
++    cmd = [
++        os.environ.get("CXX", "cl.exe"),
++        "/nologo", "/LD", "/std:c++20", "/O2", "/EHsc", "/MD", "/bigobj",
++        "/Zc:__cplusplus", "/permissive-", "/utf-8",
++        "/DNOMINMAX", "/DWIN32_LEAN_AND_MEAN",
++        "/DTORCH_API_INCLUDE_EXTENSION_H", "/DTORCH_EXTENSION_NAME=_C",
++        *(f"/I{p}" for p in includes),
++        str(src / "csrc/python_api.cpp"),
++        "/link",
++        *(f"/LIBPATH:{p}" for p in library_dirs),
++        "torch.lib", "torch_python.lib", "torch_cpu.lib", "torch_cuda.lib",
++        "c10.lib", "c10_cuda.lib", "cudart.lib", "nvrtc.lib",
++        "cublas.lib", "cublasLt.lib", python_lib,
++        f"/OUT:{out / f'_C{info['EXT_SUFFIX']}' }",
++    ]
++else:
++    cmd = [
++        os.environ.get("CXX", "g++"),
++        "-shared", "-fPIC", "-std=c++20", "-O3", "-g0",
++        "-Wno-psabi", "-Wno-deprecated-declarations",
++        "-DTORCH_API_INCLUDE_EXTENSION_H", "-DTORCH_EXTENSION_NAME=_C",
++        f"-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}",
++        *(f"-I{p}" for p in includes),
++        str(src / "csrc/python_api.cpp"),
++        *(f"-L{p}" for p in cpp_extension.library_paths(device_type="cuda")),
++        f"-L{cuda_home}/lib64",
++        "-ltorch", "-ltorch_python", "-ltorch_cpu", "-ltorch_cuda",
++        "-lc10", "-lc10_cuda", "-lcudart", "-lnvrtc",
++        "-o", str(out / f"_C{info['EXT_SUFFIX']}"),
++    ]
++print("[build_deepgemm_C] " + " ".join(map(str, cmd)), flush=True)
++subprocess.check_call(cmd)
+\ No newline at end of file
+diff --git a/vllm-flash-attn-cutlass-windows.patch b/vllm-flash-attn-cutlass-windows.patch
+new file mode 100644
+index 000000000..432a84987
+--- /dev/null
++++ b/vllm-flash-attn-cutlass-windows.patch
+@@ -0,0 +1,13 @@
++diff --git a/include/cutlass/cuda_host_adapter.hpp b/include/cutlass/cuda_host_adapter.hpp
++index 98e77893..c20c4790 100644
++--- a/include/cutlass/cuda_host_adapter.hpp
+++++ b/include/cutlass/cuda_host_adapter.hpp
++@@ -405,7 +405,7 @@ public:
++ 
++   /// Fills a buffer in Global Memory with a byte sequence copied from host memory
++   template<class FillValueType>
++-  CUTLASS_HOST_DEVICE
+++  CUTLASS_HOST
++   Status memsetDevice(
++       void* destination,
++       FillValueType fill_value, 
+diff --git a/vllm/benchmarks/throughput.py b/vllm/benchmarks/throughput.py
+index f6264f955..64073065f 100644
+--- a/vllm/benchmarks/throughput.py
++++ b/vllm/benchmarks/throughput.py
+@@ -11,10 +11,10 @@ import warnings
+ from typing import Any
+ 
+ import torch
+-import uvloop
+ from tqdm import tqdm
+ from transformers import AutoModelForCausalLM, PreTrainedTokenizerBase
+ 
++from vllm.utils.uvloop_compat import uvloop
+ from vllm.benchmarks.datasets import (
+     AIMODataset,
+     ASRDataset,
+diff --git a/vllm/compilation/decorators.py b/vllm/compilation/decorators.py
+index ad710a6fe..8bbd327af 100644
+--- a/vllm/compilation/decorators.py
++++ b/vllm/compilation/decorators.py
+@@ -540,12 +540,17 @@ def _support_torch_compile(
+ 
+             factors.append(_model_hash_key(self.forward))
+             hash_key = hashlib.sha256(str(factors).encode()).hexdigest()
+-            cache_dir = os.path.join(
+-                envs.VLLM_CACHE_ROOT,
+-                "torch_compile_cache",
+-                "torch_aot_compile",
+-                hash_key,
+-            )
++            if sys.platform == "win32":
++                # Keep the full cache key but shorten the directory layout to
++                # avoid legacy MAX_PATH failures in nested Torch AOT caches.
++                cache_dir = os.path.join(envs.VLLM_CACHE_ROOT, "aot", hash_key)
++            else:
++                cache_dir = os.path.join(
++                    envs.VLLM_CACHE_ROOT,
++                    "torch_compile_cache",
++                    "torch_aot_compile",
++                    hash_key,
++                )
+ 
+             # Hash-level dir; shared across ranks on the same node.
+             self.compilation_config.local_cache_dir = cache_dir
+diff --git a/vllm/entrypoints/cli/launch.py b/vllm/entrypoints/cli/launch.py
+index 91d4bf094..fe1e59b5d 100644
+--- a/vllm/entrypoints/cli/launch.py
++++ b/vllm/entrypoints/cli/launch.py
+@@ -5,8 +5,7 @@ import argparse
+ import inspect
+ import signal
+ 
+-import uvloop
+-
++from vllm.utils.uvloop_compat import uvloop
+ from vllm import envs
+ from vllm.config import VllmConfig
+ from vllm.engine.arg_utils import AsyncEngineArgs
+diff --git a/vllm/entrypoints/cli/serve.py b/vllm/entrypoints/cli/serve.py
+index e8f72ab23..ed287f672 100644
+--- a/vllm/entrypoints/cli/serve.py
++++ b/vllm/entrypoints/cli/serve.py
+@@ -5,8 +5,7 @@ import argparse
+ import signal
+ import time
+ 
+-import uvloop
+-
++from vllm.utils.uvloop_compat import uvloop
+ import vllm
+ import vllm.envs as envs
+ from vllm.entrypoints.cli.types import CLISubcommand
+diff --git a/vllm/entrypoints/grpc_server.py b/vllm/entrypoints/grpc_server.py
+index 59269dd18..194aaacb2 100644
+--- a/vllm/entrypoints/grpc_server.py
++++ b/vllm/entrypoints/grpc_server.py
+@@ -39,8 +39,7 @@ except ImportError as e:
+         "version mismatch — see the chained exception above for details."
+     ) from e
+ 
+-import uvloop
+-
++from vllm.utils.uvloop_compat import uvloop
+ from vllm import envs
+ from vllm.engine.arg_utils import AsyncEngineArgs
+ from vllm.entrypoints.serve.utils.api_utils import log_version_and_model
+diff --git a/vllm/entrypoints/launcher.py b/vllm/entrypoints/launcher.py
+index 3a903af2b..3ab121907 100644
+--- a/vllm/entrypoints/launcher.py
++++ b/vllm/entrypoints/launcher.py
+@@ -115,8 +115,18 @@ async def serve_http(
+     async def dummy_shutdown() -> None:
+         pass
+ 
+-    loop.add_signal_handler(signal.SIGINT, signal_handler)
+-    loop.add_signal_handler(signal.SIGTERM, signal_handler)
++    try:
++        loop.add_signal_handler(signal.SIGINT, signal_handler)
++        loop.add_signal_handler(signal.SIGTERM, signal_handler)
++    except NotImplementedError:
++        # Windows event loops do not implement add_signal_handler().
++        # Keep signal handling in the main thread and marshal shutdown
++        # back onto the asyncio loop.
++        def windows_signal_handler(*_args) -> None:
++            loop.call_soon_threadsafe(signal_handler)
++
++        signal.signal(signal.SIGINT, windows_signal_handler)
++        signal.signal(signal.SIGTERM, windows_signal_handler)
+ 
+     async def handle_shutdown() -> None:
+         await shutdown_event.wait()
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index 5a6dd8c83..a6f4dcdf8 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -15,12 +15,12 @@ from collections.abc import AsyncIterator
+ from contextlib import asynccontextmanager
+ from typing import Any, cast
+ 
+-import uvloop
+ from fastapi import FastAPI, HTTPException
+ from fastapi.exceptions import RequestValidationError
+ from fastapi.middleware.cors import CORSMiddleware
+ from starlette.datastructures import State
+ 
++from vllm.utils.uvloop_compat import uvloop
+ import vllm.envs as envs
+ from vllm.config import ModelConfig, VllmConfig
+ from vllm.engine.arg_utils import AsyncEngineArgs
+diff --git a/vllm/entrypoints/openai/dp_supervisor.py b/vllm/entrypoints/openai/dp_supervisor.py
+index 8ce6233c1..455e96337 100644
+--- a/vllm/entrypoints/openai/dp_supervisor.py
++++ b/vllm/entrypoints/openai/dp_supervisor.py
+@@ -19,9 +19,9 @@ from multiprocessing.process import BaseProcess
+ import aiohttp
+ import psutil
+ import uvicorn
+-import uvloop
+ from fastapi import FastAPI, Response
+ 
++from vllm.utils.uvloop_compat import uvloop
+ import vllm.envs as envs
+ from vllm.logger import init_logger
+ from vllm.utils.system_utils import (
+diff --git a/vllm/entrypoints/serve/utils/api_utils.py b/vllm/entrypoints/serve/utils/api_utils.py
+index 5fc855d9b..3ab34c25d 100644
+--- a/vllm/entrypoints/serve/utils/api_utils.py
++++ b/vllm/entrypoints/serve/utils/api_utils.py
+@@ -320,8 +320,32 @@ def sanitize_message(message: str) -> str:
+     return message.strip()
+ 
+ 
++def _logger_supports_unicode_logo(lgr: Logger) -> bool:
++    """Return whether active stream handlers can encode the block logo."""
++    current: Logger | None = lgr
++    while current is not None:
++        for handler in current.handlers:
++            stream = getattr(handler, "stream", None)
++            encoding = getattr(stream, "encoding", None)
++            if encoding is None:
++                continue
++            try:
++                chr(0x2588).encode(encoding)
++            except (LookupError, UnicodeEncodeError):
++                return False
++        if not current.propagate:
++            break
++        current = current.parent
++    return True
++
++
+ def log_version_and_model(lgr: Logger, version: str, model_name: str) -> None:
+-    if envs.VLLM_DISABLE_LOG_LOGO or (formatter := current_formatter_type(lgr)) is None:
++    formatter = current_formatter_type(lgr)
++    if (
++        envs.VLLM_DISABLE_LOG_LOGO
++        or formatter is None
++        or (os.name == "nt" and not _logger_supports_unicode_logo(lgr))
++    ):
+         message = "vLLM server version %s, serving model %s"
+     else:
+         logo_template = Template(
+diff --git a/vllm/model_executor/model_loader/weight_utils.py b/vllm/model_executor/model_loader/weight_utils.py
+index e1897a77f..22c80f2eb 100644
+--- a/vllm/model_executor/model_loader/weight_utils.py
++++ b/vllm/model_executor/model_loader/weight_utils.py
+@@ -9,6 +9,7 @@ import glob
+ import hashlib
+ import json
+ import os
++import posixpath
+ import tempfile
+ import threading
+ import time
+@@ -463,7 +464,9 @@ def download_weights_from_hf(
+         try:
+             fs = hf_fs()
+             file_list = fs.ls(
+-                os.path.join(model_name_or_path, subfolder or ""),
++                posixpath.join(model_name_or_path, subfolder)
++                if subfolder
++                else model_name_or_path,
+                 detail=False,
+                 revision=revision,
+             )
+diff --git a/vllm/parser/__init__.py b/vllm/parser/__init__.py
+index e13c2ece9..92bee8611 100644
+--- a/vllm/parser/__init__.py
++++ b/vllm/parser/__init__.py
+@@ -1,13 +1,29 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++from typing import TYPE_CHECKING, Any
++
+ from vllm.parser.abstract_parser import (
+     DelegatingParser,
+     Parser,
+ )
+-from vllm.parser.harmony import HarmonyParser
+ from vllm.parser.parser_manager import ParserManager
+ 
++if TYPE_CHECKING:
++    from vllm.parser.harmony import HarmonyParser
++
++
++def __getattr__(name: str) -> Any:
++    if name == "HarmonyParser":
++        # Harmony's structural-tag support depends on xgrammar, which is not
++        # available on every platform. Keep the optional backend lazy so the
++        # general CLI/server import path does not require it.
++        from vllm.parser.harmony import HarmonyParser
++
++        return HarmonyParser
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
++
++
+ __all__ = [
+     "Parser",
+     "DelegatingParser",
+diff --git a/vllm/parser/harmony.py b/vllm/parser/harmony.py
+index 3cc493b65..b89adf696 100644
+--- a/vllm/parser/harmony.py
++++ b/vllm/parser/harmony.py
+@@ -10,21 +10,29 @@ from enum import Enum, auto
+ from typing import TYPE_CHECKING, NamedTuple
+ 
+ from openai_harmony import HarmonyError, Message, Role
+-from xgrammar import StructuralTag
+-from xgrammar.openai_tool_call_schema import BuiltinToolParam, FunctionToolParam
+-from xgrammar.structural_tag import (
+-    AnyTextFormat,
+-    ConstStringFormat,
+-    Format,
+-    GrammarFormat,
+-    JSONSchemaFormat,
+-    OptionalFormat,
+-    OrFormat,
+-    RegexFormat,
+-    SequenceFormat,
+-    TagFormat,
+-    TriggeredTagsFormat,
+-)
++_XGRAMMAR_IMPORT_ERROR: ModuleNotFoundError | None = None
++try:
++    from xgrammar import StructuralTag
++    from xgrammar.openai_tool_call_schema import BuiltinToolParam, FunctionToolParam
++    from xgrammar.structural_tag import (
++        AnyTextFormat,
++        ConstStringFormat,
++        Format,
++        GrammarFormat,
++        JSONSchemaFormat,
++        OptionalFormat,
++        OrFormat,
++        RegexFormat,
++        SequenceFormat,
++        TagFormat,
++        TriggeredTagsFormat,
++    )
++except ModuleNotFoundError as exc:
++    if exc.name is None or not (
++        exc.name == "xgrammar" or exc.name.startswith("xgrammar.")
++    ):
++        raise
++    _XGRAMMAR_IMPORT_ERROR = exc
+ 
+ from vllm.entrypoints.chat_utils import make_tool_call_id
+ from vllm.entrypoints.openai.chat_completion.protocol import (
+@@ -405,8 +413,19 @@ _FUNCTION_CALL_BEGINS = [
+     "{channel} to=functions.{name} json<|message|>",
+     "{channel} to=functions.{name} <|constrain|>json<|message|>",
+ ]
+-_JSON_CONTENT = JSONSchemaFormat(json_schema={"type": "object"})
+-_ANY_CONTENT = AnyTextFormat()
++if _XGRAMMAR_IMPORT_ERROR is None:
++    _JSON_CONTENT = JSONSchemaFormat(json_schema={"type": "object"})
++    _ANY_CONTENT = AnyTextFormat()
++else:
++    _JSON_CONTENT = None
++    _ANY_CONTENT = None
++
++
++def _require_xgrammar() -> None:
++    if _XGRAMMAR_IMPORT_ERROR is not None:
++        raise ImportError(
++            "Harmony structured outputs require the optional xgrammar dependency."
++        ) from _XGRAMMAR_IMPORT_ERROR
+ 
+ 
+ def _assemble_tag(
+@@ -455,6 +474,7 @@ def get_harmony_structural_tag(
+     tool_choice: SimplifiedToolChoice,
+     reasoning: bool,
+ ) -> StructuralTag:
++    _require_xgrammar()
+     # reasoning always enabled for Harmony
+     del reasoning
+ 
+@@ -512,6 +532,7 @@ def get_harmony_structural_tag(
+ 
+ def _params_to_final_content(params: StructuredOutputsParams) -> Format | None:
+     """Map StructuredOutputsParams in a XGrammar Format."""
++    _require_xgrammar()
+     if params.json_object:
+         return _JSON_CONTENT
+     if params.json is not None:
+diff --git a/vllm/tool_parsers/structural_tag_registry.py b/vllm/tool_parsers/structural_tag_registry.py
+index 1f9a651ee..068e4a522 100644
+--- a/vllm/tool_parsers/structural_tag_registry.py
++++ b/vllm/tool_parsers/structural_tag_registry.py
+@@ -9,26 +9,58 @@ from openai.types.responses.response import ToolChoice as ResponsesToolChoice
+ from openai.types.responses.tool import Tool as ResponsesTool
+ from openai.types.responses.tool_choice_allowed import ToolChoiceAllowed
+ from openai.types.responses.tool_choice_function import ToolChoiceFunction
+-from xgrammar import StructuralTag, normalize_tool_choice
+-from xgrammar import get_model_structural_tag as get_xgrammar_model_structural_tag
+-from xgrammar.openai_tool_call_schema import (
+-    BuiltinToolParam,
+-    FunctionToolParam,
+-)
+-from xgrammar.structural_tag import (
+-    AnyTextFormat,
+-    ConstStringFormat,
+-    JSONSchemaFormat,
+-    OptionalFormat,
+-    OrFormat,
+-    PlusFormat,
+-    RegexFormat,
+-    SequenceFormat,
+-    StarFormat,
+-    TagFormat,
+-    TagsWithSeparatorFormat,
+-    TriggeredTagsFormat,
+-)
++_XGRAMMAR_IMPORT_ERROR: ModuleNotFoundError | None = None
++try:
++    from xgrammar import StructuralTag, normalize_tool_choice
++    from xgrammar import get_model_structural_tag as get_xgrammar_model_structural_tag
++    from xgrammar.openai_tool_call_schema import (
++        BuiltinToolParam,
++        FunctionToolParam,
++    )
++    from xgrammar.structural_tag import (
++        AnyTextFormat,
++        ConstStringFormat,
++        JSONSchemaFormat,
++        OptionalFormat,
++        OrFormat,
++        PlusFormat,
++        RegexFormat,
++        SequenceFormat,
++        StarFormat,
++        TagFormat,
++        TagsWithSeparatorFormat,
++        TriggeredTagsFormat,
++    )
++except ModuleNotFoundError as exc:
++    if exc.name is None or not (
++        exc.name == "xgrammar" or exc.name.startswith("xgrammar.")
++    ):
++        raise
++    _XGRAMMAR_IMPORT_ERROR = exc
++    StructuralTag = Any
++    BuiltinToolParam = Any
++    FunctionToolParam = Any
++    AnyTextFormat = Any
++    ConstStringFormat = Any
++    JSONSchemaFormat = Any
++    OptionalFormat = Any
++    OrFormat = Any
++    PlusFormat = Any
++    RegexFormat = Any
++    SequenceFormat = Any
++    StarFormat = Any
++    TagFormat = Any
++    TagsWithSeparatorFormat = Any
++    TriggeredTagsFormat = Any
++    normalize_tool_choice = None
++    get_xgrammar_model_structural_tag = None
++
++
++def _require_xgrammar() -> None:
++    if _XGRAMMAR_IMPORT_ERROR is not None:
++        raise ImportError(
++            "Structured tool tags require the optional xgrammar dependency."
++        ) from _XGRAMMAR_IMPORT_ERROR
+ 
+ from vllm.entrypoints.openai.chat_completion.protocol import (
+     ChatCompletionNamedToolChoiceParam,
+@@ -113,6 +145,7 @@ def get_model_structural_tag(
+     if tool_choice == "auto" and not _any_tool_strict(tools):
+         return None
+ 
++    _require_xgrammar()
+     dumped_tools = [_dump_tool_for_xgrammar(tool) for tool in tools]
+     dumped_tool_choice = _dump_tool_choice_for_xgrammar(tool_choice)
+ 
+diff --git a/vllm/utils/network_utils.py b/vllm/utils/network_utils.py
+index cf3141a0c..eac820641 100644
+--- a/vllm/utils/network_utils.py
++++ b/vllm/utils/network_utils.py
+@@ -139,6 +139,10 @@ def get_tcp_uri(ip: str, port: int) -> str:
+ 
+ 
+ def get_open_zmq_ipc_path() -> str:
++    if sys.platform == "win32":
++        # pyzmq does not support the ipc:// transport on Windows. Use a
++        # loopback TCP endpoint for local-only process communication instead.
++        return get_tcp_uri(get_loopback_ip(), get_open_port())
+     base_rpc_path = envs.VLLM_RPC_BASE_PATH
+     return f"ipc://{base_rpc_path}/{uuid4()}"
+ 
+diff --git a/vllm/utils/system_utils.py b/vllm/utils/system_utils.py
+index 6d56df378..ed913d2b7 100644
+--- a/vllm/utils/system_utils.py
++++ b/vllm/utils/system_utils.py
+@@ -268,14 +268,15 @@ def kill_process_tree(pid: int):
+     # Get all children recursively
+     children = parent.children(recursive=True)
+ 
+-    # Send SIGKILL to all children first
++    # psutil.kill() maps to SIGKILL on POSIX and TerminateProcess on Windows.
++    # Using the Process handle avoids os.kill()'s Windows-specific access quirks.
+     for child in children:
+-        with contextlib.suppress(ProcessLookupError):
+-            os.kill(child.pid, signal.SIGKILL)
++        with contextlib.suppress(psutil.NoSuchProcess):
++            child.kill()
+ 
+     # Finally kill the parent
+-    with contextlib.suppress(ProcessLookupError):
+-        os.kill(pid, signal.SIGKILL)
++    with contextlib.suppress(psutil.NoSuchProcess):
++        parent.kill()
+ 
+ 
+ # Resource utilities
+diff --git a/vllm/utils/uvloop_compat.py b/vllm/utils/uvloop_compat.py
+new file mode 100644
+index 000000000..83a19ee62
+--- /dev/null
++++ b/vllm/utils/uvloop_compat.py
+@@ -0,0 +1,22 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Compatibility shim for uvloop on platforms where it is unavailable."""
++
++import sys
++
++if sys.platform == "win32":
++    import asyncio
++
++    class _WindowsUvloopCompat:
++        """Provide the uvloop.run() surface using a ZMQ-compatible loop."""
++
++        @staticmethod
++        def run(main):
++            return asyncio.run(main, loop_factory=asyncio.SelectorEventLoop)
++
++    uvloop = _WindowsUvloopCompat()
++else:
++    import uvloop
++
++__all__ = ["uvloop"]
+diff --git a/vllm/v1/engine/utils.py b/vllm/v1/engine/utils.py
+index af62ed319..ac88ecc28 100644
+--- a/vllm/v1/engine/utils.py
++++ b/vllm/v1/engine/utils.py
+@@ -3,6 +3,7 @@
+ 
+ import contextlib
+ import os
++import sys
+ import threading
+ import weakref
+ from collections.abc import Callable, Iterator
+@@ -1226,12 +1227,25 @@ def wait_for_engine_startup(
+         and not parallel_config.data_parallel_external_lb
+     )
+ 
+-    if proc_manager is not None:
++    if sys.platform != "win32" and proc_manager is not None:
+         for sentinel in proc_manager.sentinels():
+             poller.register(sentinel, zmq.POLLIN)
+-    if coord_process is not None:
++    if sys.platform != "win32" and coord_process is not None:
+         poller.register(coord_process.sentinel, zmq.POLLIN)
+     while any(conn_pending) or any(start_pending):
++        if sys.platform == "win32":
++            # multiprocessing sentinels are Win32 HANDLEs, not sockets, and
++            # cannot be registered with a ZeroMQ poller. Check process
++            # liveness explicitly while polling only the ZMQ handshake socket.
++            finished = proc_manager.finished_procs() if proc_manager else {}
++            if coord_process is not None and coord_process.exitcode is not None:
++                finished[coord_process.name] = coord_process.exitcode
++            if finished:
++                raise RuntimeError(
++                    "Engine core initialization failed. "
++                    "See root cause above. "
++                    f"Failed core proc(s): {finished}"
++                )
+         events = poller.poll(STARTUP_POLL_PERIOD_MS)
+         if not events:
+             if any(conn_pending):
+diff --git a/vllm/v1/sample/ops/topk_topp_sampler.py b/vllm/v1/sample/ops/topk_topp_sampler.py
+index c83ac7c4b..5f726176e 100644
+--- a/vllm/v1/sample/ops/topk_topp_sampler.py
++++ b/vllm/v1/sample/ops/topk_topp_sampler.py
+@@ -11,6 +11,7 @@ from vllm.config.model import PROCESSED_LOGPROBS_MODES, LogprobsMode
+ from vllm.logger import init_logger
+ from vllm.platforms import CpuArchEnum, current_platform
+ from vllm.triton_utils import HAS_TRITON
++from vllm.utils.flashinfer import has_flashinfer
+ 
+ if HAS_TRITON:
+     from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
+@@ -33,8 +34,8 @@ def flashinfer_sampler_supported() -> bool:
+     unsupported. Raises ``RuntimeError`` if the user explicitly opted in
+     via the env var but FlashInfer is unavailable.
+ 
+-    Assumes flashinfer is installed, as guaranteed by ``requirements/cuda.txt``;
+-    otherwise importing the FlashInfer backend below raises ``ImportError``.
++    FlashInfer is optional; when it is not installed the sampler falls back to
++    the native implementation unless the user explicitly opted in.
+ 
+     Note: callers must additionally ensure ``logprobs_mode`` doesn't require
+     post-top-k/top-p logits/logprobs for any request whose logprobs will be
+@@ -48,15 +49,18 @@ def flashinfer_sampler_supported() -> bool:
+             "VLLM_USE_FLASHINFER_SAMPLER=0."
+         )
+         return False
+-    from vllm.v1.attention.backends.flashinfer import FlashInferBackend
+-
+-    capability = current_platform.get_device_capability()
+-    assert capability is not None
+     unsupported_reason: str | None = None
+-    if not FlashInferBackend.supports_compute_capability(capability):
+-        unsupported_reason = (
+-            f"unsupported compute capability {capability.as_version_str()}"
+-        )
++    if not has_flashinfer():
++        unsupported_reason = "FlashInfer package is not installed"
++    else:
++        from vllm.v1.attention.backends.flashinfer import FlashInferBackend
++
++        capability = current_platform.get_device_capability()
++        assert capability is not None
++        if not FlashInferBackend.supports_compute_capability(capability):
++            unsupported_reason = (
++                f"unsupported compute capability {capability.as_version_str()}"
++            )
+ 
+     if unsupported_reason is None:
+         logger.info_once("Using FlashInfer for top-p & top-k sampling.", scope="global")
+diff --git a/vllm/v1/structured_output/backend_guidance.py b/vllm/v1/structured_output/backend_guidance.py
+index 19b2c76e9..ff348d5bf 100644
+--- a/vllm/v1/structured_output/backend_guidance.py
++++ b/vllm/v1/structured_output/backend_guidance.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++from __future__ import annotations
+ import copy
+ import json
+ import os
+diff --git a/vllm/v1/structured_output/backend_xgrammar.py b/vllm/v1/structured_output/backend_xgrammar.py
+index 4f199a1a2..da116202e 100644
+--- a/vllm/v1/structured_output/backend_xgrammar.py
++++ b/vllm/v1/structured_output/backend_xgrammar.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++from __future__ import annotations
+ import json
+ from dataclasses import dataclass, field
+ from typing import TYPE_CHECKING, Any
+diff --git a/vllm/v1/utils.py b/vllm/v1/utils.py
+index f5e0caa81..72efa0f4e 100644
+--- a/vllm/v1/utils.py
++++ b/vllm/v1/utils.py
+@@ -23,7 +23,11 @@ from typing import (
+ )
+ 
+ import torch
+-import uvloop
++try:
++    import uvloop
++except ModuleNotFoundError:
++    # uvloop is not available on Windows; asyncio.run is API-compatible here.
++    import asyncio as uvloop
+ from torch.autograd.profiler import record_function
+ 
+ import vllm.envs as envs

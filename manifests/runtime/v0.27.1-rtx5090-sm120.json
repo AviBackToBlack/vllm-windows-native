@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "status": "accepted-candidate",
+  "project": "vllm-windows-native",
+  "milestone": "v0.27.1-native-windows-single-gpu-sm120",
+  "upstream": {
+    "repository": "https://github.com/vllm-project/vllm.git",
+    "tag": "v0.27.1",
+    "commit": "6e448d0ea9bf3d88d898b65449ca6dc2aec170ac"
+  },
+  "accepted_delta": {
+    "implementation_commit": "9f18048a2052072166ccc3b0ffef364e72bb4d11",
+    "tree": "115fa3e10d4b5a45c3e647cb343680a1fc743d18",
+    "patch": "patches/windows/v0.27.1/0001-native-windows-cuda-sm120.patch",
+    "patch_sha256": "08416EBB43632A0AC485839644A98E875A4AD9EBC49BE193DA25AB804AE6A272",
+    "patch_size_bytes": 154264,
+    "clean_apply_to_upstream": true,
+    "applied_tree_matches_accepted_tree": true
+  },
+  "build": {
+    "python": "3.13.15",
+    "msvc": "19.44.35228",
+    "cuda_toolkit": "13.0.88",
+    "cmake": "4.4.3",
+    "ninja": "1.13.2.git.kitware.jobserver-pipe-1",
+    "torch": "2.13.0+cu130",
+    "torchvision": "0.28.0+cu130",
+    "torchaudio": "2.11.0+cu130",
+    "triton_windows": "3.7.1.post27",
+    "target_cuda_arch": "12.0",
+    "flash_attn_version": 2,
+    "build_type": "RelWithDebInfo",
+    "max_jobs": 16,
+    "nvcc_threads": 1,
+    "command": "python -m build --wheel --no-isolation -C 'cmake.build-type=RelWithDebInfo'"
+  },
+  "external_sources": {
+    "flashkda": {
+      "repository": "https://github.com/vllm-project/FlashKDA.git",
+      "commit": "a3e42bbbece3bb38f7c426b880315294a336e82f"
+    },
+    "qutlass": {
+      "repository": "https://github.com/IST-DASLab/qutlass.git",
+      "commit": "e74319e3405ce6d71965732880f5dc1f52371f64"
+    },
+    "vllm_flash_attn": {
+      "repository": "https://github.com/vllm-project/flash-attention.git",
+      "commit": "28e862d21806bc3580207aa0ad4e2759151e9827"
+    },
+    "deepgemm": {
+      "repository": "https://github.com/vllm-project/DeepGEMM.git",
+      "commit": "e21c821f39a2056d68067a466c64ddc942200106",
+      "nested_cutlass_commit": "f3fde58372d33e9a5650ba7b80fc48b3b49d40c8"
+    }
+  },
+  "embedded_dependency_patches": {
+    "cutlass-windows.patch": "F78FCAF1BB6DEBE16EC517859E2F70D4F38F78E7FE74B7F1991F17D23AE39484",
+    "deepgemm-cutlass-windows.patch": "F108188EB0DBFBD8E8A828BB43C0FD686553ED5ED6E5B5E5D439B26CCF488BE9",
+    "deepgemm-windows.patch": "2DD589524126BDCF11FE363DC6D414FB1B9C059B39D3BD7A4E945B848D6992F9",
+    "flashkda-cutlass-windows.patch": "FC2AE8ACA448CD0B8011B2D836DB36BFCFA55E5ED1A8563CB28E50F037E2AF2C",
+    "qutlass-windows.patch": "5866C59AD3B4FE3E18C5ED1682566FC66A3C37E1771346A73779EF9E65D7051A",
+    "vllm-flash-attn-cutlass-windows.patch": "165B2D8DEFCD80863E3831F7EB4E580EAB41365BB096789F09BFD37CB0F9EE95"
+  },
+  "artifact": {
+    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl",
+    "size_bytes": 176829605,
+    "sha256": "EA763A7BBC7F3EE445C999F71597C82DF1E22A00715311EFCC2C6B46FB50D23A",
+    "zip_test": "pass",
+    "native_extension_count": 9,
+    "native_extensions": [
+      "vllm/_C_stable_libtorch.pyd",
+      "vllm/_flashkda_C.cp313-win_amd64.pyd",
+      "vllm/_moe_C_stable_libtorch.pyd",
+      "vllm/_qutlass_C.pyd",
+      "vllm/cumem_allocator.pyd",
+      "vllm/fs_io_C.pyd",
+      "vllm/spinloop.pyd",
+      "vllm/third_party/deep_gemm/_C.cp313-win_amd64.pyd",
+      "vllm/vllm_flash_attn/_vllm_fa2_C.pyd"
+    ]
+  },
+  "validation": {
+    "os": "Windows 11 x64",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "compute_capability": "12.0",
+    "pristine_install": true,
+    "pip_check": "pass",
+    "native_imports": "9/9 pass",
+    "cli": "pass",
+    "offline_default_performance": {
+      "result": "pass",
+      "engine_ready_seconds": 111.99,
+      "generation_seconds": 0.48,
+      "expected_text_contains": "Dublin",
+      "marker": "VLLM_FINAL27_OFFLINE_OK"
+    },
+    "openai_server": {
+      "result": "pass",
+      "models_http_status": 200,
+      "completions_http_status": 200,
+      "completion_elapsed_ms": 500,
+      "prompt_tokens": 5,
+      "completion_tokens": 16,
+      "expected_text_contains": "Dublin"
+    }
+  },
+  "known_limitations": [
+    "FA3 is intentionally absent: upstream FA3 does not support Blackwell SM120.",
+    "DeepGEMM 2.6.1 binary/JIT plumbing is ported, but upstream runtime dispatch has no SM120 kernel backend and returns Unsupported architecture for real GEMM execution.",
+    "Only single-GPU execution is accepted by this milestone; Windows NCCL / tensor parallel / pipeline parallel are not yet accepted.",
+    "A non-fatal PyTorch c10d hostname connection warning (WinError 10049) remains to be investigated."
+  ],
+  "provenance_note": "Community Windows ports were research/reference sources. This manifest records build inputs and validation; line-level provenance/attribution review remains required before a public release."
+}

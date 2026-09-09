@@ -2,16 +2,16 @@
 config.psd1
 
 # Runtime/install state
-runtime/
-python/
-tools/
-cache/
-models/
-downloads/
-logs/
-work/
-forensic/
-state/
+/runtime/
+/python/
+/tools/
+/cache/
+/models/
+/downloads/
+/logs/
+/work/
+/forensic/
+/state/
 
 # Python
 __pycache__/
