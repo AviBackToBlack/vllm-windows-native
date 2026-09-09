@@ -34,13 +34,18 @@ if (-not (Test-Path -LiteralPath $source)) {
     $parent = Split-Path -Parent $source
     if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
     Write-Host "Cloning authoritative upstream..."
-    & git clone --filter=blob:none --branch $manifest.upstream.tag --single-branch $manifest.upstream.repository $source
+    & git -c core.autocrlf=false -c core.eol=lf clone --branch $manifest.upstream.tag --single-branch $manifest.upstream.repository $source
     if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit $LASTEXITCODE)." }
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $source '.git'))) {
     throw "Source directory is not a Git working tree: $source"
 }
+
+# Artifact bytes must not depend on the caller's Windows Git line-ending policy.
+# Keep tracked source files in Git-canonical LF form for every prepared build tree.
+Invoke-Git -Repository $source -Arguments @('config','core.autocrlf','false') | Out-Null
+Invoke-Git -Repository $source -Arguments @('config','core.eol','lf') | Out-Null
 
 $status = Invoke-Git -Repository $source -Arguments @('status','--porcelain=v1') -Capture
 $head = Invoke-Git -Repository $source -Arguments @('rev-parse','HEAD') -Capture
@@ -51,6 +56,7 @@ $upstreamCommit = [string]$manifest.upstream.commit
 if (-not [string]::IsNullOrWhiteSpace($status)) {
     $indexTree = Invoke-Git -Repository $source -Arguments @('write-tree') -Capture
     if ($indexTree -eq $acceptedTree) {
+        Materialize-GitTree -Repository $source -Tree $acceptedTree
         Write-Host "Source already contains the accepted staged tree: $acceptedTree"
         Write-Host 'PREPARE_SOURCE_OK'
         return
@@ -59,6 +65,7 @@ if (-not [string]::IsNullOrWhiteSpace($status)) {
 }
 
 if ($headTree -eq $acceptedTree) {
+    Materialize-GitTree -Repository $source -Tree $acceptedTree
     Write-Host "Source HEAD already has the accepted tree: $acceptedTree"
     Write-Host 'PREPARE_SOURCE_OK'
     return
@@ -66,7 +73,7 @@ if ($headTree -eq $acceptedTree) {
 
 if ($head -ne $upstreamCommit) {
     Write-Host "Fetching exact upstream commit $upstreamCommit..."
-    & git -C $source fetch --filter=blob:none origin $upstreamCommit
+    & git -C $source fetch origin $upstreamCommit
     if ($LASTEXITCODE -ne 0) { throw "git fetch of upstream commit failed (exit $LASTEXITCODE)." }
 
     $status = Invoke-Git -Repository $source -Arguments @('status','--porcelain=v1') -Capture
@@ -81,6 +88,11 @@ if ($head -ne $upstreamCommit) {
     throw "Source HEAD is not the required upstream commit. Expected $upstreamCommit, got $head."
 }
 
+# At this point the source is a verified-clean upstream checkout. Rewrite only
+# tracked index entries using the canonical LF policy before applying the patch.
+$upstreamTree = Invoke-Git -Repository $source -Arguments @('rev-parse',($upstreamCommit + '^{tree}')) -Capture
+Materialize-GitTree -Repository $source -Tree $upstreamTree
+
 Write-Host 'Checking patch applicability...'
 & git -C $source apply --check --whitespace=nowarn $patch
 if ($LASTEXITCODE -ne 0) { throw "Patch does not apply cleanly to upstream commit $upstreamCommit." }
@@ -94,5 +106,6 @@ if ($actualTree -ne $acceptedTree) {
     throw "Applied source tree mismatch. Expected $acceptedTree, got $actualTree."
 }
 
+Materialize-GitTree -Repository $source -Tree $actualTree
 Write-Host "Accepted tree verified: $actualTree"
 Write-Host 'PREPARE_SOURCE_OK'

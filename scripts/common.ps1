@@ -62,3 +62,32 @@ function Invoke-Git {
         throw "git $($Arguments -join ' ') failed in '$Repository' (exit $LASTEXITCODE)."
     }
 }
+function Materialize-GitTree {
+    param(
+        [Parameter(Mandatory)] [string] $Repository,
+        [Parameter(Mandatory)] [string] $Tree
+    )
+
+    $tarCommand = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if (-not $tarCommand) {
+        throw 'tar.exe is required to materialize canonical Git tree bytes on Windows.'
+    }
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('vllm-windows-native-' + [guid]::NewGuid().ToString('N'))
+    $archive = Join-Path $tempRoot 'tree.tar'
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    try {
+        & git -C $Repository archive --format=tar --output=$archive $Tree
+        if ($LASTEXITCODE -ne 0) {
+            throw "git archive failed for tree $Tree (exit $LASTEXITCODE)."
+        }
+        & $tarCommand.Source -xf $archive -C $Repository
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar extraction failed for tree $Tree (exit $LASTEXITCODE)."
+        }
+        Invoke-Git -Repository $Repository -Arguments @('update-index','--refresh') | Out-Null
+    }
+    finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
