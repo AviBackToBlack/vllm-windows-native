@@ -1,1 +1,2 @@
 *.patch text eol=lf whitespace=-trailing-space
+*.ps1 text eol=lf
