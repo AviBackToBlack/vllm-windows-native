@@ -110,5 +110,61 @@
     "Only single-GPU execution is accepted by this milestone; Windows NCCL / tensor parallel / pipeline parallel are not yet accepted.",
     "A non-fatal PyTorch c10d hostname connection warning (WinError 10049) remains to be investigated."
   ],
-  "provenance_note": "Community Windows ports were research/reference sources. This manifest records build inputs and validation; line-level provenance/attribution review remains required before a public release."
+  "provenance_note": "Community Windows ports were research/reference sources. This manifest records build inputs and validation; line-level provenance/attribution review remains required before a public release.",
+  "reproducibility_validation": {
+    "project_commit": "3954185a8bc0ec3f6896116c04cad37a1b11f4d8",
+    "source_materialization": "verified-git-tree-raw-blobs",
+    "source_tree": "115fa3e10d4b5a45c3e647cb343680a1fc743d18",
+    "rebuilt_artifact": {
+      "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl",
+      "size_bytes": 176828446,
+      "sha256": "BBACDC0F7DA556D6FEEDAA8F24376FF6E76B979B9A87ED52603F9B864C5703C9",
+      "zip_test": "pass",
+      "native_extension_count": 9,
+      "accepted_wheel_hash_match": false
+    },
+    "payload_comparison_to_accepted_artifact": {
+      "entry_count_accepted": 4727,
+      "entry_count_rebuilt": 4727,
+      "entry_names_match": true,
+      "different_content_entries": 10,
+      "python_content_differences": 0,
+      "native_extension_differences": 9,
+      "record_differences": 1,
+      "interpretation": "All Python and other non-native payload files are byte-identical. The remaining differences are the nine native PE extensions and RECORD; native binaries contain build-time PE metadata and absolute RelWithDebInfo source paths."
+    },
+    "pristine_runtime": {
+      "venv": "venv-29",
+      "normal_dependency_install": true,
+      "pip_check": "pass",
+      "native_imports": "9/9 pass",
+      "cli": "pass",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "compute_capability": "12.0",
+      "cold_offline": {
+        "result": "pass",
+        "engine_ready_seconds": 255.07,
+        "generation_seconds": 56.02,
+        "marker": "VLLM_REBUILD29_OFFLINE_OK",
+        "note": "First run used a new canonical source/AOT hash and paid one-time runtime JIT compilation cost."
+      },
+      "warm_offline": {
+        "result": "pass",
+        "engine_ready_seconds": 106.22,
+        "first_generation_seconds": 0.47,
+        "second_generation_seconds": 0.15,
+        "marker": "VLLM_REBUILD29_WARM_OK"
+      },
+      "openai_server": {
+        "result": "pass",
+        "models_http_status": 200,
+        "completions_http_status": 200,
+        "completion_elapsed_ms": 539,
+        "prompt_tokens": 5,
+        "completion_tokens": 16,
+        "expected_text_contains": "Dublin",
+        "cleanup": "pass"
+      }
+    }
+  }
 }
