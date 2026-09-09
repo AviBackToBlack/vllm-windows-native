@@ -10,21 +10,29 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, NamedTuple
 
 from openai_harmony import HarmonyError, Message, Role
-from xgrammar import StructuralTag
-from xgrammar.openai_tool_call_schema import BuiltinToolParam, FunctionToolParam
-from xgrammar.structural_tag import (
-    AnyTextFormat,
-    ConstStringFormat,
-    Format,
-    GrammarFormat,
-    JSONSchemaFormat,
-    OptionalFormat,
-    OrFormat,
-    RegexFormat,
-    SequenceFormat,
-    TagFormat,
-    TriggeredTagsFormat,
-)
+_XGRAMMAR_IMPORT_ERROR: ModuleNotFoundError | None = None
+try:
+    from xgrammar import StructuralTag
+    from xgrammar.openai_tool_call_schema import BuiltinToolParam, FunctionToolParam
+    from xgrammar.structural_tag import (
+        AnyTextFormat,
+        ConstStringFormat,
+        Format,
+        GrammarFormat,
+        JSONSchemaFormat,
+        OptionalFormat,
+        OrFormat,
+        RegexFormat,
+        SequenceFormat,
+        TagFormat,
+        TriggeredTagsFormat,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name is None or not (
+        exc.name == "xgrammar" or exc.name.startswith("xgrammar.")
+    ):
+        raise
+    _XGRAMMAR_IMPORT_ERROR = exc
 
 from vllm.entrypoints.chat_utils import make_tool_call_id
 from vllm.entrypoints.openai.chat_completion.protocol import (
@@ -405,8 +413,19 @@ _FUNCTION_CALL_BEGINS = [
     "{channel} to=functions.{name} json<|message|>",
     "{channel} to=functions.{name} <|constrain|>json<|message|>",
 ]
-_JSON_CONTENT = JSONSchemaFormat(json_schema={"type": "object"})
-_ANY_CONTENT = AnyTextFormat()
+if _XGRAMMAR_IMPORT_ERROR is None:
+    _JSON_CONTENT = JSONSchemaFormat(json_schema={"type": "object"})
+    _ANY_CONTENT = AnyTextFormat()
+else:
+    _JSON_CONTENT = None
+    _ANY_CONTENT = None
+
+
+def _require_xgrammar() -> None:
+    if _XGRAMMAR_IMPORT_ERROR is not None:
+        raise ImportError(
+            "Harmony structured outputs require the optional xgrammar dependency."
+        ) from _XGRAMMAR_IMPORT_ERROR
 
 
 def _assemble_tag(
@@ -455,6 +474,7 @@ def get_harmony_structural_tag(
     tool_choice: SimplifiedToolChoice,
     reasoning: bool,
 ) -> StructuralTag:
+    _require_xgrammar()
     # reasoning always enabled for Harmony
     del reasoning
 
@@ -512,6 +532,7 @@ def get_harmony_structural_tag(
 
 def _params_to_final_content(params: StructuredOutputsParams) -> Format | None:
     """Map StructuredOutputsParams in a XGrammar Format."""
+    _require_xgrammar()
     if params.json_object:
         return _JSON_CONTENT
     if params.json is not None:

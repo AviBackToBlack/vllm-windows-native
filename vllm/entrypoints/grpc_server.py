@@ -39,8 +39,7 @@ except ImportError as e:
         "version mismatch — see the chained exception above for details."
     ) from e
 
-import uvloop
-
+from vllm.utils.uvloop_compat import uvloop
 from vllm import envs
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.entrypoints.serve.utils.api_utils import log_version_and_model

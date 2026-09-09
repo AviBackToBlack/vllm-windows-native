@@ -5,8 +5,7 @@ import argparse
 import signal
 import time
 
-import uvloop
-
+from vllm.utils.uvloop_compat import uvloop
 import vllm
 import vllm.envs as envs
 from vllm.entrypoints.cli.types import CLISubcommand

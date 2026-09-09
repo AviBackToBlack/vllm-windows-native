@@ -9,26 +9,58 @@ from openai.types.responses.response import ToolChoice as ResponsesToolChoice
 from openai.types.responses.tool import Tool as ResponsesTool
 from openai.types.responses.tool_choice_allowed import ToolChoiceAllowed
 from openai.types.responses.tool_choice_function import ToolChoiceFunction
-from xgrammar import StructuralTag, normalize_tool_choice
-from xgrammar import get_model_structural_tag as get_xgrammar_model_structural_tag
-from xgrammar.openai_tool_call_schema import (
-    BuiltinToolParam,
-    FunctionToolParam,
-)
-from xgrammar.structural_tag import (
-    AnyTextFormat,
-    ConstStringFormat,
-    JSONSchemaFormat,
-    OptionalFormat,
-    OrFormat,
-    PlusFormat,
-    RegexFormat,
-    SequenceFormat,
-    StarFormat,
-    TagFormat,
-    TagsWithSeparatorFormat,
-    TriggeredTagsFormat,
-)
+_XGRAMMAR_IMPORT_ERROR: ModuleNotFoundError | None = None
+try:
+    from xgrammar import StructuralTag, normalize_tool_choice
+    from xgrammar import get_model_structural_tag as get_xgrammar_model_structural_tag
+    from xgrammar.openai_tool_call_schema import (
+        BuiltinToolParam,
+        FunctionToolParam,
+    )
+    from xgrammar.structural_tag import (
+        AnyTextFormat,
+        ConstStringFormat,
+        JSONSchemaFormat,
+        OptionalFormat,
+        OrFormat,
+        PlusFormat,
+        RegexFormat,
+        SequenceFormat,
+        StarFormat,
+        TagFormat,
+        TagsWithSeparatorFormat,
+        TriggeredTagsFormat,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name is None or not (
+        exc.name == "xgrammar" or exc.name.startswith("xgrammar.")
+    ):
+        raise
+    _XGRAMMAR_IMPORT_ERROR = exc
+    StructuralTag = Any
+    BuiltinToolParam = Any
+    FunctionToolParam = Any
+    AnyTextFormat = Any
+    ConstStringFormat = Any
+    JSONSchemaFormat = Any
+    OptionalFormat = Any
+    OrFormat = Any
+    PlusFormat = Any
+    RegexFormat = Any
+    SequenceFormat = Any
+    StarFormat = Any
+    TagFormat = Any
+    TagsWithSeparatorFormat = Any
+    TriggeredTagsFormat = Any
+    normalize_tool_choice = None
+    get_xgrammar_model_structural_tag = None
+
+
+def _require_xgrammar() -> None:
+    if _XGRAMMAR_IMPORT_ERROR is not None:
+        raise ImportError(
+            "Structured tool tags require the optional xgrammar dependency."
+        ) from _XGRAMMAR_IMPORT_ERROR
 
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionNamedToolChoiceParam,
@@ -113,6 +145,7 @@ def get_model_structural_tag(
     if tool_choice == "auto" and not _any_tool_strict(tools):
         return None
 
+    _require_xgrammar()
     dumped_tools = [_dump_tool_for_xgrammar(tool) for tool in tools]
     dumped_tool_choice = _dump_tool_choice_for_xgrammar(tool_choice)
 

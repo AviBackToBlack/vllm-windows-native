@@ -1,3 +1,7 @@
+#ifdef _MSC_VER
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
 // A CUDAPluggableAllocator based on cumem* APIs.
 // Important: allocation size, CUdeviceptr and CUmemGenericAllocationHandle*
 // need to be unsigned long long

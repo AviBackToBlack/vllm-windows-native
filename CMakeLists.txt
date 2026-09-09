@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.26)
 
+if(POLICY CMP0219)
+  cmake_policy(SET CMP0219 NEW)
+endif()
+
 # When building directly using CMake, make sure you run the install step
 # (it places the .so files in the correct location).
 #
@@ -19,6 +23,7 @@ set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_HIP_STANDARD 20)
 set(CMAKE_HIP_STANDARD_REQUIRED ON)
+
 
 # PyTorch headers require C++20; GCC < 11.3 has incomplete C++20 support.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "11.3")
@@ -85,7 +90,7 @@ endif()
 # `VLLM_PYTHON_EXECUTABLE` and is one of the supported versions.
 #
 if (VLLM_PYTHON_EXECUTABLE)
-  find_python_from_executable(${VLLM_PYTHON_EXECUTABLE} "${PYTHON_SUPPORTED_VERSIONS}")
+  find_python_from_executable("${VLLM_PYTHON_EXECUTABLE}" "${PYTHON_SUPPORTED_VERSIONS}")
 else()
   message(FATAL_ERROR
     "Please set VLLM_PYTHON_EXECUTABLE to the path of the desired python version"
@@ -275,9 +280,29 @@ endif()
 # Set CUDA include flags for CXX compiler.
 #
 if(VLLM_GPU_LANG STREQUAL "CUDA")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include")
+  if(MSVC)
+    include_directories("${CUDA_TOOLKIT_ROOT_DIR}/include")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include")
+  endif()
   if(CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${CUDA_TOOLKIT_ROOT_DIR}/include/cccl")
+    include_directories("${CUDA_TOOLKIT_ROOT_DIR}/include/cccl")
+  endif()
+
+  # Some Windows CUDA Toolkit installs omit optional math-library development
+  # headers. Allow the bootstrap to provide the official cuSOLVER
+  # redistributable from a project-managed location without mutating Program Files.
+  if(NOT VLLM_CUSOLVER_ROOT AND DEFINED ENV{VLLM_CUSOLVER_ROOT})
+    set(VLLM_CUSOLVER_ROOT "$ENV{VLLM_CUSOLVER_ROOT}" CACHE PATH
+        "Path to an external cuSOLVER redistributable root")
+  endif()
+  if(VLLM_CUSOLVER_ROOT)
+    if(NOT EXISTS "${VLLM_CUSOLVER_ROOT}/include/cusolverDn.h")
+      message(FATAL_ERROR
+        "VLLM_CUSOLVER_ROOT=${VLLM_CUSOLVER_ROOT} does not contain include/cusolverDn.h")
+    endif()
+    include_directories("${VLLM_CUSOLVER_ROOT}/include")
+    message(STATUS "Using external cuSOLVER headers from ${VLLM_CUSOLVER_ROOT}")
   endif()
 endif()
 
@@ -477,6 +502,38 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
       )
     endif()
     FetchContent_MakeAvailable(cutlass)
+
+    # Windows/MSVC: patch CUTLASS host/device annotation incompatibility.
+    # Keep this as a source-controlled dependency patch so clean builds are reproducible.
+    if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/cutlass-windows.patch")
+      set(_vllm_cutlass_win_patch "${CMAKE_SOURCE_DIR}/cutlass-windows.patch")
+      execute_process(
+        COMMAND git apply --check "${_vllm_cutlass_win_patch}"
+        WORKING_DIRECTORY "${cutlass_SOURCE_DIR}"
+        RESULT_VARIABLE _vllm_cutlass_patch_check
+        OUTPUT_QUIET ERROR_QUIET)
+      if(_vllm_cutlass_patch_check EQUAL 0)
+        message(STATUS "Applying cutlass-windows.patch")
+        execute_process(
+          COMMAND git apply "${_vllm_cutlass_win_patch}"
+          WORKING_DIRECTORY "${cutlass_SOURCE_DIR}"
+          RESULT_VARIABLE _vllm_cutlass_patch_apply)
+        if(NOT _vllm_cutlass_patch_apply EQUAL 0)
+          message(FATAL_ERROR "Failed to apply cutlass-windows.patch")
+        endif()
+      else()
+        execute_process(
+          COMMAND git apply --reverse --check "${_vllm_cutlass_win_patch}"
+          WORKING_DIRECTORY "${cutlass_SOURCE_DIR}"
+          RESULT_VARIABLE _vllm_cutlass_patch_reverse_check
+          OUTPUT_QUIET ERROR_QUIET)
+        if(_vllm_cutlass_patch_reverse_check EQUAL 0)
+          message(STATUS "cutlass-windows.patch already applied")
+        else()
+          message(FATAL_ERROR "cutlass-windows.patch does not match fetched CUTLASS")
+        endif()
+      endif()
+    endif()
 
     list(APPEND VLLM_STABLE_EXT_SRC
       "csrc/libtorch_stable/cutlass_extensions/common.cpp"
@@ -1154,6 +1211,11 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
   # Needed to use cuda/hip APIs from C-shim
   if(VLLM_GPU_LANG STREQUAL "CUDA")
     target_compile_definitions(_C_stable_libtorch PRIVATE USE_CUDA)
+    # q_gemm.cu calls cuBLAS directly (cublasHgemm). On Windows the
+    # import library is not pulled in transitively through torch_cuda.
+    if(MSVC)
+      target_link_libraries(_C_stable_libtorch PRIVATE CUDA::cublas)
+    endif()
     if(COOPERATIVE_TOPK_ARCHS)
       target_compile_definitions(_C_stable_libtorch PRIVATE
         VLLM_ENABLE_COOPERATIVE_TOPK=1)

@@ -245,7 +245,7 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
             for (int r = 0; r < kNRows; ++r) {
                 A_val[r] = A[state_idx * params.A_dstate_stride + r * params.A_d_stride];
                 // Multiply the real part of A with LOG2E so we can use exp2f instead of expf.
-                constexpr float kLog2e = M_LOG2E;
+                constexpr float kLog2e = 1.44269504088896340736f;
                 A_val[r] *= kLog2e;
             }
             // This variable holds B * C if both B and C are constant across seqlen. If only B varies
@@ -390,35 +390,58 @@ void selective_scan_fwd_kernel(SSMParamsBase params) {
     }
 }
 
-template<int kNThreads, int kNItems, typename input_t, typename weight_t, typename state_t>
-void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
-    // Only kNRows == 1 is tested for now, which ofc doesn't differ from previously when we had each block
-    // processing 1 row.
+// Helper to avoid nested BOOL_SWITCH lambdas: MSVC doesn't propagate
+// constexpr through lambda captures, so template args must be real constants.
+template<int kNThreads, int kNItems, typename input_t, typename weight_t, typename state_t,
+         bool kIsEvenLen, bool kHasZ, bool kVarlen>
+void selective_scan_fwd_dispatch(SSMParamsBase &params, cudaStream_t stream) {
     constexpr int kNRows = 1;
-    // kIsVariableB, kIsVariableC and kHasZ are all set to True to reduce binary size
     constexpr bool kIsVariableB = true;
     constexpr bool kIsVariableC = true;
-    BOOL_SWITCH(params.seqlen % (kNThreads * kNItems) == 0, kIsEvenLen, [&] {
-        BOOL_SWITCH(params.z_ptr != nullptr , kHasZ, [&] {
-            BOOL_SWITCH(params.query_start_loc_ptr != nullptr , kVarlen, [&] {
-                using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ,  kVarlen, input_t, weight_t, state_t>;
-                constexpr int kSmemSize = Ktraits::kSmemSize + kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t);
-                dim3 grid(params.batch, params.dim / kNRows);
-                auto kernel = &selective_scan_fwd_kernel<Ktraits>;
-                if (kSmemSize >= 48 * 1024) {
+    using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ, kVarlen, input_t, weight_t, state_t>;
+    constexpr int kSmemSize = Ktraits::kSmemSize + kNRows * MAX_DSTATE * sizeof(typename Ktraits::scan_t);
+    dim3 grid(params.batch, params.dim / kNRows);
+    auto kernel = &selective_scan_fwd_kernel<Ktraits>;
+    if (kSmemSize >= 48 * 1024) {
 #ifdef USE_ROCM
-                    STD_CUDA_CHECK(hipFuncSetAttribute(
-                        reinterpret_cast<const void*>(kernel), hipFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+        STD_CUDA_CHECK(hipFuncSetAttribute(
+            reinterpret_cast<const void*>(kernel), hipFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
 #else
-                    STD_CUDA_CHECK(cudaFuncSetAttribute(
-                        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
+        STD_CUDA_CHECK(cudaFuncSetAttribute(
+            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemSize));
 #endif
-                }
-                kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
-                STD_CUDA_KERNEL_LAUNCH_CHECK();
-            });
-        });
-    });
+    }
+    kernel<<<grid, Ktraits::kNThreads, kSmemSize, stream>>>(params);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+template<int kNThreads, int kNItems, typename input_t, typename weight_t, typename state_t>
+void selective_scan_fwd_launch(SSMParamsBase &params, cudaStream_t stream) {
+    const bool isEvenLen = params.seqlen % (kNThreads * kNItems) == 0;
+    const bool hasZ = params.z_ptr != nullptr;
+    const bool varlen = params.query_start_loc_ptr != nullptr;
+
+    #define DISPATCH_SSM(el, hz, vl) \
+        selective_scan_fwd_dispatch<kNThreads, kNItems, input_t, weight_t, state_t, el, hz, vl>(params, stream)
+
+    if (isEvenLen) {
+        if (hasZ) {
+            if (varlen) DISPATCH_SSM(true, true, true);
+            else        DISPATCH_SSM(true, true, false);
+        } else {
+            if (varlen) DISPATCH_SSM(true, false, true);
+            else        DISPATCH_SSM(true, false, false);
+        }
+    } else {
+        if (hasZ) {
+            if (varlen) DISPATCH_SSM(false, true, true);
+            else        DISPATCH_SSM(false, true, false);
+        } else {
+            if (varlen) DISPATCH_SSM(false, false, true);
+            else        DISPATCH_SSM(false, false, false);
+        }
+    }
+    #undef DISPATCH_SSM
 }
 
 template<typename input_t, typename weight_t, typename state_t>

@@ -11,6 +11,7 @@ from vllm.config.model import PROCESSED_LOGPROBS_MODES, LogprobsMode
 from vllm.logger import init_logger
 from vllm.platforms import CpuArchEnum, current_platform
 from vllm.triton_utils import HAS_TRITON
+from vllm.utils.flashinfer import has_flashinfer
 
 if HAS_TRITON:
     from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
@@ -33,8 +34,8 @@ def flashinfer_sampler_supported() -> bool:
     unsupported. Raises ``RuntimeError`` if the user explicitly opted in
     via the env var but FlashInfer is unavailable.
 
-    Assumes flashinfer is installed, as guaranteed by ``requirements/cuda.txt``;
-    otherwise importing the FlashInfer backend below raises ``ImportError``.
+    FlashInfer is optional; when it is not installed the sampler falls back to
+    the native implementation unless the user explicitly opted in.
 
     Note: callers must additionally ensure ``logprobs_mode`` doesn't require
     post-top-k/top-p logits/logprobs for any request whose logprobs will be
@@ -48,15 +49,18 @@ def flashinfer_sampler_supported() -> bool:
             "VLLM_USE_FLASHINFER_SAMPLER=0."
         )
         return False
-    from vllm.v1.attention.backends.flashinfer import FlashInferBackend
-
-    capability = current_platform.get_device_capability()
-    assert capability is not None
     unsupported_reason: str | None = None
-    if not FlashInferBackend.supports_compute_capability(capability):
-        unsupported_reason = (
-            f"unsupported compute capability {capability.as_version_str()}"
-        )
+    if not has_flashinfer():
+        unsupported_reason = "FlashInfer package is not installed"
+    else:
+        from vllm.v1.attention.backends.flashinfer import FlashInferBackend
+
+        capability = current_platform.get_device_capability()
+        assert capability is not None
+        if not FlashInferBackend.supports_compute_capability(capability):
+            unsupported_reason = (
+                f"unsupported compute capability {capability.as_version_str()}"
+            )
 
     if unsupported_reason is None:
         logger.info_once("Using FlashInfer for top-p & top-k sampling.", scope="global")

@@ -540,12 +540,17 @@ def _support_torch_compile(
 
             factors.append(_model_hash_key(self.forward))
             hash_key = hashlib.sha256(str(factors).encode()).hexdigest()
-            cache_dir = os.path.join(
-                envs.VLLM_CACHE_ROOT,
-                "torch_compile_cache",
-                "torch_aot_compile",
-                hash_key,
-            )
+            if sys.platform == "win32":
+                # Keep the full cache key but shorten the directory layout to
+                # avoid legacy MAX_PATH failures in nested Torch AOT caches.
+                cache_dir = os.path.join(envs.VLLM_CACHE_ROOT, "aot", hash_key)
+            else:
+                cache_dir = os.path.join(
+                    envs.VLLM_CACHE_ROOT,
+                    "torch_compile_cache",
+                    "torch_aot_compile",
+                    hash_key,
+                )
 
             # Hash-level dir; shared across ranks on the same node.
             self.compilation_config.local_cache_dir = cache_dir

@@ -18,6 +18,9 @@
 #include <cuda_runtime.h>
 #include <type_traits>
 
+#ifdef _MSC_VER
+typedef unsigned int uint;
+#endif
 #include "torch_utils.h"
 
 #include "async_util.cuh"

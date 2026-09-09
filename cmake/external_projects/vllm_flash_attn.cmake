@@ -57,6 +57,54 @@ install(CODE "set(CMAKE_INSTALL_PREFIX \"\${CMAKE_INSTALL_PREFIX}/vllm/\")" ALL_
 FetchContent_MakeAvailable(vllm-flash-attn)
 message(STATUS "vllm-flash-attn is available at ${vllm-flash-attn_SOURCE_DIR}")
 
+# Windows/MSVC: vllm-flash-attn carries its own CUTLASS copy. Apply only the
+# compiler-proven host/device annotation fix to that vendored tree.
+if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/vllm-flash-attn-cutlass-windows.patch")
+  set(_vllm_fa_cutlass_win_patch "${CMAKE_SOURCE_DIR}/vllm-flash-attn-cutlass-windows.patch")
+  set(_vllm_fa_cutlass_dir "${vllm-flash-attn_SOURCE_DIR}/csrc/cutlass")
+  execute_process(
+    COMMAND git apply --check "${_vllm_fa_cutlass_win_patch}"
+    WORKING_DIRECTORY "${_vllm_fa_cutlass_dir}"
+    RESULT_VARIABLE _vllm_fa_cutlass_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+  if(_vllm_fa_cutlass_patch_check EQUAL 0)
+    message(STATUS "Applying vllm-flash-attn-cutlass-windows.patch")
+    execute_process(
+      COMMAND git apply "${_vllm_fa_cutlass_win_patch}"
+      WORKING_DIRECTORY "${_vllm_fa_cutlass_dir}"
+      RESULT_VARIABLE _vllm_fa_cutlass_patch_apply)
+    if(NOT _vllm_fa_cutlass_patch_apply EQUAL 0)
+      message(FATAL_ERROR "Failed to apply vllm-flash-attn-cutlass-windows.patch")
+    endif()
+  else()
+    execute_process(
+      COMMAND git apply --reverse --check "${_vllm_fa_cutlass_win_patch}"
+      WORKING_DIRECTORY "${_vllm_fa_cutlass_dir}"
+      RESULT_VARIABLE _vllm_fa_cutlass_patch_reverse_check
+      OUTPUT_QUIET ERROR_QUIET)
+    if(_vllm_fa_cutlass_patch_reverse_check EQUAL 0)
+      message(STATUS "vllm-flash-attn-cutlass-windows.patch already applied")
+    else()
+      message(FATAL_ERROR "vllm-flash-attn-cutlass-windows.patch does not match fetched vllm-flash-attn CUTLASS")
+    endif()
+  endif()
+endif()
+
+# MSVC keeps __cplusplus at its legacy value unless /Zc:__cplusplus is enabled,
+# while CUTLASS also uses _MSVC_LANG. That mismatch makes C++17 type-trait
+# aliases disappear from platform.h while exmy_base.h still expects them.
+# Scope the fix to FlashAttention targets so unrelated incremental objects stay cached.
+if(MSVC)
+  foreach(_vllm_fa_target _vllm_fa2_C _vllm_fa3_C)
+    if(TARGET ${_vllm_fa_target})
+      target_compile_options(${_vllm_fa_target} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>)
+      target_compile_definitions(${_vllm_fa_target} PRIVATE _USE_MATH_DEFINES)
+    endif()
+  endforeach()
+endif()
+
 # Restore the install prefix after FA's install rules
 install(CODE "set(CMAKE_INSTALL_PREFIX \"\${OLD_CMAKE_INSTALL_PREFIX}\")" ALL_COMPONENTS)
 install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)

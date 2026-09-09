@@ -1,0 +1,98 @@
+diff --git a/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h b/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h
+index 56a9ceb..4c38c79 100644
+--- a/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h
++++ b/qutlass/csrc/include/cutlass_extensions/epilogue/threadblock/epilogue_quant.h
+@@ -74,7 +74,7 @@ namespace epilogue {
+ namespace threadblock {
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+-CUTLASS_HOST_DEVICE
++CUTLASS_DEVICE
+ static uint32_t fp32_vec_to_e2m1(float* array)
+ {
+     uint32_t val;
+@@ -96,7 +96,7 @@ static uint32_t fp32_vec_to_e2m1(float* array)
+     return val;
+ }
+ 
+-CUTLASS_HOST_DEVICE
++CUTLASS_DEVICE
+ static uint8_t f32_to_e4m3_hi(float v) {
+   uint16_t packed;
+   // 0.0f → lower 8 bits, v → upper 8 bits
+@@ -108,7 +108,7 @@ static uint8_t f32_to_e4m3_hi(float v) {
+   return uint8_t(packed >> 8);
+ }
+ 
+-CUTLASS_HOST_DEVICE
++CUTLASS_DEVICE
+ static float e4m3_to_f32(uint8_t hi) {
+     uint16_t packed = uint16_t(hi) << 8;
+     uint32_t fp16x2;
+@@ -129,7 +129,7 @@ static float e4m3_to_f32(uint8_t hi) {
+ }
+ 
+ // Fast reciprocal.
+-CUTLASS_HOST_DEVICE
++CUTLASS_DEVICE
+ static float reciprocal_approximate_ftz(float a) {
+   float b;
+   asm volatile("rcp.approx.ftz.f32 %0, %1;\n" : "=f"(b) : "f"(a));
+@@ -439,21 +439,21 @@ private:
+   struct EpilogueOpImpl<32, Epilogue> {
+     template<typename... Args>
+     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
+-      self.template op_32(std::forward<Args>(args)...);
++      self.op_32(std::forward<Args>(args)...);
+     }
+   };
+   template<typename Epilogue>
+   struct EpilogueOpImpl<64, Epilogue> {
+     template<typename... Args>
+     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
+-      self.template op_64(std::forward<Args>(args)...);
++      self.op_64(std::forward<Args>(args)...);
+     }
+   };
+   template<typename Epilogue>
+   struct EpilogueOpImpl<128, Epilogue> {
+     template<typename... Args>
+     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
+-      self.template op_128(std::forward<Args>(args)...);
++      self.op_128(std::forward<Args>(args)...);
+     }
+   };
+ 
+@@ -1532,28 +1532,28 @@ private:
+   struct EpilogueOpImpl<16, Epilogue> {
+     template<typename... Args>
+     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
+-      self.template op_16(std::forward<Args>(args)...);
++      self.op_16(std::forward<Args>(args)...);
+     }
+   };
+   template<typename Epilogue>
+   struct EpilogueOpImpl<32, Epilogue> {
+     template<typename... Args>
+     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
+-      self.template op_32(std::forward<Args>(args)...);
++      self.op_32(std::forward<Args>(args)...);
+     }
+   };
+   template<typename Epilogue>
+   struct EpilogueOpImpl<64, Epilogue> {
+     template<typename... Args>
+     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
+-      self.template op_64(std::forward<Args>(args)...);
++      self.op_64(std::forward<Args>(args)...);
+     }
+   };
+   template<typename Epilogue>
+   struct EpilogueOpImpl<128, Epilogue> {
+     template<typename... Args>
+     CUTLASS_DEVICE static void run(Epilogue& self, Args&&... args) {
+-      self.template op_128(std::forward<Args>(args)...);
++      self.op_128(std::forward<Args>(args)...);
+     }
+   };
+ 

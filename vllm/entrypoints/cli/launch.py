@@ -5,8 +5,7 @@ import argparse
 import inspect
 import signal
 
-import uvloop
-
+from vllm.utils.uvloop_compat import uvloop
 from vllm import envs
 from vllm.config import VllmConfig
 from vllm.engine.arg_utils import AsyncEngineArgs

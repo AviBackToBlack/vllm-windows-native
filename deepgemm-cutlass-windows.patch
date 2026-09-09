@@ -1,0 +1,38 @@
+diff --git a/include/cutlass/arch/memory_sm75.h b/include/cutlass/arch/memory_sm75.h
+index 040f7074..41530a7d 100644
+--- a/include/cutlass/arch/memory_sm75.h
++++ b/include/cutlass/arch/memory_sm75.h
+@@ -240,11 +240,16 @@ struct shared_load_op<AccessType, 16> {
+   shared_load_op(AccessType &D, void const *ptr) {
+     unsigned addr = cutlass_get_smem_pointer(ptr);
+ 
++#if defined(__CUDA_ARCH__)
+     uint4 v;
+     asm volatile ("ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];" : 
+       "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "r"(addr));
+ 
+     D = reinterpret_cast<AccessType const &>(v);
++#else
++    (void)D;
++    (void)addr;
++#endif
+   }
+ };
+ 
+@@ -256,11 +261,16 @@ struct shared_load_op<AccessType, 8> {
+   shared_load_op(AccessType &D, void const *ptr) {
+     unsigned addr = cutlass_get_smem_pointer(ptr);
+ 
++#if defined(__CUDA_ARCH__)
+     uint2 v;
+     asm volatile ("ld.shared.v2.b32 {%0, %1}, [%2];" : 
+       "=r"(v.x), "=r"(v.y) : "r"(addr));
+ 
+     D = reinterpret_cast<AccessType const &>(v);
++#else
++    (void)D;
++    (void)addr;
++#endif
+   }
+ };
+ 

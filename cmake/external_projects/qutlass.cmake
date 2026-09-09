@@ -53,6 +53,39 @@ if(NOT qutlass_SOURCE_DIR)
 endif()
 message(STATUS "[QUTLASS] QuTLASS is available at ${qutlass_SOURCE_DIR}")
 
+# Windows/MSVC: QuTLASS has a few CUDA-front-end portability issues in its
+# fused quantization epilogue. Keep the dependency fix reproducible and fail
+# loudly if the pinned source no longer matches the patch.
+if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/qutlass-windows.patch")
+  set(_vllm_qutlass_win_patch "${CMAKE_SOURCE_DIR}/qutlass-windows.patch")
+  execute_process(
+    COMMAND git apply --check "${_vllm_qutlass_win_patch}"
+    WORKING_DIRECTORY "${qutlass_SOURCE_DIR}"
+    RESULT_VARIABLE _vllm_qutlass_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+  if(_vllm_qutlass_patch_check EQUAL 0)
+    message(STATUS "Applying qutlass-windows.patch")
+    execute_process(
+      COMMAND git apply "${_vllm_qutlass_win_patch}"
+      WORKING_DIRECTORY "${qutlass_SOURCE_DIR}"
+      RESULT_VARIABLE _vllm_qutlass_patch_apply)
+    if(NOT _vllm_qutlass_patch_apply EQUAL 0)
+      message(FATAL_ERROR "Failed to apply qutlass-windows.patch")
+    endif()
+  else()
+    execute_process(
+      COMMAND git apply --reverse --check "${_vllm_qutlass_win_patch}"
+      WORKING_DIRECTORY "${qutlass_SOURCE_DIR}"
+      RESULT_VARIABLE _vllm_qutlass_patch_reverse_check
+      OUTPUT_QUIET ERROR_QUIET)
+    if(_vllm_qutlass_patch_reverse_check EQUAL 0)
+      message(STATUS "qutlass-windows.patch already applied")
+    else()
+      message(FATAL_ERROR "qutlass-windows.patch does not match fetched QuTLASS")
+    endif()
+  endif()
+endif()
+
 if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
   cuda_archs_loose_intersection(QUTLASS_SM120_ARCHS "12.0f" "${CUDA_ARCHS}")
   if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.4)
@@ -92,9 +125,17 @@ if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8 AND QUTLASS_ARCHS)
     ${qutlass_SOURCE_DIR}/qutlass/csrc/gemm_ada.cu
     ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_mx.cu
     ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_nv.cu
-    ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_mx_sm100.cu
-    ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_nv_sm100.cu
   )
+
+  # These two translation units instantiate ArchTag=Sm100 and their entry
+  # points are referenced only by the TARGET_CUDA_ARCH 100/101/110 branch in
+  # QuTLASS bindings.cpp. Do not compile dead SM100 kernels into an SM120-only
+  # extension.
+  if(QUTLASS_TARGET_CC EQUAL 100)
+    list(APPEND QUTLASS_SOURCES
+      ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_mx_sm100.cu
+      ${qutlass_SOURCE_DIR}/qutlass/csrc/fused_quantize_nv_sm100.cu)
+  endif()
 
   set(QUTLASS_INCLUDES
     ${qutlass_SOURCE_DIR}

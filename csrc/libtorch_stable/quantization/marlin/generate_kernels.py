@@ -3,7 +3,6 @@
 import glob
 import itertools
 import os
-import subprocess
 import sys
 
 import jinja2
@@ -164,10 +163,12 @@ QUANT_CONFIGS = [
 
 def remove_old_kernels():
     for filename in glob.glob(os.path.dirname(__file__) + "/*kernel_*.cu"):
-        subprocess.call(["rm", "-f", filename])
+        if os.path.exists(filename):
+            os.remove(filename)
 
     filename = os.path.dirname(__file__) + "/kernel_selector.h"
-    subprocess.call(["rm", "-f", filename])
+    if os.path.exists(filename):
+        os.remove(filename)
 
 
 def generate_new_kernels():
@@ -265,7 +266,7 @@ def generate_new_kernels():
                 if kernel_selector_str == FILE_HEAD_COMMENT:
                     kernel_selector_str += f"if ({conditions})\n  kernel = "
                 else:
-                    kernel_selector_str += f"else if ({conditions})\n  kernel = "
+                    kernel_selector_str += f"if ({conditions})\n  kernel = "
 
                 kernel_template2 = (
                     "Marlin<{{a_type_id}}, {{b_type_id}}, {{c_type_id}}, "

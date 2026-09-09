@@ -320,8 +320,32 @@ def sanitize_message(message: str) -> str:
     return message.strip()
 
 
+def _logger_supports_unicode_logo(lgr: Logger) -> bool:
+    """Return whether active stream handlers can encode the block logo."""
+    current: Logger | None = lgr
+    while current is not None:
+        for handler in current.handlers:
+            stream = getattr(handler, "stream", None)
+            encoding = getattr(stream, "encoding", None)
+            if encoding is None:
+                continue
+            try:
+                chr(0x2588).encode(encoding)
+            except (LookupError, UnicodeEncodeError):
+                return False
+        if not current.propagate:
+            break
+        current = current.parent
+    return True
+
+
 def log_version_and_model(lgr: Logger, version: str, model_name: str) -> None:
-    if envs.VLLM_DISABLE_LOG_LOGO or (formatter := current_formatter_type(lgr)) is None:
+    formatter = current_formatter_type(lgr)
+    if (
+        envs.VLLM_DISABLE_LOG_LOGO
+        or formatter is None
+        or (os.name == "nt" and not _logger_supports_unicode_logo(lgr))
+    ):
         message = "vLLM server version %s, serving model %s"
     else:
         logo_template = Template(

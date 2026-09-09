@@ -15,12 +15,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
-import uvloop
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.datastructures import State
 
+from vllm.utils.uvloop_compat import uvloop
 import vllm.envs as envs
 from vllm.config import ModelConfig, VllmConfig
 from vllm.engine.arg_utils import AsyncEngineArgs

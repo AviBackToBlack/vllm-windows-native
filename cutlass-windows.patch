@@ -1,0 +1,12 @@
+diff --git a/include/cutlass/cuda_host_adapter.hpp b/include/cutlass/cuda_host_adapter.hpp
+--- a/include/cutlass/cuda_host_adapter.hpp
++++ b/include/cutlass/cuda_host_adapter.hpp
+@@ -405,7 +405,7 @@ public:
+ 
+   /// Fills a buffer in Global Memory with a byte sequence copied from host memory
+   template<class FillValueType>
+-  CUTLASS_HOST_DEVICE
++  CUTLASS_HOST
+   Status memsetDevice(
+       void* destination,
+       FillValueType fill_value, 

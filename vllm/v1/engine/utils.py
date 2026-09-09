@@ -3,6 +3,7 @@
 
 import contextlib
 import os
+import sys
 import threading
 import weakref
 from collections.abc import Callable, Iterator
@@ -1226,12 +1227,25 @@ def wait_for_engine_startup(
         and not parallel_config.data_parallel_external_lb
     )
 
-    if proc_manager is not None:
+    if sys.platform != "win32" and proc_manager is not None:
         for sentinel in proc_manager.sentinels():
             poller.register(sentinel, zmq.POLLIN)
-    if coord_process is not None:
+    if sys.platform != "win32" and coord_process is not None:
         poller.register(coord_process.sentinel, zmq.POLLIN)
     while any(conn_pending) or any(start_pending):
+        if sys.platform == "win32":
+            # multiprocessing sentinels are Win32 HANDLEs, not sockets, and
+            # cannot be registered with a ZeroMQ poller. Check process
+            # liveness explicitly while polling only the ZMQ handshake socket.
+            finished = proc_manager.finished_procs() if proc_manager else {}
+            if coord_process is not None and coord_process.exitcode is not None:
+                finished[coord_process.name] = coord_process.exitcode
+            if finished:
+                raise RuntimeError(
+                    "Engine core initialization failed. "
+                    "See root cause above. "
+                    f"Failed core proc(s): {finished}"
+                )
         events = poller.poll(STARTUP_POLL_PERIOD_MS)
         if not events:
             if any(conn_pending):

@@ -1,5 +1,10 @@
 #include <Python.h>
 
+#if defined(_WIN32)
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+#endif
+
 extern "C" {
 
 #include <stdbool.h>
@@ -10,10 +15,12 @@ extern "C" {
   #include <x86intrin.h>
 #endif
 
-#if defined(CLOCK_MONOTONIC_RAW)
-  #define TIMEOUT_CLOCK CLOCK_MONOTONIC_RAW
-#else
-  #define TIMEOUT_CLOCK CLOCK_MONOTONIC
+#if !defined(_WIN32)
+  #if defined(CLOCK_MONOTONIC_RAW)
+    #define TIMEOUT_CLOCK CLOCK_MONOTONIC_RAW
+  #else
+    #define TIMEOUT_CLOCK CLOCK_MONOTONIC
+  #endif
 #endif
 
 #define CPU_SUPPORT_NONE 0
@@ -25,6 +32,24 @@ typedef struct {
   unsigned int cpu_support;
   unsigned int max_monitor_line_size;
 } spinloop_state_t;
+
+static int get_monotonic_time(struct timespec* t) {
+#if defined(_WIN32)
+  LARGE_INTEGER frequency;
+  LARGE_INTEGER counter;
+  if (!QueryPerformanceFrequency(&frequency) ||
+      !QueryPerformanceCounter(&counter)) {
+    return -1;
+  }
+  t->tv_sec = (time_t)(counter.QuadPart / frequency.QuadPart);
+  t->tv_nsec =
+      (long)(((counter.QuadPart % frequency.QuadPart) * 1000000000LL) /
+             frequency.QuadPart);
+  return 0;
+#else
+  return clock_gettime(TIMEOUT_CLOCK, t);
+#endif
+}
 
 static void determine_cpu_support(spinloop_state_t* state) {
   state->cpu_support = CPU_SUPPORT_NONE;
@@ -78,8 +103,8 @@ static PyObject* method_spinloop(PyObject* self, PyObject* args,
   }
 
   struct timespec t_start;
-  if (clock_gettime(TIMEOUT_CLOCK, &t_start) != 0) {
-    PyErr_SetString(PyExc_RuntimeError, "clock_gettime() failed!");
+  if (get_monotonic_time(&t_start) != 0) {
+    PyErr_SetString(PyExc_RuntimeError, "monotonic clock query failed!");
     PyBuffer_Release(&buffer);
     return NULL;
   }
@@ -108,8 +133,8 @@ static PyObject* method_spinloop(PyObject* self, PyObject* args,
     // comparison cost
     if (have_timeout && (iteration & 15u) == 0) {
       struct timespec t_now;
-      if (clock_gettime(TIMEOUT_CLOCK, &t_now) != 0) {
-        PyErr_SetString(PyExc_RuntimeError, "clock_gettime() failed!");
+      if (get_monotonic_time(&t_now) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "monotonic clock query failed!");
         error = true;
         break;
       }

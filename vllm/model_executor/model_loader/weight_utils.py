@@ -9,6 +9,7 @@ import glob
 import hashlib
 import json
 import os
+import posixpath
 import tempfile
 import threading
 import time
@@ -463,7 +464,9 @@ def download_weights_from_hf(
         try:
             fs = hf_fs()
             file_list = fs.ls(
-                os.path.join(model_name_or_path, subfolder or ""),
+                posixpath.join(model_name_or_path, subfolder)
+                if subfolder
+                else model_name_or_path,
                 detail=False,
                 revision=revision,
             )

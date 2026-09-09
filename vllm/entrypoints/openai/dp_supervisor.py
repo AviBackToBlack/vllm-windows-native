@@ -19,9 +19,9 @@ from multiprocessing.process import BaseProcess
 import aiohttp
 import psutil
 import uvicorn
-import uvloop
 from fastapi import FastAPI, Response
 
+from vllm.utils.uvloop_compat import uvloop
 import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.utils.system_utils import (

@@ -11,10 +11,10 @@ import warnings
 from typing import Any
 
 import torch
-import uvloop
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, PreTrainedTokenizerBase
 
+from vllm.utils.uvloop_compat import uvloop
 from vllm.benchmarks.datasets import (
     AIMODataset,
     ASRDataset,

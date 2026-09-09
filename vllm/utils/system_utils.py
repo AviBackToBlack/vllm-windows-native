@@ -268,14 +268,15 @@ def kill_process_tree(pid: int):
     # Get all children recursively
     children = parent.children(recursive=True)
 
-    # Send SIGKILL to all children first
+    # psutil.kill() maps to SIGKILL on POSIX and TerminateProcess on Windows.
+    # Using the Process handle avoids os.kill()'s Windows-specific access quirks.
     for child in children:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(child.pid, signal.SIGKILL)
+        with contextlib.suppress(psutil.NoSuchProcess):
+            child.kill()
 
     # Finally kill the parent
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
+    with contextlib.suppress(psutil.NoSuchProcess):
+        parent.kill()
 
 
 # Resource utilities

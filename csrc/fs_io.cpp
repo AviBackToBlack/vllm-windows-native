@@ -3,13 +3,18 @@
 
 #include <Python.h>
 
-#include <errno.h>
+#include <cerrno>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <system_error>
+#include <vector>
+
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
-
-#include <filesystem>
-#include <string>
-#include <vector>
+#endif
 
 #if defined(O_DIRECT)
 constexpr int kODirectFlag = O_DIRECT;
@@ -24,7 +29,7 @@ namespace {
 // Returns 0 on success, or the std::error_code's POSIX-compatible value on
 // failure, mirroring the errno convention used by the syscalls below.
 inline int ensure_parent_dirs(const std::string& path) {
-  const auto parent = std::filesystem::path(path).parent_path();
+  const auto parent = std::filesystem::u8path(path).parent_path();
   if (parent.empty()) {
     return 0;
   }
@@ -39,6 +44,46 @@ inline int ensure_parent_dirs(const std::string& path) {
 // file is removed.
 inline int _store_block(const char* tmp_path, const char* dest_path,
                         const char* src, size_t size, bool use_o_direct) {
+#ifdef _WIN32
+  std::error_code ec;
+  const auto tmp = std::filesystem::u8path(tmp_path);
+  const auto dest = std::filesystem::u8path(dest_path);
+  if (std::filesystem::exists(dest, ec)) {
+    return 0;
+  }
+  ec.clear();
+  if (const int err = ensure_parent_dirs(dest_path); err != 0) {
+    return err;
+  }
+  if (std::filesystem::exists(tmp, ec)) {
+    return EEXIST;
+  }
+
+  std::ofstream output(tmp, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    return errno ? errno : EIO;
+  }
+  output.write(src, static_cast<std::streamsize>(size));
+  output.close();
+  if (!output) {
+    std::filesystem::remove(tmp, ec);
+    return EIO;
+  }
+
+  std::filesystem::rename(tmp, dest, ec);
+  if (ec) {
+    // Another writer may have won the race after our initial lookup.
+    std::error_code exists_ec;
+    if (std::filesystem::exists(dest, exists_ec)) {
+      std::filesystem::remove(tmp, exists_ec);
+      return 0;
+    }
+    const int err = ec.value();
+    std::filesystem::remove(tmp, ec);
+    return err;
+  }
+  return 0;
+#else
   if (access(dest_path, F_OK) == 0) {
     return 0;  // Already present.
   }
@@ -75,6 +120,7 @@ inline int _store_block(const char* tmp_path, const char* dest_path,
   }
 
   return 0;
+#endif
 }
 
 // Core single-block load: dst/size are raw pointer + byte count. Returns 0
@@ -82,6 +128,24 @@ inline int _store_block(const char* tmp_path, const char* dest_path,
 // the source file is removed since a partially-read block should not be reused.
 inline int _load_block(const char* source_path, char* dst, size_t size,
                        bool use_o_direct) {
+#ifdef _WIN32
+  const auto source = std::filesystem::u8path(source_path);
+  std::ifstream input(source, std::ios::binary);
+  if (!input) {
+    std::error_code ec;
+    std::filesystem::remove(source, ec);
+    return errno ? errno : ENOENT;
+  }
+  input.read(dst, static_cast<std::streamsize>(size));
+  const auto bytes_read = input.gcount();
+  input.close();
+  if (bytes_read != static_cast<std::streamsize>(size)) {
+    std::error_code ec;
+    std::filesystem::remove(source, ec);
+    return EIO;
+  }
+  return 0;
+#else
   const int o_direct_flag = use_o_direct ? kODirectFlag : 0;
   const int fd = open(source_path, O_RDONLY | o_direct_flag, 0);
   if (fd < 0) {
@@ -105,12 +169,15 @@ inline int _load_block(const char* source_path, char* dst, size_t size,
   }
 
   return 0;
+#endif
 }
 
 inline void _batch_lookup(const std::vector<const char*>& paths,
                           std::vector<int>& exists_flags) {
   for (size_t i = 0; i < paths.size(); i++) {
-    exists_flags[i] = (access(paths[i], F_OK) == 0) ? 1 : 0;
+    std::error_code error;
+    const auto path = std::filesystem::u8path(paths[i]);
+    exists_flags[i] = std::filesystem::exists(path, error) ? 1 : 0;
   }
 }
 
@@ -155,7 +222,7 @@ inline void release_buffer_list(std::vector<Py_buffer>& buffers) {
 /// @brief Check file existence for a batch of paths.
 /// @param paths list[str] – absolute paths to check.
 /// @return list[bool] – True if the corresponding path exists, False otherwise.
-/// @note Releases the GIL for the entire batch. File existence via access(2).
+/// @note Releases the GIL for the entire batch.
 static PyObject* batch_lookup(PyObject* /*self*/, PyObject* args) {
   PyObject* path_list;
   if (!PyArg_ParseTuple(args, "O!", &PyList_Type, &path_list)) {

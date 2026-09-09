@@ -139,6 +139,10 @@ def get_tcp_uri(ip: str, port: int) -> str:
 
 
 def get_open_zmq_ipc_path() -> str:
+    if sys.platform == "win32":
+        # pyzmq does not support the ipc:// transport on Windows. Use a
+        # loopback TCP endpoint for local-only process communication instead.
+        return get_tcp_uri(get_loopback_ip(), get_open_port())
     base_rpc_path = envs.VLLM_RPC_BASE_PATH
     return f"ipc://{base_rpc_path}/{uuid4()}"
 

@@ -115,8 +115,18 @@ async def serve_http(
     async def dummy_shutdown() -> None:
         pass
 
-    loop.add_signal_handler(signal.SIGINT, signal_handler)
-    loop.add_signal_handler(signal.SIGTERM, signal_handler)
+    try:
+        loop.add_signal_handler(signal.SIGINT, signal_handler)
+        loop.add_signal_handler(signal.SIGTERM, signal_handler)
+    except NotImplementedError:
+        # Windows event loops do not implement add_signal_handler().
+        # Keep signal handling in the main thread and marshal shutdown
+        # back onto the asyncio loop.
+        def windows_signal_handler(*_args) -> None:
+            loop.call_soon_threadsafe(signal_handler)
+
+        signal.signal(signal.SIGINT, windows_signal_handler)
+        signal.signal(signal.SIGTERM, windows_signal_handler)
 
     async def handle_shutdown() -> None:
         await shutdown_event.wait()

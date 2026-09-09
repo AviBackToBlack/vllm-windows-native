@@ -18,6 +18,10 @@
 #define STD_TORCH_CHECK_NOT_IMPLEMENTED(cond, ...) \
   STD_TORCH_CHECK(cond, "NotImplementedError: ", __VA_ARGS__)
 
+#ifndef TORCH_UTILS_CHECK
+  #define TORCH_UTILS_CHECK STD_TORCH_CHECK
+#endif
+
 // Device properties cache for stable ABI compatibility.
 // Uses raw CUDA/HIP APIs instead of ATen functions.
 // Using inline ensures a single instance across all translation units.

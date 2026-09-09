@@ -65,7 +65,7 @@ __device__ __forceinline__ fp8_type scaled_fp8_conversion(float const val,
   }
 
   float r =
-      fmaxf(-quant_type_max_v<fp8_type>, fminf(x, quant_type_max_v<fp8_type>));
+      fmaxf(-quant_type_max_v<fp8_type>(), fminf(x, quant_type_max_v<fp8_type>()));
 #ifndef USE_ROCM
   // Use hardware cvt instruction for fp8 on nvidia
   // Currently only support fp8_type = c10::Float8_e4m3fn

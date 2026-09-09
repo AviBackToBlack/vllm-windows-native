@@ -58,6 +58,59 @@ else()
   message(STATUS "DeepGEMM is available at ${deepgemm_SOURCE_DIR}")
 endif()
 
+# Native Windows/MSVC: apply the host/JIT portability patch to DeepGEMM and
+# the host-parse PTX guard to its vendored CUTLASS submodule. Keep both hooks
+# idempotent so an already-patched FetchContent tree is accepted unchanged.
+if(MSVC)
+  set(_vllm_deepgemm_win_patch "${CMAKE_SOURCE_DIR}/deepgemm-windows.patch")
+  set(_vllm_deepgemm_cutlass_win_patch "${CMAKE_SOURCE_DIR}/deepgemm-cutlass-windows.patch")
+  set(_vllm_deepgemm_cutlass_dir "${deepgemm_SOURCE_DIR}/third-party/cutlass")
+
+  foreach(_vllm_dg_patch_kind IN ITEMS deepgemm cutlass)
+    if(_vllm_dg_patch_kind STREQUAL "deepgemm")
+      set(_vllm_dg_patch "${_vllm_deepgemm_win_patch}")
+      set(_vllm_dg_workdir "${deepgemm_SOURCE_DIR}")
+    else()
+      set(_vllm_dg_patch "${_vllm_deepgemm_cutlass_win_patch}")
+      set(_vllm_dg_workdir "${_vllm_deepgemm_cutlass_dir}")
+    endif()
+
+    if(NOT EXISTS "${_vllm_dg_patch}")
+      message(FATAL_ERROR "Required Windows patch not found: ${_vllm_dg_patch}")
+    endif()
+    if(NOT IS_DIRECTORY "${_vllm_dg_workdir}")
+      message(FATAL_ERROR "DeepGEMM patch working directory not found: ${_vllm_dg_workdir}")
+    endif()
+
+    execute_process(
+      COMMAND git apply --check "${_vllm_dg_patch}"
+      WORKING_DIRECTORY "${_vllm_dg_workdir}"
+      RESULT_VARIABLE _vllm_dg_patch_check
+      OUTPUT_QUIET ERROR_QUIET)
+    if(_vllm_dg_patch_check EQUAL 0)
+      message(STATUS "Applying ${_vllm_dg_patch_kind} Windows patch: ${_vllm_dg_patch}")
+      execute_process(
+        COMMAND git apply "${_vllm_dg_patch}"
+        WORKING_DIRECTORY "${_vllm_dg_workdir}"
+        RESULT_VARIABLE _vllm_dg_patch_apply)
+      if(NOT _vllm_dg_patch_apply EQUAL 0)
+        message(FATAL_ERROR "Failed to apply ${_vllm_dg_patch}")
+      endif()
+    else()
+      execute_process(
+        COMMAND git apply --reverse --check "${_vllm_dg_patch}"
+        WORKING_DIRECTORY "${_vllm_dg_workdir}"
+        RESULT_VARIABLE _vllm_dg_patch_reverse_check
+        OUTPUT_QUIET ERROR_QUIET)
+      if(_vllm_dg_patch_reverse_check EQUAL 0)
+        message(STATUS "${_vllm_dg_patch_kind} Windows patch already applied")
+      else()
+        message(FATAL_ERROR "${_vllm_dg_patch} does not match fetched DeepGEMM sources")
+      endif()
+    endif()
+  endforeach()
+endif()
+
 # DeepGEMM requires CUDA 12.3+ for SM90, 12.9+ for SM100 (official upstream),
 # and 12.8+ for SM120 / SM12x. CUDA 13+ can use the family-specific SM12x
 # arch; CUDA 12.x builds the arch-specific SM120/SM121 variants.
@@ -155,10 +208,15 @@ if(DEEPGEMM_ARCHS)
       COMMENT "Building DeepGEMM _C for ${_pybin}"
       VERBATIM)
     list(APPEND _dg_markers "${_dg_marker}")
+    if(WIN32)
+      set(_dg_extension_pattern "_C*.pyd")
+    else()
+      set(_dg_extension_pattern "_C.cpython-*.so")
+    endif()
     install(DIRECTORY "${_dg_dir}/"
       DESTINATION vllm/third_party/deep_gemm
       COMPONENT _deep_gemm_C
-      FILES_MATCHING PATTERN "_C.cpython-*.so")
+      FILES_MATCHING PATTERN "${_dg_extension_pattern}")
   endforeach()
   add_custom_target(_deep_gemm_C ALL DEPENDS ${_dg_markers})
 

@@ -81,6 +81,8 @@ def has_precompiled_rust_extensions() -> bool:
 if sys.platform.startswith("darwin") and VLLM_TARGET_DEVICE != "cpu":
     logger.warning("VLLM_TARGET_DEVICE automatically set to `cpu` due to macOS")
     VLLM_TARGET_DEVICE = "cpu"
+elif sys.platform.startswith("win32") and VLLM_TARGET_DEVICE == "cuda":
+    logger.warning("Building CUDA extensions on Windows is experimental")
 elif not (sys.platform.startswith("linux") or sys.platform.startswith("darwin")):
     logger.warning(
         "vLLM only supports Linux platform (including WSL) and MacOS."
@@ -308,7 +310,8 @@ class cmake_build_ext(build_ext):
             build_tool = []
         # Make sure we use the nvcc from CUDA_HOME
         if _is_cuda() and CUDA_HOME is not None:
-            cmake_args += [f"-DCMAKE_CUDA_COMPILER={CUDA_HOME}/bin/nvcc"]
+            nvcc_name = "nvcc.exe" if sys.platform == "win32" else "nvcc"
+            cmake_args += [f"-DCMAKE_CUDA_COMPILER={CUDA_HOME}/bin/{nvcc_name}"]
         elif _is_hip() and ROCM_HOME is not None:
             cmake_args += [f"-DROCM_PATH={ROCM_HOME}"]
 
@@ -1015,6 +1018,32 @@ def get_nvcc_cuda_version() -> Version:
     return nvcc_cuda_version
 
 
+def _windows_cuda_target_supports_fa3() -> bool:
+    """Return False only when a native Windows CUDA target is known non-Hopper.
+
+    vllm-flash-attn's CMake currently restricts FA3 to SM90 and explicitly
+    documents that FA3 is not yet supported on Blackwell. Keep legacy behavior
+    when the target architecture cannot be determined (for example, a
+    cross-build host without a visible GPU).
+    """
+    if not sys.platform.startswith("win32"):
+        return True
+
+    arch_list = os.getenv("TORCH_CUDA_ARCH_LIST")
+    if arch_list:
+        arch_tokens = re.split(r"[;,\s]+", arch_list)
+        return any(
+            arch.lower().removesuffix("+ptx").startswith("9.")
+            for arch in arch_tokens
+            if arch
+        )
+
+    if torch.cuda.is_available():
+        major, _minor = torch.cuda.get_device_capability()
+        return major == 9
+
+    return True
+
 def get_vllm_version() -> str:
     # Allow overriding the version. This is useful to build platform-specific
     # wheels (e.g. CPU, TPU) without modifying the source.
@@ -1132,9 +1161,11 @@ if _is_hip():
 if _is_cuda():
     ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
     if USE_PRECOMPILED_EXTENSIONS or (
-        CUDA_HOME and get_nvcc_cuda_version() >= Version("12.3")
+        CUDA_HOME
+        and get_nvcc_cuda_version() >= Version("12.3")
+        and _windows_cuda_target_supports_fa3()
     ):
-        # FA3 requires CUDA 12.3 or later
+        # FA3 requires CUDA 12.3+ and currently targets Hopper (SM90) only.
         ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
     # FA4 CuteDSL - Python-only component for FA4's cute DSL support
     # Optional since this doesn't produce a .so file, just copies Python files

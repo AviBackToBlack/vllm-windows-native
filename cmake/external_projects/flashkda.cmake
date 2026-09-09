@@ -20,6 +20,40 @@ else()
 endif()
 
 FetchContent_MakeAvailable(flashkda)
+
+# Windows/MSVC: FlashKDA carries its own CUTLASS submodule, so the main vLLM
+# CUTLASS patch does not affect it. Apply the matching host/device annotation fix
+# reproducibly to the vendored copy.
+if(MSVC AND EXISTS "${CMAKE_SOURCE_DIR}/flashkda-cutlass-windows.patch")
+  set(_vllm_flashkda_cutlass_win_patch "${CMAKE_SOURCE_DIR}/flashkda-cutlass-windows.patch")
+  set(_vllm_flashkda_cutlass_dir "${flashkda_SOURCE_DIR}/cutlass")
+  execute_process(
+    COMMAND git apply --check "${_vllm_flashkda_cutlass_win_patch}"
+    WORKING_DIRECTORY "${_vllm_flashkda_cutlass_dir}"
+    RESULT_VARIABLE _vllm_flashkda_cutlass_patch_check
+    OUTPUT_QUIET ERROR_QUIET)
+  if(_vllm_flashkda_cutlass_patch_check EQUAL 0)
+    message(STATUS "Applying flashkda-cutlass-windows.patch")
+    execute_process(
+      COMMAND git apply "${_vllm_flashkda_cutlass_win_patch}"
+      WORKING_DIRECTORY "${_vllm_flashkda_cutlass_dir}"
+      RESULT_VARIABLE _vllm_flashkda_cutlass_patch_apply)
+    if(NOT _vllm_flashkda_cutlass_patch_apply EQUAL 0)
+      message(FATAL_ERROR "Failed to apply flashkda-cutlass-windows.patch")
+    endif()
+  else()
+    execute_process(
+      COMMAND git apply --reverse --check "${_vllm_flashkda_cutlass_win_patch}"
+      WORKING_DIRECTORY "${_vllm_flashkda_cutlass_dir}"
+      RESULT_VARIABLE _vllm_flashkda_cutlass_patch_reverse_check
+      OUTPUT_QUIET ERROR_QUIET)
+    if(_vllm_flashkda_cutlass_patch_reverse_check EQUAL 0)
+      message(STATUS "flashkda-cutlass-windows.patch already applied")
+    else()
+      message(FATAL_ERROR "flashkda-cutlass-windows.patch does not match fetched FlashKDA CUTLASS")
+    endif()
+  endif()
+endif()
 message(STATUS "FlashKDA is available at ${flashkda_SOURCE_DIR}")
 
 set(FLASH_KDA_SUPPORT_ARCHS)
@@ -52,6 +86,14 @@ if(FLASH_KDA_ARCHS)
     SRCS "${FLASH_KDA_SOURCES}"
     CUDA_ARCHS "${FLASH_KDA_ARCHS}")
 
+  set(_FLASH_KDA_PYTHON_ABI_ARGS USE_SABI 3)
+  if(MSVC)
+    # FlashKDA includes torch/extension.h and explicitly undefines
+    # Py_LIMITED_API below, so on Windows it must link against the
+    # version-specific CPython import library rather than python3.lib.
+    set(_FLASH_KDA_PYTHON_ABI_ARGS)
+  endif()
+
   define_extension_target(
     _flashkda_C
     DESTINATION vllm
@@ -60,7 +102,7 @@ if(FLASH_KDA_ARCHS)
     COMPILE_FLAGS ${VLLM_GPU_FLAGS}
     ARCHITECTURES ${VLLM_GPU_ARCHES}
     INCLUDE_DIRECTORIES ${FLASH_KDA_INCLUDES}
-    USE_SABI 3
+    ${_FLASH_KDA_PYTHON_ABI_ARGS}
     WITH_SOABI)
 
   target_compile_options(_flashkda_C PRIVATE

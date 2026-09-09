@@ -38,9 +38,12 @@ struct quant_type_max<torch::headeronly::Float8_e4m3fnuz> {
   }
 };
 
+// Function template instead of variable template: MSVC nvcc can't apply
+// __host__/__device__ attributes to variable templates.
 template <typename T>
-MAYBE_HOST_DEVICE static constexpr T quant_type_max_v =
-    quant_type_max<T>::val();
+MAYBE_HOST_DEVICE static inline constexpr T quant_type_max_v() {
+    return quant_type_max<T>::val();
+}
 
 template <typename T,
           typename = std::enable_if_t<
@@ -49,7 +52,7 @@ template <typename T,
               std::is_same_v<T, int8_t>>>
 struct min_scaling_factor {
   C10_DEVICE C10_ALWAYS_INLINE static float val() {
-    return 1.0f / (quant_type_max_v<T> * 512.0f);
+    return 1.0f / (quant_type_max_v<T>() * 512.0f);
   }
 };
 
