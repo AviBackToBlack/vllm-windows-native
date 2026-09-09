@@ -51,13 +51,13 @@ function Invoke-Git {
         [switch] $Capture
     )
     if ($Capture) {
-        $output = & git -C $Repository @Arguments 2>&1
+        $output = & git -C $Repository -c core.longpaths=true @Arguments 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "git $($Arguments -join ' ') failed in '$Repository':`n$($output -join "`n")"
         }
         return ($output -join "`n").Trim()
     }
-    & git -C $Repository @Arguments
+    & git -C $Repository -c core.longpaths=true @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "git $($Arguments -join ' ') failed in '$Repository' (exit $LASTEXITCODE)."
     }
@@ -77,7 +77,7 @@ function Materialize-GitTree {
     $archive = Join-Path $tempRoot 'tree.tar'
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     try {
-        & git -C $Repository archive --format=tar --output=$archive $Tree
+        & git -C $Repository -c core.longpaths=true archive --format=tar --output=$archive $Tree
         if ($LASTEXITCODE -ne 0) {
             throw "git archive failed for tree $Tree (exit $LASTEXITCODE)."
         }

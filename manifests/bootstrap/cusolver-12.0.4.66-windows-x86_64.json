@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "component": "libcusolver",
+  "version": "12.0.4.66",
+  "platform": "windows-x86_64",
+  "release": {
+    "cuda_redist_manifest": "13.0.1",
+    "manifest_url": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.0.1.json",
+    "license": "CUDA Toolkit",
+    "license_url": "https://developer.download.nvidia.com/compute/cuda/redist/libcusolver/LICENSE.txt"
+  },
+  "archive": {
+    "relative_path": "libcusolver/windows-x86_64/libcusolver-windows-x86_64-12.0.4.66-archive.zip",
+    "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcusolver/windows-x86_64/libcusolver-windows-x86_64-12.0.4.66-archive.zip",
+    "sha256": "8FE0AA8B2F8709402A8A7494037CDB648F0BE7DA1ED14E511CEFEA88A532EF8B",
+    "size_bytes": 193265103,
+    "extraction_root": "libcusolver-windows-x86_64-12.0.4.66-archive",
+    "required_files": [
+      "include/cusolverDn.h",
+      "lib/x64/cusolver.lib"
+    ]
+  },
+  "install": {
+    "managed_parent": "tools/nvidia"
+  }
+}

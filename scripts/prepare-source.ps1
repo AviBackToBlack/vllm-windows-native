@@ -34,7 +34,7 @@ if (-not (Test-Path -LiteralPath $source)) {
     $parent = Split-Path -Parent $source
     if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
     Write-Host "Cloning authoritative upstream..."
-    & git -c core.autocrlf=false -c core.eol=lf clone --branch $manifest.upstream.tag --single-branch $manifest.upstream.repository $source
+    & git -c core.longpaths=true -c core.autocrlf=false -c core.eol=lf clone --branch $manifest.upstream.tag --single-branch $manifest.upstream.repository $source
     if ($LASTEXITCODE -ne 0) { throw "git clone failed (exit $LASTEXITCODE)." }
 }
 
@@ -73,7 +73,7 @@ if ($headTree -eq $acceptedTree) {
 
 if ($head -ne $upstreamCommit) {
     Write-Host "Fetching exact upstream commit $upstreamCommit..."
-    & git -C $source fetch origin $upstreamCommit
+    & git -C $source -c core.longpaths=true fetch origin $upstreamCommit
     if ($LASTEXITCODE -ne 0) { throw "git fetch of upstream commit failed (exit $LASTEXITCODE)." }
 
     $status = Invoke-Git -Repository $source -Arguments @('status','--porcelain=v1') -Capture
@@ -94,11 +94,11 @@ $upstreamTree = Invoke-Git -Repository $source -Arguments @('rev-parse',($upstre
 Materialize-GitTree -Repository $source -Tree $upstreamTree
 
 Write-Host 'Checking patch applicability...'
-& git -C $source apply --check --whitespace=nowarn $patch
+& git -C $source -c core.longpaths=true apply --check --whitespace=nowarn $patch
 if ($LASTEXITCODE -ne 0) { throw "Patch does not apply cleanly to upstream commit $upstreamCommit." }
 
 Write-Host 'Applying accepted Windows patchset to index and worktree...'
-& git -C $source apply --index --whitespace=nowarn $patch
+& git -C $source -c core.longpaths=true apply --index --whitespace=nowarn $patch
 if ($LASTEXITCODE -ne 0) { throw "git apply failed (exit $LASTEXITCODE)." }
 
 $actualTree = Invoke-Git -Repository $source -Arguments @('write-tree') -Capture

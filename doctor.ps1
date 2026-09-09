@@ -4,6 +4,7 @@ param(
     [string] $PythonExe = $env:VLLM_BUILD_PYTHON,
     [string] $CudaHome = $env:CUDA_HOME,
     [string] $CuSolverRoot = $env:VLLM_CUSOLVER_ROOT,
+    [string] $CuSolverManifestPath = 'manifests/bootstrap/cusolver-12.0.4.66-windows-x86_64.json',
     [string] $VcVars64 = '',
     [switch] $Json
 )
@@ -113,9 +114,18 @@ if($probe){
 $resolvedCuda=Resolve-Cuda $CudaHome
 if($resolvedCuda){$nvcc=Join-Path $resolvedCuda 'bin\nvcc.exe';$t=(& $nvcc --version 2>&1)-join "`n";$e=[string]$manifest.build.cuda_toolkit;$s=if($t -match ('V'+[regex]::Escape($e))){'PASS'}else{'FAIL'};$a=if($t -match 'V([0-9.]+)'){$matches[1]}else{$t};Add-Check cuda-toolkit $s $e "$a @ $resolvedCuda" $(if($s -eq 'FAIL'){'Install/pass the exact pinned CUDA toolkit.'}else{''})}else{Add-Check cuda-toolkit FAIL ([string]$manifest.build.cuda_toolkit) 'not found' 'Pass -CudaHome, set CUDA_HOME/CUDA_PATH, or install the pinned toolkit.'}
 
+if (-not $CuSolverRoot) {
+    $csManifestResolved = Resolve-ProjectPath -Path $CuSolverManifestPath -BasePath $projectRoot
+    if (Test-Path -LiteralPath $csManifestResolved -PathType Leaf) {
+        $csManifest = Get-Content -LiteralPath $csManifestResolved -Raw | ConvertFrom-Json
+        $managedParent = Resolve-ProjectPath -Path ([string]$csManifest.install.managed_parent) -BasePath $projectRoot
+        $candidate = Join-Path $managedParent ([string]$csManifest.archive.extraction_root)
+        if (Test-Path -LiteralPath $candidate -PathType Container) { $CuSolverRoot = $candidate }
+    }
+}
 if($CuSolverRoot){try{$CuSolverRoot=[IO.Path]::GetFullPath($CuSolverRoot)}catch{}}
 $csOk=$CuSolverRoot -and (Test-Path (Join-Path $CuSolverRoot 'include\cusolverDn.h')) -and (Test-Path (Join-Path $CuSolverRoot 'lib\x64\cusolver.lib'))
-if($csOk){Add-Check cusolver PASS 'headers + lib\x64\cusolver.lib' $CuSolverRoot}else{Add-Check cusolver FAIL 'external cuSOLVER root' $(if($CuSolverRoot){$CuSolverRoot}else{'not specified'}) 'Pass -CuSolverRoot or set VLLM_CUSOLVER_ROOT; bootstrap is not automated yet.'}
+if($csOk){Add-Check cusolver PASS 'headers + lib\x64\cusolver.lib' $CuSolverRoot}else{Add-Check cusolver FAIL 'external cuSOLVER root' $(if($CuSolverRoot){$CuSolverRoot}else{'not specified'}) 'Run .\bootstrap.ps1, or pass -CuSolverRoot / set VLLM_CUSOLVER_ROOT.'}
 
 $resolvedVc=Resolve-VcVars $VcVars64
 if($resolvedVc){

@@ -59,16 +59,25 @@ The exact machine-readable pins live in [`manifests/runtime/v0.27.1-rtx5090-sm12
 
 ## Build from source: current workflow
 
-There is no one-click installer yet. The current supported development workflow stays explicit while bootstrap/install productization is being completed.
+There is no one-click installer yet. The supported development workflow is intentionally explicit while bootstrap/install productization is completed.
 
-### 1. Run the prerequisite doctor
+### 1. Bootstrap the pinned external cuSOLVER package
 
-Provide the build Python and external cuSOLVER root, then run the read-only preflight before spending hours compiling CUDA:
+```powershell
+.\bootstrap.ps1
+```
+
+`bootstrap.ps1` acquires the accepted Windows cuSOLVER `12.0.4.66` archive directly from NVIDIA's CUDA 13.0.1 redistribution service, verifies its pinned size and SHA-256, caches the archive, and materializes it under `tools/nvidia/`. Existing valid cache/install content is reused. Use `-Refresh` to re-download and rematerialize the archive, or `-Force` to rematerialize from the verified cache and replace an incomplete managed extraction.
+
+The provenance pin is machine-readable in [`manifests/bootstrap/cusolver-12.0.4.66-windows-x86_64.json`](manifests/bootstrap/cusolver-12.0.4.66-windows-x86_64.json). For automation, `bootstrap.ps1 -Json` emits the resolved root and archive metadata.
+
+### 2. Run the prerequisite doctor
+
+Provide the exact build Python, then run the read-only preflight before spending hours compiling CUDA. The doctor automatically discovers the managed cuSOLVER root created by `bootstrap.ps1`; `-CuSolverRoot` remains available for custom locations.
 
 ```powershell
 .\doctor.ps1 `
-  -PythonExe 'C:\path\to\build-venv\Scripts\python.exe' `
-  -CuSolverRoot 'C:\path\to\libcusolver-windows-x86_64-12.0.4.66-archive'
+  -PythonExe 'C:\path\to\build-venv\Scripts\python.exe'
 ```
 
 `doctor.ps1` reads the runtime manifest as its source of truth and checks:
@@ -82,18 +91,17 @@ Provide the build Python and external cuSOLVER root, then run the read-only pref
 
 For automation, use `-Json`. Build-blocking failures return a non-zero exit code.
 
-### 2. Validate source reconstruction and toolchain
+### 3. Validate source reconstruction and toolchain
 
 ```powershell
 .\build.ps1 `
   -PythonExe 'C:\path\to\build-venv\Scripts\python.exe' `
-  -CuSolverRoot 'C:\path\to\libcusolver-windows-x86_64-12.0.4.66-archive' `
   -ValidateOnly
 ```
 
-The build driver reconstructs the accepted Windows source tree from official `vllm-project/vllm` Git objects plus this repository's versioned patchset, then rejects source or toolchain drift before compilation.
+The build driver reconstructs the accepted Windows source tree from official `vllm-project/vllm` Git objects plus this repository's versioned patchset, then rejects source or toolchain drift before compilation. Git long-path handling is enabled per invocation rather than by changing the user's global Git configuration.
 
-### 3. Build the wheel
+### 4. Build the wheel
 
 Run the same command without `-ValidateOnly`. Long CUDA builds should be run detached with dedicated log and exit files.
 
@@ -101,6 +109,6 @@ The resulting wheel and `build-result.json` are written under the selected artif
 
 ## Not automated yet
 
-The next release-engineering work will productize acquisition/bootstrap for the pinned Python environment, CUDA/MSVC prerequisites, CMake/Ninja/Torch/Triton-Windows, and especially the external cuSOLVER package. Wheel installation/lifecycle tooling follows after that.
+The next release-engineering work will productize the pinned Python environment and the remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows prerequisites. Wheel installation/lifecycle tooling follows after that.
 
 `install.ps1` therefore remains intentionally unimplemented instead of pretending an unverified installer is supported.

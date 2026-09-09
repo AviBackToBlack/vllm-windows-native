@@ -5,6 +5,7 @@ param(
     [string] $PythonExe = $env:VLLM_BUILD_PYTHON,
     [string] $CudaHome = $env:CUDA_HOME,
     [string] $CuSolverRoot = $env:VLLM_CUSOLVER_ROOT,
+    [string] $CuSolverManifestPath = 'manifests/bootstrap/cusolver-12.0.4.66-windows-x86_64.json',
     [string] $VcVars64 = '',
     [string] $OutputDir = '',
     [switch] $ValidateOnly,
@@ -71,7 +72,16 @@ if (-not (Test-Path -LiteralPath $nvcc -PathType Leaf)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($CuSolverRoot)) {
-    throw 'External cuSOLVER headers are required. Pass -CuSolverRoot or set VLLM_CUSOLVER_ROOT.'
+    $csManifestResolved = Resolve-ProjectPath -Path $CuSolverManifestPath -BasePath $projectRoot
+    if (Test-Path -LiteralPath $csManifestResolved -PathType Leaf) {
+        $csManifest = Get-Content -LiteralPath $csManifestResolved -Raw | ConvertFrom-Json
+        $managedParent = Resolve-ProjectPath -Path ([string]$csManifest.install.managed_parent) -BasePath $projectRoot
+        $candidate = Join-Path $managedParent ([string]$csManifest.archive.extraction_root)
+        if (Test-Path -LiteralPath $candidate -PathType Container) { $CuSolverRoot = $candidate }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($CuSolverRoot)) {
+    throw 'External cuSOLVER headers are required. Run .\bootstrap.ps1, pass -CuSolverRoot, or set VLLM_CUSOLVER_ROOT.'
 }
 $CuSolverRoot = [System.IO.Path]::GetFullPath($CuSolverRoot)
 if (-not (Test-Path -LiteralPath (Join-Path $CuSolverRoot 'include\cusolverDn.h') -PathType Leaf)) {
