@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible problem with the native-Windows tooling
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the script/command and exact non-secret inputs needed to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows, GPU, Python, CUDA, MSVC, Torch/vLLM milestone and other relevant versions. Do not include secrets.
