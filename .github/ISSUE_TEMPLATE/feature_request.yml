@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an improvement to the native-Windows distribution or tooling
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What problem or unsupported scenario should this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful solution and its upstream/patch/toolchain/support-matrix implications.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Acceptance evidence
+      description: What trusted native-Windows validation would demonstrate this works?

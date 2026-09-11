@@ -1,0 +1,103 @@
+name: PowerShell validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Parse and analyze PowerShell
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Parse all PowerShell files
+        shell: pwsh
+        run: |
+          $parseErrors = @()
+          Get-ChildItem -Path . -Recurse -File -Filter '*.ps1' | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            foreach ($error in @($errors)) {
+              $parseErrors += [pscustomobject]@{
+                File = $_.FullName
+                Line = $error.Extent.StartLineNumber
+                Message = $error.Message
+              }
+            }
+          }
+          $parseErrors | Format-Table -AutoSize
+          if ($parseErrors.Count -gt 0) {
+            throw "PowerShell parser found $($parseErrors.Count) error(s)."
+          }
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = @(Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
+          $results | Format-Table -AutoSize
+
+          # Keep every analyzer finding visible. These rule families are advisory
+          # for this repository's operator/build orchestration style; correctness
+          # and safety-oriented findings outside this list still block merges.
+          $advisoryRules = @(
+            'PSAvoidUsingWriteHost',
+            'PSUseSingularNouns',
+            'PSUseApprovedVerbs'
+          )
+
+          # Reviewed empty catches in doctor.ps1 are best-effort discovery/path
+          # probes. Later checks remain fail-closed when a candidate cannot be
+          # resolved. Bind exceptions to exact rule/file/line so code movement or
+          # new empty catches become blocking and require fresh review.
+          $baselineExceptions = @(
+            @{ Rule = 'PSAvoidUsingEmptyCatchBlock'; File = 'doctor.ps1'; Line = 35; Reason = 'Optional py.exe discovery; failure falls through to other Python candidates.' },
+            @{ Rule = 'PSAvoidUsingEmptyCatchBlock'; File = 'doctor.ps1'; Line = 38; Reason = 'Candidate path normalization; invalid candidates are skipped.' },
+            @{ Rule = 'PSAvoidUsingEmptyCatchBlock'; File = 'doctor.ps1'; Line = 48; Reason = 'CUDA candidate path normalization; invalid candidates are skipped and doctor later reports FAIL.' },
+            @{ Rule = 'PSAvoidUsingEmptyCatchBlock'; File = 'doctor.ps1'; Line = 58; Reason = 'Optional vswhere discovery; failure falls through to explicit vcvars candidates.' },
+            @{ Rule = 'PSAvoidUsingEmptyCatchBlock'; File = 'doctor.ps1'; Line = 126; Reason = 'Optional cuSOLVER root normalization; subsequent header/library checks remain fail-closed.' }
+          )
+
+          foreach ($exception in $baselineExceptions) {
+            Write-Host "PSScriptAnalyzer reviewed baseline exception: $($exception.Rule) $($exception.File):$($exception.Line) - $($exception.Reason)"
+          }
+
+          $blocking = @($results | Where-Object {
+            $finding = $_
+            $isBaselineException = @($baselineExceptions | Where-Object {
+              $finding.RuleName -eq $_.Rule -and
+              $finding.ScriptName -eq $_.File -and
+              $finding.Line -eq $_.Line
+            }).Count -gt 0
+
+            $finding.RuleName -notin $advisoryRules -and
+            -not $isBaselineException
+          })
+
+          Write-Host "PSScriptAnalyzer: $($results.Count) total finding(s); $($blocking.Count) blocking finding(s)."
+          if ($blocking.Count -gt 0) {
+            $blocking | Format-Table -AutoSize
+            throw "PSScriptAnalyzer found $($blocking.Count) blocking finding(s)."
+          }
