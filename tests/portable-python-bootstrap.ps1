@@ -36,6 +36,30 @@ function Invoke-TestBootstrap {
     return ($json | ConvertFrom-Json)
 }
 
+function Write-FixtureManifest {
+    param(
+        [Parameter(Mandatory)][string]$Archive,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][int]$EntryCount,
+        [Parameter(Mandatory)][string]$ManagedRelativePath,
+        [string]$PythonExecutable = 'python.exe',
+        [string[]]$RequiredFiles = @('python.exe')
+    )
+    $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'manifests\bootstrap\cpython-3.13.15-windows-x86_64.json') -Raw | ConvertFrom-Json
+    $manifest.archive.name = [IO.Path]::GetFileName($Archive)
+    $manifest.archive.url = 'https://invalid.example.test/not-used'
+    $manifest.archive.sha256 = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash
+    $manifest.archive.size_bytes = (Get-Item -LiteralPath $Archive).Length
+    $manifest.archive.entry_count = $EntryCount
+    $manifest.archive.extraction_root = 'python'
+    $manifest.archive.regular_files_only = $true
+    $manifest.archive.required_files = @($RequiredFiles)
+    $manifest.install.managed_relative_path = $ManagedRelativePath.Replace('\','/')
+    $manifest.install.python_executable = $PythonExecutable.Replace('\','/')
+    [IO.File]::WriteAllText($Path, ($manifest | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($false)))
+    return $Path
+}
+
 $base = Join-Path $env:TEMP ('vllm-portable-python-test-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($base)
 try {
@@ -107,6 +131,84 @@ try {
     $managedParent = Split-Path -Parent $forced.root
     if (@(Get-ChildItem -LiteralPath $managedParent -Directory -Filter '.backup-*' -Force).Count -ne 0) { throw 'Receipt rollback left a managed runtime backup behind.' }
     Write-Host 'RECEIPT_FAILURE_ROLLBACK_OK'
+
+    $activationSource = Join-Path $base 'activation-source'
+    $activationPythonDir = Join-Path $activationSource 'python'
+    [void][IO.Directory]::CreateDirectory($activationPythonDir)
+    $activationProbe = Join-Path $activationPythonDir 'probe.cmd'
+    $activationProbeBody = "@echo off`r`necho %~dp0 | findstr /I `"work\\python-bootstrap\\stage-`" >nul`r`nif errorlevel 1 (`r`n  echo ACTIVATED-BROKEN`r`n) else (`r`n  echo 3.13.15^|64`r`n)`r`nexit /b 0`r`n"
+    [IO.File]::WriteAllText($activationProbe,$activationProbeBody,[Text.ASCIIEncoding]::new())
+    $activationArchive = Join-Path $base 'activation-failure.tar.gz'
+    & tar.exe -czf $activationArchive -C $activationSource 'python/probe.cmd'
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create activation-failure fixture archive: $LASTEXITCODE" }
+    $activationManifest = Join-Path $base 'activation-failure-manifest.json'
+    [void](Write-FixtureManifest -Archive $activationArchive -Path $activationManifest -EntryCount 1 -ManagedRelativePath 'python\managed\activation-fixture' -PythonExecutable 'probe.cmd' -RequiredFiles @('probe.cmd'))
+    $activationRoot = Join-Path $base 'activation-failure-root'
+    $activationOldRoot = Join-Path $activationRoot 'python\managed\activation-fixture'
+    [void][IO.Directory]::CreateDirectory($activationOldRoot)
+    $activationMarker = Join-Path $activationOldRoot 'old-runtime.marker'
+    Set-Content -LiteralPath $activationMarker -Value 'OLD-ACTIVE-RUNTIME' -Encoding ascii
+    Test-ExpectedFailure { & $bootstrap -ManifestPath $activationManifest -InstallationRoot $activationRoot -ArchivePath $activationArchive -Force -Json | Out-Null } 'activation-final-validation-rollback'
+    if (-not (Test-Path -LiteralPath $activationMarker -PathType Leaf)) { throw 'Activation failure did not restore the prior runtime.' }
+    if ((Get-Content -LiteralPath $activationMarker -Raw).Trim() -ne 'OLD-ACTIVE-RUNTIME') { throw 'Activation rollback restored the wrong prior runtime content.' }
+    $activationManagedParent = Split-Path -Parent $activationOldRoot
+    if (@(Get-ChildItem -LiteralPath $activationManagedParent -Directory -Filter '.backup-*' -Force).Count -ne 0) { throw 'Activation rollback left a backup directory behind.' }
+    Write-Host 'ACTIVATION_FAILURE_ROLLBACK_OK'
+
+    $tarGenerator = Join-Path $base 'make-malicious-tar.py'
+    $tarGeneratorBody = @"
+import io
+import sys
+import tarfile
+
+out_path, case = sys.argv[1], sys.argv[2]
+
+def add_file(tf, name, payload=b"x"):
+    info = tarfile.TarInfo(name)
+    info.size = len(payload)
+    tf.addfile(info, io.BytesIO(payload))
+
+with tarfile.open(out_path, "w:gz") as tf:
+    if case == "root-escape":
+        add_file(tf, "evil.txt")
+    elif case == "traversal":
+        add_file(tf, "python/../escape.txt")
+    elif case == "trailing-dot":
+        add_file(tf, "python/bad./file.txt")
+    elif case == "reserved-name":
+        add_file(tf, "python/CON.txt")
+    elif case == "duplicate":
+        add_file(tf, "python/dup.txt", b"one")
+        add_file(tf, "python/dup.txt", b"two")
+    elif case == "symlink":
+        info = tarfile.TarInfo("python/link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "target"
+        tf.addfile(info)
+    else:
+        raise SystemExit("unknown case: " + case)
+"@
+    [IO.File]::WriteAllText($tarGenerator,$tarGeneratorBody,[Text.UTF8Encoding]::new($false))
+    $archiveCases = @(
+        [pscustomobject]@{ Name='root-escape'; EntryCount=1 },
+        [pscustomobject]@{ Name='traversal'; EntryCount=1 },
+        [pscustomobject]@{ Name='trailing-dot'; EntryCount=1 },
+        [pscustomobject]@{ Name='reserved-name'; EntryCount=1 },
+        [pscustomobject]@{ Name='duplicate'; EntryCount=2 },
+        [pscustomobject]@{ Name='symlink'; EntryCount=1 }
+    )
+    foreach ($archiveCase in $archiveCases) {
+        $fixtureArchive = Join-Path $base ("malicious-$($archiveCase.Name).tar.gz")
+        & $result.python -I -S $tarGenerator $fixtureArchive $archiveCase.Name
+        if ($LASTEXITCODE -ne 0) { throw "Failed to generate malicious tar fixture '$($archiveCase.Name)': $LASTEXITCODE" }
+        $fixtureManifest = Join-Path $base ("malicious-$($archiveCase.Name)-manifest.json")
+        [void](Write-FixtureManifest -Archive $fixtureArchive -Path $fixtureManifest -EntryCount $archiveCase.EntryCount -ManagedRelativePath ("python\managed\malicious-$($archiveCase.Name)"))
+        $fixtureRoot = Join-Path $base ("malicious-$($archiveCase.Name)-root")
+        Test-ExpectedFailure { & $bootstrap -ManifestPath $fixtureManifest -InstallationRoot $fixtureRoot -ArchivePath $fixtureArchive -Json | Out-Null } ("archive-layout-$($archiveCase.Name)")
+        $fixtureTarget = Join-Path $fixtureRoot ("python\managed\malicious-$($archiveCase.Name)")
+        if (Test-Path -LiteralPath $fixtureTarget) { throw "Unsafe archive '$($archiveCase.Name)' reached target activation." }
+    }
+    Write-Host 'ARCHIVE_LAYOUT_ADVERSARIAL_REJECTIONS_OK'
 
     $badArchive = Join-Path $base 'corrupt.tar.gz'
     [IO.File]::WriteAllBytes($badArchive, [byte[]](1,2,3,4,5))
