@@ -8,8 +8,11 @@ function Initialize-VllmContainedEnvironment {
         [string] $Root
     )
 
-    if (-not [System.IO.Path]::IsPathFullyQualified($Root)) {
-        throw "Containment root must be a fully-qualified path: $Root"
+    $inputRoot = [System.IO.Path]::GetPathRoot($Root)
+    $isDriveQualified = $inputRoot -match '^[A-Za-z]:[\\/]$'
+    $isUncQualified = $inputRoot -match '^[\\/]{2}[^\\/]+[\\/][^\\/]+[\\/]?$'
+    if (-not ($isDriveQualified -or $isUncQualified)) {
+        throw "Containment root must be a fully-qualified drive or UNC path: $Root"
     }
 
     $rootPath = [System.IO.Path]::GetFullPath($Root)
