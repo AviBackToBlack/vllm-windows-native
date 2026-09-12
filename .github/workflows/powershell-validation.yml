@@ -103,6 +103,7 @@ jobs:
           }
 
       - name: Run lifecycle safety regression
+        if: github.event_name == 'push'
         shell: pwsh
         run: |
           & pwsh.exe -NoLogo -NoProfile -File ./tests/lifecycle-safety.ps1

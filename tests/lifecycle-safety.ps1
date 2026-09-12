@@ -61,11 +61,12 @@ try {
     & $shellExe -NoLogo -NoProfile -Command $childCommand
     $childAllowedExit = $LASTEXITCODE
     if ($childAllowedExit -ne 0) { throw "Child could not acquire lock after release; exit $childAllowedExit." }
-    if (Test-Path -LiteralPath (Join-Path $root '.vllm-operation.lock')) { throw 'Lock file remained after release.' }
+    $lockPath = Join-Path $root '.vllm-operation.lock'
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { throw 'Released operation lock should remain as stale coordination metadata.' }
+    Remove-Item -LiteralPath $lockPath -Force
 
     $sentinel = Join-Path $base 'outside-sentinel.txt'
     Set-Content -LiteralPath $sentinel -Value 'DO-NOT-TOUCH' -Encoding ascii
-    $lockPath = Join-Path $root '.vllm-operation.lock'
     New-Item -ItemType HardLink -Path $lockPath -Target $sentinel | Out-Null
     $hardLinkRecovery = Enter-VllmOperationLock -InstallationRoot $root -Operation 'hardlink-recovery'
     Exit-VllmOperationLock $hardLinkRecovery

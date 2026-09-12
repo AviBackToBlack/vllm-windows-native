@@ -323,6 +323,10 @@ function Assert-VllmManagedChildPhysicalLocation {
     $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
     $actual = Get-VllmNormalizedPath $Path
     $expected = Get-VllmNormalizedPath ([System.IO.Path]::Combine($root, $RelativePath))
+    if ($expected.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-VllmPathInsideOrEqual -Path $expected -Parent $root)) {
+        throw "Managed relative path must resolve strictly inside installation root: $RelativePath"
+    }
     if (-not $actual.Equals($expected, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Managed path must use expected location '$expected': $actual"
     }
@@ -424,12 +428,8 @@ function Enter-VllmOperationLock {
 
 function Exit-VllmOperationLock {
     param([Parameter(Mandatory)]$Lock)
-    $path = [string]$Lock.Path
     $stream = $Lock.Stream
     if ($null -ne $stream) { $stream.Dispose() }
-    if (-not [string]::IsNullOrWhiteSpace($path)) {
-        try { [System.IO.File]::Delete($path) }
-        catch [System.IO.IOException] { Write-Verbose 'Lock file cleanup deferred because another owner may have acquired it.' }
-        catch [System.UnauthorizedAccessException] { Write-Verbose 'Lock file cleanup was not permitted; a stale file is harmless without an open exclusive handle.' }
-    }
+    # Deliberately leave the coordination file in place. The next Enter call
+    # safely reclaims a stale path before atomically creating its own lock file.
 }
