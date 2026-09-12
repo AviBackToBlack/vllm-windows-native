@@ -8,6 +8,7 @@ param(
     [string] $CuSolverManifestPath = 'manifests/bootstrap/cusolver-12.0.4.66-windows-x86_64.json',
     [string] $VcVars64 = '',
     [string] $OutputDir = '',
+    [string] $ContainmentRoot = $env:VLLM_BUILD_CONTAINMENT_ROOT,
     [switch] $ValidateOnly,
     [switch] $SkipPrepare
 )
@@ -16,12 +17,19 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
+. (Join-Path $PSScriptRoot 'scripts\env.ps1')
 
 if ($env:OS -ne 'Windows_NT') {
     throw 'This build driver currently supports native Windows only.'
 }
 
 $projectRoot = Get-ProjectRoot
+if ([string]::IsNullOrWhiteSpace($ContainmentRoot)) {
+    $ContainmentRoot = Join-Path $projectRoot 'work\build-containment'
+}
+$containment = Initialize-VllmContainedEnvironment -Root $ContainmentRoot
+$ContainmentRoot = $containment.Root
+
 $manifestResolved = Resolve-ProjectPath -Path $ManifestPath -BasePath $projectRoot
 $manifest = Read-RuntimeManifest -ManifestPath $manifestResolved
 
