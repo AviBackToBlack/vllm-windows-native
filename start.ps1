@@ -30,15 +30,15 @@ if ([string]::IsNullOrWhiteSpace($ListenHost)) {
     throw 'ListenHost must not be empty.'
 }
 
+foreach ($argument in $VllmArgs) {
+    if ($argument -match '^--(?:host|port)(?:=|$)') {
+        throw "VllmArgs must not override launcher-controlled option '$argument'. Use -ListenHost or -ListenPort instead."
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($ContainmentRoot)) {
     $ContainmentRoot = $projectRoot
 }
-$containment = Initialize-VllmContainedEnvironment -Root $ContainmentRoot
-$ContainmentRoot = $containment.Root
-
-# Do not allow host Python customization to leak into the managed runtime.
-[Environment]::SetEnvironmentVariable('PYTHONPATH', $null, 'Process')
-[Environment]::SetEnvironmentVariable('PYTHONHOME', $null, 'Process')
 
 if ([string]::IsNullOrWhiteSpace($VllmExe)) {
     $VllmExe = Join-Path $projectRoot 'runtime\venv\Scripts\vllm.exe'
@@ -58,20 +58,41 @@ if ($VllmArgs) {
     $arguments += $VllmArgs
 }
 
-Write-Host 'RUNTIME_ENVIRONMENT_OK'
-Write-Host "Containment: $ContainmentRoot"
-Write-Host "vLLM:       $VllmExe"
-Write-Host "Model:      $Model"
-Write-Host "Endpoint:   http://${ListenHost}:$ListenPort"
+$originalEnvironment = [Environment]::GetEnvironmentVariables('Process')
+try {
+    $containment = Initialize-VllmContainedEnvironment -Root $ContainmentRoot
+    $ContainmentRoot = $containment.Root
 
-if ($ValidateOnly) {
-    Write-Host ('Arguments:   ' + ($arguments -join ' '))
-    Write-Host 'RUNTIME_VALIDATE_ONLY_OK'
-    return
+    # Do not allow host Python customization to leak into the managed runtime.
+    [Environment]::SetEnvironmentVariable('PYTHONPATH', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('PYTHONHOME', $null, 'Process')
+
+    Write-Host 'RUNTIME_ENVIRONMENT_OK'
+    Write-Host "Containment: $ContainmentRoot"
+    Write-Host "vLLM:       $VllmExe"
+    Write-Host "Model:      $Model"
+    Write-Host "Endpoint:   http://${ListenHost}:$ListenPort"
+
+    if ($ValidateOnly) {
+        Write-Host 'Runtime arguments validated; passthrough values are not displayed.'
+        Write-Host 'RUNTIME_VALIDATE_ONLY_OK'
+        return
+    }
+
+    & $VllmExe @arguments
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "vLLM exited with code $exitCode."
+    }
 }
-
-& $VllmExe @arguments
-$exitCode = $LASTEXITCODE
-if ($exitCode -ne 0) {
-    throw "vLLM exited with code $exitCode."
+finally {
+    $currentEnvironment = [Environment]::GetEnvironmentVariables('Process')
+    foreach ($name in @($currentEnvironment.Keys)) {
+        if (-not $originalEnvironment.Contains($name)) {
+            Remove-Item -LiteralPath ('Env:{0}' -f [string]$name) -ErrorAction SilentlyContinue
+        }
+    }
+    foreach ($entry in $originalEnvironment.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable([string]$entry.Key, [string]$entry.Value, 'Process')
+    }
 }
