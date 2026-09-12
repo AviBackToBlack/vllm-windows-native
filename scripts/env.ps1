@@ -50,6 +50,7 @@ function Initialize-VllmContainedEnvironment {
         Torch = Join-Path $rootPath 'cache\torch'
         TorchInductor = Join-Path $rootPath 'cache\torchinductor'
         TorchExtensions = Join-Path $rootPath 'cache\torch-extensions'
+        DeepGemm = Join-Path $rootPath 'cache\deep-gemm'
         Triton = Join-Path $rootPath 'cache\triton'
         Pip = Join-Path $rootPath 'cache\pip'
         Cuda = Join-Path $rootPath 'cache\cuda'
@@ -78,6 +79,7 @@ function Initialize-VllmContainedEnvironment {
         $paths.Torch,
         $paths.TorchInductor,
         $paths.TorchExtensions,
+        $paths.DeepGemm,
         $paths.Triton,
         $paths.Pip,
         $paths.Cuda,
@@ -111,6 +113,7 @@ function Initialize-VllmContainedEnvironment {
         TORCH_HOME = $paths.Torch
         TORCHINDUCTOR_CACHE_DIR = $paths.TorchInductor
         TORCH_EXTENSIONS_DIR = $paths.TorchExtensions
+        DG_JIT_CACHE_DIR = $paths.DeepGemm
         TRITON_CACHE_DIR = $paths.Triton
         PIP_CACHE_DIR = $paths.Pip
         CUDA_CACHE_PATH = $paths.Cuda
