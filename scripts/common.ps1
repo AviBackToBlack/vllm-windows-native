@@ -112,6 +112,11 @@ namespace VllmWindowsNative {
         private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
         private const uint VOLUME_NAME_DOS = 0x0;
         private const uint VOLUME_NAME_GUID = 0x1;
+        private const uint INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
+        private const int ERROR_FILE_NOT_FOUND = 2;
+        private const int ERROR_PATH_NOT_FOUND = 3;
+        private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+        private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern SafeFileHandle CreateFile(
@@ -123,6 +128,9 @@ namespace VllmWindowsNative {
         private static extern uint GetFinalPathNameByHandle(
             SafeFileHandle hFile, StringBuilder lpszFilePath,
             uint cchFilePath, uint dwFlags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFileAttributes(string lpFileName);
 
         private static SafeFileHandle OpenPath(string path) {
             SafeFileHandle handle = CreateFile(
@@ -166,6 +174,14 @@ namespace VllmWindowsNative {
             if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
             try { return GetFinalPathWithFlags(handle, VOLUME_NAME_GUID); }
             catch (Win32Exception) { return GetFinalPathWithFlags(handle, VOLUME_NAME_DOS); }
+        }
+
+        public static long GetAttributesNoFollow(string path) {
+            uint attributes = GetFileAttributes(path);
+            if (attributes != INVALID_FILE_ATTRIBUTES) return (long)attributes;
+            int error = Marshal.GetLastWin32Error();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return -1L;
+            throw new Win32Exception(error);
         }
     }
 }
@@ -222,13 +238,32 @@ function ConvertFrom-VllmExtendedDosPath {
     return $Path
 }
 
+function Get-VllmPathEntryInfo {
+    param([Parameter(Mandatory)][string]$Path)
+    $normalized = Get-VllmNormalizedPath $Path
+    $native = ConvertTo-VllmExtendedPath $normalized
+    $attributes = [VllmWindowsNative.NativePath]::GetAttributesNoFollow($native)
+    if ($attributes -lt 0) {
+        return [pscustomobject]@{ Path=$normalized; Exists=$false; IsDirectory=$false; IsReparsePoint=$false; Attributes=[long]-1 }
+    }
+    return [pscustomobject]@{
+        Path=$normalized
+        Exists=$true
+        IsDirectory=(($attributes -band 0x10) -ne 0)
+        IsReparsePoint=(($attributes -band 0x400) -ne 0)
+        Attributes=[long]$attributes
+    }
+}
+
+
 function Get-VllmCanonicalExistingPath {
     param(
         [Parameter(Mandatory)][string]$Path,
         [ValidateSet('Dos','Guid')][string]$Format = 'Guid'
     )
     $normalized = Get-VllmNormalizedPath $Path
-    if (-not (Test-Path -LiteralPath $normalized)) {
+    $entry = Get-VllmPathEntryInfo -Path $normalized
+    if (-not $entry.Exists) {
         throw "Cannot canonicalize a path that does not exist: $normalized"
     }
     $nativeInput = ConvertTo-VllmExtendedPath $normalized
@@ -246,13 +281,14 @@ function Get-VllmPhysicalCandidatePath {
         [ValidateSet('Dos','Guid')][string]$Format = 'Guid'
     )
     $normalized = Get-VllmNormalizedPath $Path
-    if (Test-Path -LiteralPath $normalized) {
+    $entry = Get-VllmPathEntryInfo -Path $normalized
+    if ($entry.Exists) {
         return Get-VllmCanonicalExistingPath -Path $normalized -Format $Format
     }
 
     $segments = [System.Collections.Generic.List[string]]::new()
     $cursor = $normalized
-    while (-not (Test-Path -LiteralPath $cursor)) {
+    while (-not (Get-VllmPathEntryInfo -Path $cursor).Exists) {
         $leaf = [System.IO.Path]::GetFileName($cursor)
         if ([string]::IsNullOrWhiteSpace($leaf)) {
             throw "Could not find an existing ancestor for path: $normalized"
@@ -297,7 +333,8 @@ function Assert-VllmSafeInstallationRoot {
     if ($root.Equals($volumeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Installation root must not be a volume root: $root"
     }
-    if ((Test-Path -LiteralPath $root) -and -not (Test-Path -LiteralPath $root -PathType Container)) {
+    $rootEntry = Get-VllmPathEntryInfo -Path $root
+    if ($rootEntry.Exists -and -not $rootEntry.IsDirectory) {
         throw "Installation root exists but is not a directory: $root"
     }
     $physicalDos = Get-VllmPhysicalCandidatePath -Path $root -Format Dos
@@ -332,7 +369,9 @@ function Assert-VllmManagedChildPhysicalLocation {
     }
     $rootPhysical = Get-VllmPhysicalCandidatePath -Path $root -Format Guid
     $actualPhysical = Get-VllmPhysicalCandidatePath -Path $actual -Format Guid
-    $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([System.IO.Path]::Combine($rootPhysical, $RelativePath))
+    $rootPrefix = if ($root.EndsWith('\')) { $root } else { $root + '\' }
+    $normalizedRelative = $expected.Substring($rootPrefix.Length)
+    $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([System.IO.Path]::Combine($rootPhysical, $normalizedRelative))
     if (-not $actualPhysical.Equals($expectedPhysical, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Managed path resolves through a filesystem alias outside expected location '$expected': $actualPhysical"
     }
@@ -344,7 +383,9 @@ function Assert-VllmExistingManagedTopLevelLocations {
     $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
     foreach ($relative in Get-VllmManagedTopLevelNames) {
         $path = [System.IO.Path]::Combine($root, $relative)
-        if (Test-Path -LiteralPath $path) {
+        $entry = Get-VllmPathEntryInfo -Path $path
+        if ($entry.Exists) {
+            if (-not $entry.IsDirectory) { throw "Managed top-level path exists but is not a directory: $path" }
             [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $path -RelativePath $relative)
         }
     }
@@ -358,6 +399,10 @@ function Assert-VllmSafeModelsRoot {
     )
     $root = Assert-VllmExistingManagedTopLevelLocations -InstallationRoot $InstallationRoot
     $models = Get-VllmNormalizedPath $ModelsRoot
+    $modelsEntry = Get-VllmPathEntryInfo -Path $models
+    if ($modelsEntry.Exists -and -not $modelsEntry.IsDirectory) {
+        throw "ModelsRoot exists but is not a directory: $models"
+    }
     $defaultModels = Get-VllmNormalizedPath ([System.IO.Path]::Combine($root, 'models'))
     if ($models.Equals($defaultModels, [System.StringComparison]::OrdinalIgnoreCase)) {
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $models -RelativePath 'models')
@@ -381,7 +426,7 @@ function Enter-VllmOperationLock {
     )
     if ([string]::IsNullOrWhiteSpace($Operation)) { throw 'Operation name must not be empty.' }
     $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
-    if (-not (Test-Path -LiteralPath $root)) {
+    if (-not (Get-VllmPathEntryInfo -Path $root).Exists) {
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         $root = Assert-VllmSafeInstallationRoot -InstallationRoot $root
     }

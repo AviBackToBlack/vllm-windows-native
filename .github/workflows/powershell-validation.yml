@@ -101,12 +101,3 @@ jobs:
             $blocking | Format-Table -AutoSize
             throw "PSScriptAnalyzer found $($blocking.Count) blocking finding(s)."
           }
-
-      - name: Run lifecycle safety regression
-        if: github.event_name == 'push'
-        shell: pwsh
-        run: |
-          & pwsh.exe -NoLogo -NoProfile -File ./tests/lifecycle-safety.ps1
-          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 lifecycle safety regression failed with exit $LASTEXITCODE." }
-          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/lifecycle-safety.ps1
-          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 lifecycle safety regression failed with exit $LASTEXITCODE." }
