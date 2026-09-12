@@ -132,6 +132,24 @@ namespace VllmWindowsNative {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint GetFileAttributes(string lpFileName);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ByHandleFileInformation {
+            public uint FileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle hFile, out ByHandleFileInformation fileInformation);
+
         private static SafeFileHandle OpenPath(string path) {
             SafeFileHandle handle = CreateFile(
                 path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -174,6 +192,15 @@ namespace VllmWindowsNative {
             if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
             try { return GetFinalPathWithFlags(handle, VOLUME_NAME_GUID); }
             catch (Win32Exception) { return GetFinalPathWithFlags(handle, VOLUME_NAME_DOS); }
+        }
+
+        public static uint GetLinkCount(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
+            ByHandleFileInformation info;
+            if (!GetFileInformationByHandle(handle, out info)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return info.NumberOfLinks;
         }
 
         public static long GetAttributesNoFollow(string path) {
@@ -427,35 +454,33 @@ function Enter-VllmOperationLock {
     if ([string]::IsNullOrWhiteSpace($Operation)) { throw 'Operation name must not be empty.' }
     $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
     if (-not (Get-VllmPathEntryInfo -Path $root).Exists) {
-        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        [void][System.IO.Directory]::CreateDirectory($root)
         $root = Assert-VllmSafeInstallationRoot -InstallationRoot $root
     }
     $lockPath = [System.IO.Path]::Combine($root, '.vllm-operation.lock')
     [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $lockPath -RelativePath '.vllm-operation.lock')
-    $stream = $null
-    for ($attempt = 1; $attempt -le 3 -and $null -eq $stream; $attempt++) {
-        try {
-            $stream = [System.IO.File]::Open($lockPath, 'CreateNew', 'ReadWrite', 'None')
-            break
-        } catch [System.IO.IOException] {
-            $staleStream = $null
-            try {
-                $staleStream = [System.IO.File]::Open($lockPath, 'Open', 'Read', 'None')
-            } catch [System.IO.IOException] {
-                throw "Another vLLM Windows Native lifecycle operation is active for '$root'. Refusing '$Operation'."
-            } catch [System.UnauthorizedAccessException] {
-                throw "Existing operation lock path cannot be validated safely: $lockPath"
-            }
-            $staleStream.Dispose()
-            try { [System.IO.File]::Delete($lockPath) }
-            catch { throw "Stale operation lock path could not be removed safely: $lockPath. $($_.Exception.Message)" }
-            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $lockPath -RelativePath '.vllm-operation.lock')
-        }
-    }
-    if ($null -eq $stream) {
-        throw "Could not acquire operation lock for '$root' after repeated safe create attempts."
-    }
+
     try {
+        $stream = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+    } catch [System.IO.IOException] {
+        throw "Another vLLM Windows Native lifecycle operation is active for '$root'. Refusing '$Operation'."
+    } catch [System.UnauthorizedAccessException] {
+        throw "Operation lock path cannot be acquired safely: $lockPath"
+    }
+
+    try {
+        $rootPhysical = Get-VllmPhysicalCandidatePath -Path $root -Format Guid
+        $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([System.IO.Path]::Combine($rootPhysical, '.vllm-operation.lock'))
+        $actualPhysical = Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stream.SafeFileHandle))
+        if (-not $actualPhysical.Equals($expectedPhysical, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Operation lock handle resolves outside expected location '$lockPath': $actualPhysical"
+        }
+        $linkCount = [VllmWindowsNative.NativePath]::GetLinkCount($stream.SafeFileHandle)
+        if ($linkCount -ne 1) {
+            throw "Operation lock path has unexpected hard-link count $linkCount; refusing to modify it: $lockPath"
+        }
+
+        $stream.SetLength(0)
         $writer = New-Object System.IO.StreamWriter($stream, (New-Object System.Text.UTF8Encoding($false)), 1024, $true)
         try {
             $writer.WriteLine("operation=$Operation")

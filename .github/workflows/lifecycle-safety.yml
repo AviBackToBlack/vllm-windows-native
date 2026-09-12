@@ -1,6 +1,10 @@
 name: Lifecycle safety regression
 
 on:
+  workflow_dispatch:
+# Intentionally no pull_request trigger here: this workflow executes repository-authored code.
+# AGENTS.md requires public PR CI to remain source-level only. Run this regression
+# manually in a trusted environment before merge; push-to-main is the repository backstop.
   push:
     branches: [main]
 

@@ -83,6 +83,12 @@ try {
 
     $shellExe = (Get-Process -Id $PID).Path
     $childScript = Join-Path $PSScriptRoot 'lifecycle-lock-child.ps1'
+    $literalLockRoot = Join-Path $base 'install-[literal]'
+    $literalLock = Enter-VllmOperationLock -InstallationRoot $literalLockRoot -Operation 'literal-root'
+    Exit-VllmOperationLock $literalLock
+    if (-not (Test-Path -LiteralPath $literalLockRoot -PathType Container)) { throw 'Literal bracket installation root was not created exactly.' }
+    Write-Host 'LITERAL_LOCK_ROOT_OK'
+
     $lockRoot = Join-Path $base "lock'root"
     $lock = Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'test-one'
     Test-ExpectedFailure { Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'test-two' } 'operation-lock-contention'
@@ -101,10 +107,10 @@ try {
     $sentinel = Join-Path $base 'outside-sentinel.txt'
     Set-Content -LiteralPath $sentinel -Value 'DO-NOT-TOUCH' -Encoding ascii
     New-Item -ItemType HardLink -Path $lockPath -Target $sentinel | Out-Null
-    $hardLinkRecovery = Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'hardlink-recovery'
-    Exit-VllmOperationLock $hardLinkRecovery
-    if ((Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'DO-NOT-TOUCH') { throw 'Hardlink recovery modified external sentinel content.' }
+    Test-ExpectedFailure { Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'hardlink-recovery' } 'hardlink-operation-lock'
+    if ((Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'DO-NOT-TOUCH') { throw 'Hardlink rejection modified external sentinel content.' }
     Write-Host 'HARDLINK_SENTINEL_PRESERVED'
+    Remove-Item -LiteralPath $lockPath -Force
 
     Set-Content -LiteralPath $lockPath -Value 'stale=true' -Encoding ascii
     $stale = Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'stale-recovery'
