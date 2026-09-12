@@ -48,6 +48,28 @@ try {
     if (-not (Test-Path -LiteralPath $result.receipt -PathType Leaf)) { throw 'Forensic receipt is missing.' }
     Write-Host 'VALID_BOOTSTRAP_OK'
 
+    $managedLeaf = [IO.Path]::GetFileName($result.root)
+    $fileTargetRoot = Join-Path $base 'file-target-root'
+    $fileTargetParent = Join-Path $fileTargetRoot 'python\managed'
+    [void][IO.Directory]::CreateDirectory($fileTargetParent)
+    $fileTarget = Join-Path $fileTargetParent $managedLeaf
+    Set-Content -LiteralPath $fileTarget -Value 'DO-NOT-DELETE' -Encoding ascii
+    Test-ExpectedFailure { & $bootstrap -InstallationRoot $fileTargetRoot -ArchivePath $archive -Force -Json | Out-Null } 'managed-target-file'
+    if (-not (Test-Path -LiteralPath $fileTarget -PathType Leaf)) { throw 'Managed target file was removed by forced bootstrap.' }
+    if ((Get-Content -LiteralPath $fileTarget -Raw).Trim() -ne 'DO-NOT-DELETE') { throw 'Managed target file content changed.' }
+    Write-Host 'MANAGED_TARGET_FILE_PRESERVED'
+
+    $receiptDirectoryRoot = Join-Path $base 'receipt-directory-root'
+    $receiptDirectory = Join-Path $receiptDirectoryRoot ('forensic\' + [IO.Path]::GetFileName($result.receipt))
+    [void][IO.Directory]::CreateDirectory($receiptDirectory)
+    $receiptDirectorySentinel = Join-Path $receiptDirectory 'sentinel.txt'
+    Set-Content -LiteralPath $receiptDirectorySentinel -Value 'DO-NOT-TOUCH' -Encoding ascii
+    Test-ExpectedFailure { & $bootstrap -InstallationRoot $receiptDirectoryRoot -ArchivePath $archive -Json | Out-Null } 'receipt-path-directory'
+    if ((Get-Content -LiteralPath $receiptDirectorySentinel -Raw).Trim() -ne 'DO-NOT-TOUCH') { throw 'Receipt directory rejection modified its sentinel.' }
+    $unexpectedTarget = Join-Path $receiptDirectoryRoot ('python\managed\' + $managedLeaf)
+    if (Test-Path -LiteralPath $unexpectedTarget) { throw 'Receipt-directory rejection activated a Python target.' }
+    Write-Host 'RECEIPT_DIRECTORY_PRESERVED'
+
     $lockRoot = Join-Path $base 'lock-contention'
     $heldLock = Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'portable-python-test-holder'
     try {

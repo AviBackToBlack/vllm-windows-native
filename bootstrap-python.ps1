@@ -187,7 +187,16 @@ try {
     if (-not (Test-PythonArchive -Path $archiveSource)) { throw 'Python archive changed after validation.' }
     [void](Assert-PythonArchiveLayout -Path $archiveSource -TarCommand $tar)
 
+    $receiptName = 'python-bootstrap-' + [string]$manifest.version + '.json'
+    $receiptPath = Join-Path $forensicDir $receiptName
+    $receiptRelative = 'forensic\' + $receiptName
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $receiptPath -RelativePath $receiptRelative)
+    if ((Test-Path -LiteralPath $receiptPath) -and -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+        throw "Reserved Python receipt path exists but is not a file: $receiptPath"
+    }
+
     if (Test-Path -LiteralPath $targetRoot) {
+        if (-not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "Managed Python target exists but is not a directory: $targetRoot" }
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $managedRelative)
         if (-not $Force) {
             throw "Managed Python target already exists: $targetRoot. Re-run with -Force only when replacement is intended."
@@ -213,6 +222,8 @@ try {
     if (-not (Test-PythonRoot -Root $stageRoot)) { throw 'Extracted Python runtime failed version/architecture validation.' }
 
     if (Test-Path -LiteralPath $targetRoot) {
+        if (-not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "Managed Python target changed into a non-directory before replacement: $targetRoot" }
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $managedRelative)
         $backupName = '.backup-' + [string]$manifest.version + '-' + [guid]::NewGuid().ToString('N')
         $backupRoot = Join-Path $managedParent $backupName
         $backupRelative = 'python\managed\' + $backupName
@@ -251,6 +262,10 @@ try {
     $receiptRelative = 'forensic\' + $receiptName
     [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $receiptPath -RelativePath $receiptRelative)
     try {
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $receiptPath -RelativePath $receiptRelative)
+        if ((Test-Path -LiteralPath $receiptPath) -and -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+            throw "Reserved Python receipt path changed into a non-file before commit: $receiptPath"
+        }
         $result = [ordered]@{
             schema_version = 1
             component = 'cpython'
