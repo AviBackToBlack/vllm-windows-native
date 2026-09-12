@@ -6,4 +6,4 @@ The project is a native Windows distribution and patchset layered on official `v
 
 The runtime is intended to be strongly contained beneath a configurable install root, defaulting to `D:\AI\vLLM`, with no persistent host PATH/profile changes and no host CUDA toolkit requirement unless a future build mode explicitly requires one.
 
-Detailed containment, state, update, and uninstall contracts will be defined before installation work begins.
+The normative containment, ownership, state, update, process, and uninstall rules are defined in [`lifecycle-safety-contract.md`](lifecycle-safety-contract.md). Lifecycle implementation must conform to that contract before installation is considered supported.

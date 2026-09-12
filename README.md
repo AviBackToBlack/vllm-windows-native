@@ -26,7 +26,7 @@ Initial development target:
 - single GPU first
 - default install root: `D:\AI\vLLM`
 
-See [`docs/decisions/0001-upstream-and-patch-ownership.md`](docs/decisions/0001-upstream-and-patch-ownership.md) once the bootstrap commit lands.
+See [`docs/decisions/0001-upstream-and-patch-ownership.md`](docs/decisions/0001-upstream-and-patch-ownership.md) for upstream ownership and [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md) for the normative install/update/uninstall safety boundary.
 
 ## First accepted native-Windows candidate
 
@@ -121,6 +121,6 @@ If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the
 
 ## Not automated yet
 
-The next release-engineering work will productize the pinned Python environment and the remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows prerequisites. Wheel installation/lifecycle tooling follows after that.
+The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The next release-engineering work can productize the pinned Python environment and remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows prerequisites against that contract; wheel installation/lifecycle implementation follows incrementally.
 
 `install.ps1` therefore remains intentionally unimplemented instead of pretending an unverified installer is supported.
