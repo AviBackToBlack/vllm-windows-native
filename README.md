@@ -107,6 +107,18 @@ Run the same command without `-ValidateOnly`. Long CUDA builds should be run det
 
 The resulting wheel and `build-result.json` are written under the selected artifact directory (by default `artifacts/<milestone>`).
 
+## Run the accepted Windows runtime
+
+`start.ps1` launches vLLM in the foreground and applies process-local containment before the server starts.
+
+```powershell
+.\start.ps1 -Model 'Qwen/Qwen3.5-0.8B' -VllmArgs @('--max-model-len', '2048', '--gpu-memory-utilization', '0.6')
+```
+
+By default it expects `runtime\venv\Scripts\vllm.exe` below the install root and keeps Hugging Face, vLLM, Torch/Inductor, Triton, DeepGEMM JIT and temporary state below that root. `-VllmExe` and `-ContainmentRoot` are explicit development overrides; `-ValidateOnly` checks setup without starting vLLM. Background process ownership/service management is intentionally deferred to later lifecycle work.
+
+If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the install/containment root short. PyTorch AOT cache filenames can otherwise cross the 260-character boundary. The canonical `D:\AI\vLLM` root is intentionally short; the validation record documents the reproduced boundary.
+
 ## Not automated yet
 
 The next release-engineering work will productize the pinned Python environment and the remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows prerequisites. Wheel installation/lifecycle tooling follows after that.
