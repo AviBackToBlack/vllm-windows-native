@@ -1,0 +1,35 @@
+name: Lifecycle safety regression
+
+on:
+  workflow_dispatch:
+# Intentionally no pull_request trigger here: this workflow executes repository-authored code.
+# AGENTS.md requires public PR CI to remain source-level only. Run this regression
+# manually in a trusted environment before merge; push-to-main is the repository backstop.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lifecycle-safety:
+    name: Lifecycle safety regression
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run PowerShell 7 and Windows PowerShell 5.1 regression
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/lifecycle-safety.ps1
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 lifecycle safety regression failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/lifecycle-safety.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 lifecycle safety regression failed with exit $LASTEXITCODE." }

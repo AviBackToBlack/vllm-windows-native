@@ -12,3 +12,7 @@ Every tested runtime bundle must record, at minimum:
 - validation hardware and test results.
 
 Community Windows ports may be used as research/reference sources. Any copied code or patch material must retain applicable license/copyright notices and be documented explicitly.
+
+## Lifecycle safety reference
+
+The Win32 final-path interop used by the lifecycle safety helpers is adapted from the author's separate `AviBackToBlack/unsloth-studio-windows-native` implementation. Exact tree/blob/file hashes and the retained MIT license notice are recorded in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).

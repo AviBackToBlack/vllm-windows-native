@@ -91,3 +91,415 @@ function Materialize-GitTree {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+# Final-path Win32 interop adapted from AviBackToBlack/unsloth-studio-windows-native
+# (MIT; reviewed tree 9df9219ce85f3536f6b40e95662c997ba53b42d2,
+# common.ps1 blob cbf6a29fde7b9dc48707f2782ef9894bcb264fc9).
+if (-not ('VllmWindowsNative.NativePath' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace VllmWindowsNative {
+    public static class NativePath {
+        private const uint FILE_SHARE_READ = 0x00000001;
+        private const uint FILE_SHARE_WRITE = 0x00000002;
+        private const uint FILE_SHARE_DELETE = 0x00000004;
+        private const uint OPEN_EXISTING = 3;
+        private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+        private const uint VOLUME_NAME_DOS = 0x0;
+        private const uint VOLUME_NAME_GUID = 0x1;
+        private const uint INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
+        private const int ERROR_FILE_NOT_FOUND = 2;
+        private const int ERROR_PATH_NOT_FOUND = 3;
+        private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+        private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+            IntPtr lpSecurityAttributes, uint dwCreationDisposition,
+            uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle hFile, StringBuilder lpszFilePath,
+            uint cchFilePath, uint dwFlags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFileAttributes(string lpFileName);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ByHandleFileInformation {
+            public uint FileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle hFile, out ByHandleFileInformation fileInformation);
+
+        private static SafeFileHandle OpenPath(string path) {
+            SafeFileHandle handle = CreateFile(
+                path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+            if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return handle;
+        }
+
+        private static string GetFinalPathWithFlags(SafeFileHandle handle, uint flags) {
+            var buffer = new StringBuilder(32768);
+            uint result = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, flags);
+            if (result == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (result >= buffer.Capacity) {
+                buffer = new StringBuilder((int)result + 1);
+                result = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Capacity, flags);
+                if (result == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return buffer.ToString();
+        }
+
+        public static string GetFinalPathDos(string path) {
+            using (SafeFileHandle handle = OpenPath(path)) {
+                return GetFinalPathWithFlags(handle, VOLUME_NAME_DOS);
+            }
+        }
+
+        public static string GetFinalPathGuid(string path) {
+            using (SafeFileHandle handle = OpenPath(path)) {
+                try { return GetFinalPathWithFlags(handle, VOLUME_NAME_GUID); }
+                catch (Win32Exception) { return GetFinalPathWithFlags(handle, VOLUME_NAME_DOS); }
+            }
+        }
+
+        public static string GetFinalPathDos(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
+            return GetFinalPathWithFlags(handle, VOLUME_NAME_DOS);
+        }
+
+        public static string GetFinalPathGuid(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
+            try { return GetFinalPathWithFlags(handle, VOLUME_NAME_GUID); }
+            catch (Win32Exception) { return GetFinalPathWithFlags(handle, VOLUME_NAME_DOS); }
+        }
+
+        public static uint GetLinkCount(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
+            ByHandleFileInformation info;
+            if (!GetFileInformationByHandle(handle, out info)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return info.NumberOfLinks;
+        }
+
+        public static long GetAttributesNoFollow(string path) {
+            uint attributes = GetFileAttributes(path);
+            if (attributes != INVALID_FILE_ATTRIBUTES) return (long)attributes;
+            int error = Marshal.GetLastWin32Error();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return -1L;
+            throw new Win32Exception(error);
+        }
+    }
+}
+'@
+}
+
+function Get-VllmPathWithoutTrailingSeparator {
+    param([Parameter(Mandatory)][string]$Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($Path)
+    if ($pathRoot -and $Path.Equals($pathRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $pathRoot
+    }
+    return $Path.TrimEnd([char[]]'\/')
+}
+
+function Get-VllmNormalizedPath {
+    param([Parameter(Mandatory)][string]$Path)
+    $trimmed = $Path.Trim().Trim('"')
+    if ($trimmed.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $trimmed = ConvertFrom-VllmExtendedDosPath $trimmed
+    }
+    $driveAbsolute = $trimmed.Length -ge 3 -and [char]::IsLetter($trimmed[0]) -and $trimmed[1] -eq ':' -and ($trimmed[2] -eq [char]92 -or $trimmed[2] -eq [char]47)
+    $uncAbsolute = $false
+    if ($trimmed.Length -ge 5 -and $trimmed[0] -eq [char]92 -and $trimmed[1] -eq [char]92) {
+        $uncParts = $trimmed.Substring(2).Split([char[]]@([char]92, [char]47), [System.StringSplitOptions]::RemoveEmptyEntries)
+        $uncAbsolute = $uncParts.Length -ge 2
+    }
+    if (-not ($driveAbsolute -or $uncAbsolute)) {
+        throw "Path must be fully qualified: $Path"
+    }
+    return Get-VllmPathWithoutTrailingSeparator ([System.IO.Path]::GetFullPath($trimmed))
+}
+
+function ConvertTo-VllmExtendedPath {
+    param([Parameter(Mandatory)][string]$Path)
+    $normalized = Get-VllmNormalizedPath $Path
+    if ($normalized.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $normalized
+    }
+    if ($normalized.StartsWith('\\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return '\\?\UNC\' + $normalized.Substring(2)
+    }
+    return '\\?\' + $normalized
+}
+
+function ConvertFrom-VllmExtendedDosPath {
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return '\\' + $Path.Substring(8)
+    }
+    if ($Path.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $Path.Substring(4)
+    }
+    return $Path
+}
+
+function Get-VllmPathEntryInfo {
+    param([Parameter(Mandatory)][string]$Path)
+    $normalized = Get-VllmNormalizedPath $Path
+    $native = ConvertTo-VllmExtendedPath $normalized
+    $attributes = [VllmWindowsNative.NativePath]::GetAttributesNoFollow($native)
+    if ($attributes -lt 0) {
+        return [pscustomobject]@{ Path=$normalized; Exists=$false; IsDirectory=$false; IsReparsePoint=$false; Attributes=[long]-1 }
+    }
+    return [pscustomobject]@{
+        Path=$normalized
+        Exists=$true
+        IsDirectory=(($attributes -band 0x10) -ne 0)
+        IsReparsePoint=(($attributes -band 0x400) -ne 0)
+        Attributes=[long]$attributes
+    }
+}
+
+
+function Get-VllmCanonicalExistingPath {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet('Dos','Guid')][string]$Format = 'Guid'
+    )
+    $normalized = Get-VllmNormalizedPath $Path
+    $entry = Get-VllmPathEntryInfo -Path $normalized
+    if (-not $entry.Exists) {
+        throw "Cannot canonicalize a path that does not exist: $normalized"
+    }
+    $nativeInput = ConvertTo-VllmExtendedPath $normalized
+    if ($Format -eq 'Dos') {
+        $resolved = [VllmWindowsNative.NativePath]::GetFinalPathDos($nativeInput)
+        return Get-VllmPathWithoutTrailingSeparator (ConvertFrom-VllmExtendedDosPath $resolved)
+    }
+    $resolved = [VllmWindowsNative.NativePath]::GetFinalPathGuid($nativeInput)
+    return Get-VllmPathWithoutTrailingSeparator $resolved
+}
+
+function Get-VllmPhysicalCandidatePath {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet('Dos','Guid')][string]$Format = 'Guid'
+    )
+    $normalized = Get-VllmNormalizedPath $Path
+    $entry = Get-VllmPathEntryInfo -Path $normalized
+    if ($entry.Exists) {
+        return Get-VllmCanonicalExistingPath -Path $normalized -Format $Format
+    }
+
+    $segments = [System.Collections.Generic.List[string]]::new()
+    $cursor = $normalized
+    while (-not (Get-VllmPathEntryInfo -Path $cursor).Exists) {
+        $leaf = [System.IO.Path]::GetFileName($cursor)
+        if ([string]::IsNullOrWhiteSpace($leaf)) {
+            throw "Could not find an existing ancestor for path: $normalized"
+        }
+        $segments.Insert(0, $leaf)
+        $parent = [System.IO.Directory]::GetParent($cursor)
+        if ($null -eq $parent) {
+            throw "Could not find an existing ancestor for path: $normalized"
+        }
+        $cursor = $parent.FullName
+    }
+
+    $candidate = Get-VllmCanonicalExistingPath -Path $cursor -Format $Format
+    foreach ($segment in $segments) {
+        $candidate = [System.IO.Path]::Combine($candidate, $segment)
+    }
+    return Get-VllmPathWithoutTrailingSeparator $candidate
+}
+
+function Test-VllmPathInsideOrEqual {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Parent,
+        [switch]$Physical
+    )
+    if ($Physical) {
+        $child = Get-VllmPhysicalCandidatePath -Path $Path -Format Guid
+        $root = Get-VllmPhysicalCandidatePath -Path $Parent -Format Guid
+    } else {
+        $child = Get-VllmNormalizedPath $Path
+        $root = Get-VllmNormalizedPath $Parent
+    }
+    if ($child.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $prefix = if ($root.EndsWith('\') -or $root.EndsWith('/')) { $root } else { $root + '\' }
+    return $child.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-VllmSafeInstallationRoot {
+    param([Parameter(Mandatory)][string]$InstallationRoot)
+    $root = Get-VllmNormalizedPath $InstallationRoot
+    $volumeRoot = Get-VllmPathWithoutTrailingSeparator ([System.IO.Path]::GetPathRoot($root))
+    if ($root.Equals($volumeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Installation root must not be a volume root: $root"
+    }
+    $rootEntry = Get-VllmPathEntryInfo -Path $root
+    if ($rootEntry.Exists -and -not $rootEntry.IsDirectory) {
+        throw "Installation root exists but is not a directory: $root"
+    }
+    $physicalDos = Get-VllmPhysicalCandidatePath -Path $root -Format Dos
+    if (-not $physicalDos.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Installation root resolves through a filesystem alias or redirected ancestor. Expected '$root', physical candidate '$physicalDos'."
+    }
+    return $root
+}
+
+function Get-VllmManagedTopLevelNames {
+    return @('runtime','python','tools','cache','config','tmp','downloads','logs','work','forensic','state')
+}
+
+function Assert-VllmManagedChildPhysicalLocation {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$RelativePath
+    )
+    if ([System.IO.Path]::IsPathRooted($RelativePath)) {
+        throw "Managed relative path must not be rooted: $RelativePath"
+    }
+    $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    $actual = Get-VllmNormalizedPath $Path
+    $expected = Get-VllmNormalizedPath ([System.IO.Path]::Combine($root, $RelativePath))
+    if ($expected.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-VllmPathInsideOrEqual -Path $expected -Parent $root)) {
+        throw "Managed relative path must resolve strictly inside installation root: $RelativePath"
+    }
+    if (-not $actual.Equals($expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Managed path must use expected location '$expected': $actual"
+    }
+    $rootPhysical = Get-VllmPhysicalCandidatePath -Path $root -Format Guid
+    $actualPhysical = Get-VllmPhysicalCandidatePath -Path $actual -Format Guid
+    $rootPrefix = if ($root.EndsWith('\')) { $root } else { $root + '\' }
+    $normalizedRelative = $expected.Substring($rootPrefix.Length)
+    $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([System.IO.Path]::Combine($rootPhysical, $normalizedRelative))
+    if (-not $actualPhysical.Equals($expectedPhysical, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Managed path resolves through a filesystem alias outside expected location '$expected': $actualPhysical"
+    }
+    return $actual
+}
+
+function Assert-VllmExistingManagedTopLevelLocations {
+    param([Parameter(Mandatory)][string]$InstallationRoot)
+    $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    foreach ($relative in Get-VllmManagedTopLevelNames) {
+        $path = [System.IO.Path]::Combine($root, $relative)
+        $entry = Get-VllmPathEntryInfo -Path $path
+        if ($entry.Exists) {
+            if (-not $entry.IsDirectory) { throw "Managed top-level path exists but is not a directory: $path" }
+            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $path -RelativePath $relative)
+        }
+    }
+    return $root
+}
+
+function Assert-VllmSafeModelsRoot {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][string]$ModelsRoot
+    )
+    $root = Assert-VllmExistingManagedTopLevelLocations -InstallationRoot $InstallationRoot
+    $models = Get-VllmNormalizedPath $ModelsRoot
+    $modelsEntry = Get-VllmPathEntryInfo -Path $models
+    if ($modelsEntry.Exists -and -not $modelsEntry.IsDirectory) {
+        throw "ModelsRoot exists but is not a directory: $models"
+    }
+    $defaultModels = Get-VllmNormalizedPath ([System.IO.Path]::Combine($root, 'models'))
+    if ($models.Equals($defaultModels, [System.StringComparison]::OrdinalIgnoreCase)) {
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $models -RelativePath 'models')
+        return $models
+    }
+    if ((Test-VllmPathInsideOrEqual -Path $models -Parent $root) -or
+        (Test-VllmPathInsideOrEqual -Path $root -Parent $models)) {
+        throw "ModelsRoot must be default '$defaultModels' or a non-overlapping external path: $models"
+    }
+    if ((Test-VllmPathInsideOrEqual -Path $models -Parent $root -Physical) -or
+        (Test-VllmPathInsideOrEqual -Path $root -Parent $models -Physical)) {
+        throw "ModelsRoot physically overlaps the installation root through a filesystem alias or redirected ancestor: $models"
+    }
+    return $models
+}
+
+function Enter-VllmOperationLock {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][string]$Operation
+    )
+    if ([string]::IsNullOrWhiteSpace($Operation)) { throw 'Operation name must not be empty.' }
+    $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    if (-not (Get-VllmPathEntryInfo -Path $root).Exists) {
+        [void][System.IO.Directory]::CreateDirectory($root)
+        $root = Assert-VllmSafeInstallationRoot -InstallationRoot $root
+    }
+    $lockPath = [System.IO.Path]::Combine($root, '.vllm-operation.lock')
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $lockPath -RelativePath '.vllm-operation.lock')
+
+    try {
+        $stream = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+    } catch [System.IO.IOException] {
+        throw "Another vLLM Windows Native lifecycle operation is active for '$root'. Refusing '$Operation'."
+    } catch [System.UnauthorizedAccessException] {
+        throw "Operation lock path cannot be acquired safely: $lockPath"
+    }
+
+    try {
+        $rootPhysical = Get-VllmPhysicalCandidatePath -Path $root -Format Guid
+        $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([System.IO.Path]::Combine($rootPhysical, '.vllm-operation.lock'))
+        $actualPhysical = Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stream.SafeFileHandle))
+        if (-not $actualPhysical.Equals($expectedPhysical, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Operation lock handle resolves outside expected location '$lockPath': $actualPhysical"
+        }
+        $linkCount = [VllmWindowsNative.NativePath]::GetLinkCount($stream.SafeFileHandle)
+        if ($linkCount -ne 1) {
+            throw "Operation lock path has unexpected hard-link count $linkCount; refusing to modify it: $lockPath"
+        }
+
+        $stream.SetLength(0)
+        $writer = New-Object System.IO.StreamWriter($stream, (New-Object System.Text.UTF8Encoding($false)), 1024, $true)
+        try {
+            $writer.WriteLine("operation=$Operation")
+            $writer.WriteLine("pid=$PID")
+            $writer.WriteLine("started=$((Get-Date).ToString('o'))")
+            $writer.Flush()
+            $stream.Flush()
+        } finally { $writer.Dispose() }
+        return [pscustomobject]@{ Stream=$stream; Path=$lockPath; Root=$root; Operation=$Operation }
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
+function Exit-VllmOperationLock {
+    param([Parameter(Mandatory)]$Lock)
+    $stream = $Lock.Stream
+    if ($null -ne $stream) { $stream.Dispose() }
+    # Deliberately leave the coordination file in place. The next Enter call
+    # safely reclaims a stale path before atomically creating its own lock file.
+}
