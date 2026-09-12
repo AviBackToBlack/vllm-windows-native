@@ -15,6 +15,7 @@ Keep changes explicit about upstream version, Windows patch ownership, toolchain
 - Do not claim support that has not passed the corresponding native-Windows acceptance.
 - Do not commit secrets, local configuration, toolchains, reconstructed source trees, models, wheels, caches, or build artifacts.
 - Do not modify licensing/provenance text as part of unrelated work.
+- Resolve review conversations and ensure required CI/security checks are green before merge.
 
 GPU/native-build acceptance is intentionally separate from public PR CI and must run only in a trusted isolated environment.
 
