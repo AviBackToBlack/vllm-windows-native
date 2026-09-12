@@ -30,7 +30,7 @@ if ([string]$manifest.distribution -ne 'python-build-standalone') {
     throw "Unsupported Python distribution: $($manifest.distribution)"
 }
 
-if ([string]::IsNullOrWhiteSpace($InstallationRoot)) { $InstallationRoot = $projectRoot }
+if ([string]::IsNullOrWhiteSpace($InstallationRoot)) { $InstallationRoot = 'D:\AI\vLLM' }
 $InstallationRoot = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
 
 $archiveName = [string]$manifest.archive.name
@@ -116,6 +116,7 @@ $backupRoot = $null
 $downloaded = $false
 $reusedCache = $false
 $sourceKind = ''
+$result = $null
 try {
     $lock = Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'bootstrap-python'
     $InstallationRoot = $lock.Root
@@ -245,46 +246,78 @@ try {
         throw $activationError
     }
 
-    if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
-        $backupRelative = 'python\managed\' + [IO.Path]::GetFileName($backupRoot)
-        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $backupRoot -RelativePath $backupRelative)
-        Remove-Item -LiteralPath $backupRoot -Recurse -Force
-        $backupRoot = $null
-    }
-
     $receiptName = 'python-bootstrap-' + [string]$manifest.version + '.json'
     $receiptPath = Join-Path $forensicDir $receiptName
     $receiptRelative = 'forensic\' + $receiptName
     [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $receiptPath -RelativePath $receiptRelative)
-    $result = [ordered]@{
-        schema_version = 1
-        component = 'cpython'
-        version = [string]$manifest.version
-        platform = [string]$manifest.platform
-        ready = $true
-        root = $targetRoot
-        python = Join-Path $targetRoot $pythonRelative
-        archive = $archiveSource
-        archive_source = $sourceKind
-        archive_sha256 = $expectedSha
-        archive_size_bytes = $expectedSize
-        manifest = $manifestResolved
-        manifest_sha256 = Get-FileSha256 -Path $manifestResolved
-        release_tag = [string]$manifest.release.tag
-        release_commit = [string]$manifest.release.commit
-        github_attestation_verified = [bool]$manifest.acceptance.github_attestation_verified
-        downloaded = $downloaded
-        reused_cache = $reusedCache
-        activated_at = (Get-Date).ToString('o')
-    }
-    $receiptTemp = $receiptPath + '.partial.' + [guid]::NewGuid().ToString('N')
     try {
-        [IO.File]::WriteAllText($receiptTemp, ($result | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
-        Move-Item -LiteralPath $receiptTemp -Destination $receiptPath -Force
-    } finally {
-        Remove-Item -LiteralPath $receiptTemp -Force -ErrorAction SilentlyContinue
+        $result = [ordered]@{
+            schema_version = 1
+            component = 'cpython'
+            version = [string]$manifest.version
+            platform = [string]$manifest.platform
+            ready = $true
+            root = $targetRoot
+            python = Join-Path $targetRoot $pythonRelative
+            archive = $archiveSource
+            archive_source = $sourceKind
+            archive_sha256 = $expectedSha
+            archive_size_bytes = $expectedSize
+            manifest = $manifestResolved
+            manifest_sha256 = Get-FileSha256 -Path $manifestResolved
+            release_tag = [string]$manifest.release.tag
+            release_commit = [string]$manifest.release.commit
+            github_attestation_verified = [bool]$manifest.acceptance.github_attestation_verified
+            downloaded = $downloaded
+            reused_cache = $reusedCache
+            activated_at = (Get-Date).ToString('o')
+        }
+        $receiptTemp = $receiptPath + '.partial.' + [guid]::NewGuid().ToString('N')
+        try {
+            [IO.File]::WriteAllText($receiptTemp, ($result | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+            Move-Item -LiteralPath $receiptTemp -Destination $receiptPath -Force
+        }
+        finally {
+            Remove-Item -LiteralPath $receiptTemp -Force -ErrorAction SilentlyContinue
+        }
+        $result.receipt = $receiptPath
     }
-    $result.receipt = $receiptPath
+    catch {
+        $receiptError = $_
+        if (Test-Path -LiteralPath $targetRoot) {
+            try {
+                [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $managedRelative)
+                Remove-Item -LiteralPath $targetRoot -Recurse -Force
+            }
+            catch {
+                if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
+                    throw "Receipt commit failed and rollback cannot safely remove the new runtime. Prior runtime backup preserved at '$backupRoot'. Original: $($receiptError.Exception.Message) Cleanup: $($_.Exception.Message)"
+                }
+                throw "Receipt commit failed and cleanup cannot safely remove the new runtime. Original: $($receiptError.Exception.Message) Cleanup: $($_.Exception.Message)"
+            }
+        }
+        if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
+            try {
+                Move-Item -LiteralPath $backupRoot -Destination $targetRoot
+                $backupRoot = $null
+            }
+            catch {
+                throw "Receipt commit failed and rollback could not restore the prior runtime. Backup preserved at '$backupRoot'. Original: $($receiptError.Exception.Message) Rollback: $($_.Exception.Message)"
+            }
+        }
+        throw $receiptError
+    }
+    if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
+        $backupRelative = 'python\managed\' + [IO.Path]::GetFileName($backupRoot)
+        try {
+            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $backupRoot -RelativePath $backupRelative)
+            Remove-Item -LiteralPath $backupRoot -Recurse -Force
+            $backupRoot = $null
+        }
+        catch {
+            Write-Warning "Portable Python committed successfully, but the prior runtime backup could not be removed and was preserved at '$backupRoot': $($_.Exception.Message)"
+        }
+    }
 }
 finally {
     if ($stageRoot -and (Test-Path -LiteralPath $stageRoot)) {

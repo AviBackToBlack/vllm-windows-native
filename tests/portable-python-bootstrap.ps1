@@ -7,6 +7,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $bootstrap = Join-Path $repoRoot 'bootstrap-python.ps1'
+. (Join-Path $repoRoot 'scripts\common.ps1')
 $archive = [IO.Path]::GetFullPath($ArchivePath)
 if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "Test archive not found: $archive" }
 
@@ -47,6 +48,17 @@ try {
     if (-not (Test-Path -LiteralPath $result.receipt -PathType Leaf)) { throw 'Forensic receipt is missing.' }
     Write-Host 'VALID_BOOTSTRAP_OK'
 
+    $lockRoot = Join-Path $base 'lock-contention'
+    $heldLock = Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'portable-python-test-holder'
+    try {
+        Test-ExpectedFailure { & $bootstrap -InstallationRoot $lockRoot -ArchivePath $archive -Json | Out-Null } 'bootstrap-operation-lock-contention'
+        if (Test-Path -LiteralPath (Join-Path $lockRoot 'python')) { throw 'Contended bootstrap created managed Python state before acquiring the operation lock.' }
+    }
+    finally {
+        Exit-VllmOperationLock -Lock $heldLock
+    }
+    Write-Host 'BOOTSTRAP_LOCK_CONTENTION_OK'
+
     Test-ExpectedFailure { & $bootstrap -InstallationRoot $root -ArchivePath $archive -Json | Out-Null } 'existing-target-without-force'
     if (-not (Test-Path -LiteralPath $result.python -PathType Leaf)) { throw 'Existing target was modified after fail-closed rerun.' }
 
@@ -56,6 +68,23 @@ try {
     if (Test-Path -LiteralPath $marker) { throw 'Force replacement preserved stale target content.' }
     if (@(Get-ChildItem -LiteralPath $forced.root -Recurse -File).Count -ne 3303) { throw 'Force replacement produced unexpected file count.' }
     Write-Host 'FORCE_REPLACEMENT_OK'
+
+    $rollbackMarker = Join-Path $forced.root 'rollback-old.marker'
+    Set-Content -LiteralPath $rollbackMarker -Value 'OLD-RUNTIME' -Encoding ascii
+    $receiptBefore = Get-Content -LiteralPath $forced.receipt -Raw
+    $receiptHandle = [IO.File]::Open($forced.receipt,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
+    try {
+        Test-ExpectedFailure { & $bootstrap -InstallationRoot $root -ArchivePath $archive -Force -Json | Out-Null } 'receipt-commit-rollback'
+    }
+    finally {
+        $receiptHandle.Dispose()
+    }
+    if (-not (Test-Path -LiteralPath $rollbackMarker -PathType Leaf)) { throw 'Receipt failure did not restore the prior runtime.' }
+    if ((Get-Content -LiteralPath $rollbackMarker -Raw).Trim() -ne 'OLD-RUNTIME') { throw 'Restored runtime marker changed during receipt rollback.' }
+    if ((Get-Content -LiteralPath $forced.receipt -Raw) -ne $receiptBefore) { throw 'Receipt failure modified the prior forensic receipt.' }
+    $managedParent = Split-Path -Parent $forced.root
+    if (@(Get-ChildItem -LiteralPath $managedParent -Directory -Filter '.backup-*' -Force).Count -ne 0) { throw 'Receipt rollback left a managed runtime backup behind.' }
+    Write-Host 'RECEIPT_FAILURE_ROLLBACK_OK'
 
     $badArchive = Join-Path $base 'corrupt.tar.gz'
     [IO.File]::WriteAllBytes($badArchive, [byte[]](1,2,3,4,5))
