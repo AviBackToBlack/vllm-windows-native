@@ -27,7 +27,7 @@ $projectRoot = Get-ProjectRoot
 if ([string]::IsNullOrWhiteSpace($ContainmentRoot)) {
     $ContainmentRoot = Join-Path $projectRoot 'work\build-containment'
 }
-$containment = Set-VllmContainedEnvironment -Root $ContainmentRoot
+$containment = Initialize-VllmContainedEnvironment -Root $ContainmentRoot
 $ContainmentRoot = $containment.Root
 
 $manifestResolved = Resolve-ProjectPath -Path $ManifestPath -BasePath $projectRoot

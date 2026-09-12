@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Set-VllmContainedEnvironment {
+function Initialize-VllmContainedEnvironment {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
