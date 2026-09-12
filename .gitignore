@@ -6,6 +6,8 @@ config.psd1
 /python/
 /tools/
 /cache/
+/config/
+/tmp/
 /models/
 /downloads/
 /logs/
