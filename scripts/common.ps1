@@ -44,6 +44,85 @@ function Assert-FileSha256 {
     return $actual
 }
 
+function Assert-VllmSafeRelativePath {
+    param(
+        [Parameter(Mandatory)][string]$RelativePath,
+        [string]$Label = 'Managed relative path'
+    )
+    if ([string]::IsNullOrWhiteSpace($RelativePath) -or $RelativePath -ne $RelativePath.Trim()) {
+        throw "$Label must be a non-empty relative path without leading/trailing whitespace: $RelativePath"
+    }
+    $value = $RelativePath.Replace('/','\')
+    if ([System.IO.Path]::IsPathRooted($value)) {
+        throw "$Label must not be rooted: $RelativePath"
+    }
+    $parts = @($value.Split([char]92))
+    if ($parts.Count -eq 0 -or $parts -contains '' -or $parts -contains '.' -or $parts -contains '..') {
+        throw "$Label contains an unsafe path segment: $RelativePath"
+    }
+    foreach ($part in $parts) {
+        if ($part.Contains(':')) { throw "$Label contains unsupported colon/ADS syntax: $RelativePath" }
+        if ($part.EndsWith('.') -or $part.EndsWith(' ')) { throw "$Label has a Windows-ambiguous trailing dot/space: $RelativePath" }
+        if ($part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') { throw "$Label uses a reserved Windows device name: $RelativePath" }
+    }
+    $probeRoot = 'C:\__vllm_relative_probe__'
+    $resolved = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($probeRoot, $value))
+    $prefix = $probeRoot + '\'
+    if (-not $resolved.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label resolves outside its parent: $RelativePath"
+    }
+    return $resolved.Substring($prefix.Length)
+}
+
+function Assert-VllmSafeArchiveLayout {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$TarCommand,
+        [Parameter(Mandatory)][string]$ExpectedRoot,
+        [int]$ExpectedEntryCount = 0,
+        [ValidateSet('RegularFilesOnly','FilesAndDirectories')][string]$EntryPolicy = 'RegularFilesOnly',
+        [string]$Label = 'Archive'
+    )
+    $root = (Assert-VllmSafeRelativePath -RelativePath $ExpectedRoot -Label "$Label extraction root").Replace('\','/').TrimEnd('/')
+    $entries = @(& $TarCommand.Source -tf $Path)
+    if ($LASTEXITCODE -ne 0) { throw "$Label listing failed (exit $LASTEXITCODE)." }
+    $verbose = @(& $TarCommand.Source -tvf $Path)
+    if ($LASTEXITCODE -ne 0) { throw "$Label verbose listing failed (exit $LASTEXITCODE)." }
+    if ($entries.Count -ne $verbose.Count) { throw "$Label normal and verbose listings disagree on entry count." }
+    if ($ExpectedEntryCount -gt 0 -and $entries.Count -ne $ExpectedEntryCount) {
+        throw "$Label entry count mismatch. Expected $ExpectedEntryCount, got $($entries.Count)."
+    }
+
+    $prefix = $root + '/'
+    $seen = @{}
+    for ($index = 0; $index -lt $entries.Count; $index++) {
+        $entry = ([string]$entries[$index]).Replace('\','/')
+        $line = [string]$verbose[$index]
+        if ([string]::IsNullOrEmpty($line)) { throw "$Label contains an entry with missing type metadata: $entry" }
+        $type = $line[0]
+        if ($EntryPolicy -eq 'RegularFilesOnly' -and $type -ne '-') {
+            throw "$Label contains a non-regular-file entry: $line"
+        }
+        if ($EntryPolicy -eq 'FilesAndDirectories' -and $type -ne '-' -and $type -ne 'd') {
+            throw "$Label contains an unsupported non-file/directory entry: $line"
+        }
+
+        $isRootDirectory = $type -eq 'd' -and $entry.TrimEnd('/').Equals($root, [System.StringComparison]::Ordinal)
+        if (-not $isRootDirectory) {
+            if ([string]::IsNullOrWhiteSpace($entry) -or -not $entry.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+                throw "$Label entry escapes expected root '$root': $entry"
+            }
+            $relative = $entry.Substring($prefix.Length).TrimEnd('/')
+            [void](Assert-VllmSafeRelativePath -RelativePath $relative -Label "$Label member")
+        }
+        $duplicateKey = $entry.TrimEnd('/')
+        if ($seen.ContainsKey($duplicateKey)) { throw "$Label contains duplicate entry: $entry" }
+        $seen[$duplicateKey] = $true
+    }
+    return $entries
+}
+
+
 function Invoke-Git {
     param(
         [Parameter(Mandatory)] [string] $Repository,

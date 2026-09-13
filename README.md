@@ -71,7 +71,20 @@ There is no one-click installer yet. The supported development workflow is inten
 
 The provenance pin is machine-readable in [`manifests/bootstrap/cusolver-12.0.4.66-windows-x86_64.json`](manifests/bootstrap/cusolver-12.0.4.66-windows-x86_64.json). For automation, `bootstrap.ps1 -Json` emits the resolved root and archive metadata.
 
-### 2. Run the prerequisite doctor
+### 2. Bootstrap the pinned portable CPython base
+
+```powershell
+.\bootstrap-python.ps1
+```
+
+`bootstrap-python.ps1` acquires the accepted `python-build-standalone` CPython `3.13.15` Windows x64 archive, verifies its pinned size and SHA-256, preflights the tar layout, and atomically materializes the clean base interpreter under `python/managed/cpython-3.13.15-windows-x86_64-none/`. Downloads, staging and forensic receipt state stay under the installation root and are protected by the lifecycle operation lock.
+With `-InstallationRoot` omitted, the canonical `D:\AI\vLLM` install root is used; CI and development workflows may override it explicitly. If the machine has no `D:` volume, the bootstrap fails with an explicit instruction to pass `-InstallationRoot` rather than silently choosing another location.
+
+The exact source release, commit, asset URL, size, digest and archive shape are pinned in [`manifests/bootstrap/cpython-3.13.15-windows-x86_64.json`](manifests/bootstrap/cpython-3.13.15-windows-x86_64.json). A verified local archive can be supplied with `-ArchivePath`; `-Force` is required to replace an existing managed Python target. `-Json` emits the resolved interpreter and provenance receipt.
+
+This is intentionally only the portable base interpreter. Creation of the pinned build/runtime virtual environment and installation of Torch, Triton-Windows and the project vLLM wheel remain subsequent release-engineering steps.
+
+### 3. Run the prerequisite doctor
 
 Provide the exact build Python, then run the read-only preflight before spending hours compiling CUDA. The doctor automatically discovers the managed cuSOLVER root created by `bootstrap.ps1`; `-CuSolverRoot` remains available for custom locations.
 
@@ -91,7 +104,7 @@ Provide the exact build Python, then run the read-only preflight before spending
 
 For automation, use `-Json`. Build-blocking failures return a non-zero exit code.
 
-### 3. Validate source reconstruction and toolchain
+### 4. Validate source reconstruction and toolchain
 
 ```powershell
 .\build.ps1 `
@@ -101,7 +114,7 @@ For automation, use `-Json`. Build-blocking failures return a non-zero exit code
 
 The build driver reconstructs the accepted Windows source tree from official `vllm-project/vllm` Git objects plus this repository's versioned patchset, then rejects source or toolchain drift before compilation. Git long-path handling is enabled per invocation rather than by changing the user's global Git configuration.
 
-### 4. Build the wheel
+### 5. Build the wheel
 
 Run the same command without `-ValidateOnly`. Long CUDA builds should be run detached with dedicated log and exit files.
 
@@ -121,6 +134,6 @@ If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the
 
 ## Not automated yet
 
-The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The next release-engineering work can productize the pinned Python environment and remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows prerequisites against that contract; wheel installation/lifecycle implementation follows incrementally.
+The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base is now productized; the next release-engineering work is the pinned build/runtime virtual environment and remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows dependency layer. Wheel installation/lifecycle implementation follows incrementally.
 
 `install.ps1` therefore remains intentionally unimplemented instead of pretending an unverified installer is supported.
