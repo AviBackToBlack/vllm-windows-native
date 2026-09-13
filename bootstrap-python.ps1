@@ -30,7 +30,13 @@ if ([string]$manifest.distribution -ne 'python-build-standalone') {
     throw "Unsupported Python distribution: $($manifest.distribution)"
 }
 
-if ([string]::IsNullOrWhiteSpace($InstallationRoot)) { $InstallationRoot = 'D:\AI\vLLM' }
+if ([string]::IsNullOrWhiteSpace($InstallationRoot)) {
+    $InstallationRoot = 'D:\AI\vLLM'
+    $defaultVolume = [IO.Path]::GetPathRoot($InstallationRoot)
+    if (-not (Test-Path -LiteralPath $defaultVolume -PathType Container)) {
+        throw "Default installation root '$InstallationRoot' is unavailable because volume '$defaultVolume' does not exist. Pass -InstallationRoot with an existing local path."
+    }
+}
 $InstallationRoot = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
 
 $archiveName = [string]$manifest.archive.name
@@ -38,12 +44,12 @@ if ([IO.Path]::GetFileName($archiveName) -ne $archiveName) { throw "Archive name
 $expectedSize = [int64]$manifest.archive.size_bytes
 $expectedSha = ([string]$manifest.archive.sha256).ToUpperInvariant()
 $expectedEntryCount = [int]$manifest.archive.entry_count
-$archiveRoot = ([string]$manifest.archive.extraction_root).Trim('/','\')
-$managedRelative = ([string]$manifest.install.managed_relative_path).Replace('/','\')
-$pythonRelative = ([string]$manifest.install.python_executable).Replace('/','\')
+$archiveRoot = Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.archive.extraction_root) -Label 'Python archive extraction root'
+$managedRelative = Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.install.managed_relative_path) -Label 'Managed Python path'
+$pythonRelative = Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.install.python_executable) -Label 'Python executable path'
 $expectedVersion = [string]$manifest.acceptance.expected_version
 $expectedPointerBits = [int]$manifest.acceptance.expected_pointer_bits
-$requiredFiles = @($manifest.archive.required_files | ForEach-Object { ([string]$_).Replace('/','\') })
+$requiredFiles = @($manifest.archive.required_files | ForEach-Object { Assert-VllmSafeRelativePath -RelativePath ([string]$_) -Label 'Required Python file path' })
 
 function Test-PythonArchive {
     param([Parameter(Mandatory)][string]$Path)
@@ -53,57 +59,17 @@ function Test-PythonArchive {
     return ((Get-FileSha256 -Path $Path) -eq $expectedSha)
 }
 
-function Assert-PythonArchiveLayout {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)]$TarCommand
-    )
-    $entries = @(& $TarCommand.Source -tzf $Path)
-    if ($LASTEXITCODE -ne 0) { throw "tar listing failed (exit $LASTEXITCODE)." }
-    if ($entries.Count -ne $expectedEntryCount) {
-        throw "Python archive entry count mismatch. Expected $expectedEntryCount, got $($entries.Count)."
-    }
-    $prefix = $archiveRoot + '/'
-    $seen = @{}
-    foreach ($entryRaw in $entries) {
-        $entry = ([string]$entryRaw).Replace('\','/')
-        if ([string]::IsNullOrWhiteSpace($entry) -or -not $entry.StartsWith($prefix, [StringComparison]::Ordinal)) {
-            throw "Python archive entry escapes expected root '$archiveRoot': $entry"
-        }
-        $relative = $entry.Substring($prefix.Length)
-        $parts = @($relative.Split('/'))
-        if ([string]::IsNullOrWhiteSpace($relative) -or $parts -contains '..' -or $parts -contains '.' -or $parts -contains '') {
-            throw "Python archive contains unsafe relative path: $entry"
-        }
-        foreach ($part in $parts) {
-            if ($part.Contains(':')) { throw "Python archive entry contains unsupported colon/ADS syntax: $entry" }
-            if ($part.EndsWith('.') -or $part.EndsWith(' ')) { throw "Python archive entry has Windows-ambiguous trailing dot/space: $entry" }
-            if ($part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') { throw "Python archive entry uses a reserved Windows device name: $entry" }
-        }
-        if ($seen.ContainsKey($entry)) { throw "Python archive contains duplicate entry: $entry" }
-        $seen[$entry] = $true
-    }
-
-    if ([bool]$manifest.archive.regular_files_only) {
-        $verbose = @(& $TarCommand.Source -tvzf $Path)
-        if ($LASTEXITCODE -ne 0) { throw "tar verbose listing failed (exit $LASTEXITCODE)." }
-        if ($verbose.Count -ne $expectedEntryCount) { throw 'Python archive verbose entry count differs from normal listing.' }
-        foreach ($line in $verbose) {
-            if ([string]::IsNullOrEmpty([string]$line) -or ([string]$line)[0] -ne '-') {
-                throw "Python archive contains a non-regular-file entry: $line"
-            }
-        }
-    }
-    return $entries
-}
 
 function Test-PythonRoot {
     param([Parameter(Mandatory)][string]$Root)
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $false }
     foreach ($relative in $requiredFiles) {
-        if (-not (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf)) { return $false }
+        $candidate = Join-Path $Root $relative
+        try { [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $Root -Path $candidate -RelativePath $relative) } catch { return $false }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $false }
     }
     $python = Join-Path $Root $pythonRelative
+    try { [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $Root -Path $python -RelativePath $pythonRelative) } catch { return $false }
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return $false }
     $probe = (& $python -I -S -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}|{64 if sys.maxsize > 2**32 else 32}')" 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { return $false }
@@ -185,7 +151,7 @@ try {
     }
 
     if (-not (Test-PythonArchive -Path $archiveSource)) { throw 'Python archive changed after validation.' }
-    [void](Assert-PythonArchiveLayout -Path $archiveSource -TarCommand $tar)
+    [void](Assert-VllmSafeArchiveLayout -Path $archiveSource -TarCommand $tar -ExpectedRoot $archiveRoot -ExpectedEntryCount $expectedEntryCount -EntryPolicy 'RegularFilesOnly' -Label 'Python archive')
 
     $receiptName = 'python-bootstrap-' + [string]$manifest.version + '.json'
     $receiptPath = Join-Path $forensicDir $receiptName
@@ -245,14 +211,19 @@ try {
             }
             catch {
                 if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
-                    throw "Activation failed and rollback cannot safely remove the failed target. Backup preserved at '$backupRoot'. Original: $($activationError.Exception.Message) Rollback: $($_.Exception.Message)"
+                    throw "Activation failed and rollback cannot safely remove the failed target. Backup preserved at '$backupRoot'. Original: $($activationError.Exception.Message) Cleanup: $($_.Exception.Message)"
                 }
-                throw
+                throw "Activation failed and cleanup cannot safely remove the failed target. Original: $($activationError.Exception.Message) Cleanup: $($_.Exception.Message)"
             }
         }
         if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
-            Move-Item -LiteralPath $backupRoot -Destination $targetRoot
-            $backupRoot = $null
+            try {
+                Move-Item -LiteralPath $backupRoot -Destination $targetRoot
+                $backupRoot = $null
+            }
+            catch {
+                throw "Activation failed and rollback could not restore the prior runtime. Backup preserved at '$backupRoot'. Original: $($activationError.Exception.Message) Rollback: $($_.Exception.Message)"
+            }
         }
         throw $activationError
     }
@@ -260,12 +231,13 @@ try {
     $receiptName = 'python-bootstrap-' + [string]$manifest.version + '.json'
     $receiptPath = Join-Path $forensicDir $receiptName
     $receiptRelative = 'forensic\' + $receiptName
-    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $receiptPath -RelativePath $receiptRelative)
     try {
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $receiptPath -RelativePath $receiptRelative)
         if ((Test-Path -LiteralPath $receiptPath) -and -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
             throw "Reserved Python receipt path changed into a non-file before commit: $receiptPath"
         }
+        $resultPython = Join-Path $targetRoot $pythonRelative
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $targetRoot -Path $resultPython -RelativePath $pythonRelative)
         $result = [ordered]@{
             schema_version = 1
             component = 'cpython'
@@ -273,7 +245,7 @@ try {
             platform = [string]$manifest.platform
             ready = $true
             root = $targetRoot
-            python = Join-Path $targetRoot $pythonRelative
+            python = $resultPython
             archive = $archiveSource
             archive_source = $sourceKind
             archive_sha256 = $expectedSha

@@ -78,7 +78,7 @@ The provenance pin is machine-readable in [`manifests/bootstrap/cusolver-12.0.4.
 ```
 
 `bootstrap-python.ps1` acquires the accepted `python-build-standalone` CPython `3.13.15` Windows x64 archive, verifies its pinned size and SHA-256, preflights the tar layout, and atomically materializes the clean base interpreter under `python/managed/cpython-3.13.15-windows-x86_64-none/`. Downloads, staging and forensic receipt state stay under the installation root and are protected by the lifecycle operation lock.
-With `-InstallationRoot` omitted, the canonical `D:\AI\vLLM` install root is used; CI and development workflows may override it explicitly.
+With `-InstallationRoot` omitted, the canonical `D:\AI\vLLM` install root is used; CI and development workflows may override it explicitly. If the machine has no `D:` volume, the bootstrap fails with an explicit instruction to pass `-InstallationRoot` rather than silently choosing another location.
 
 The exact source release, commit, asset URL, size, digest and archive shape are pinned in [`manifests/bootstrap/cpython-3.13.15-windows-x86_64.json`](manifests/bootstrap/cpython-3.13.15-windows-x86_64.json). A verified local archive can be supplied with `-ArchivePath`; `-Force` is required to replace an existing managed Python target. `-Json` emits the resolved interpreter and provenance receipt.
 

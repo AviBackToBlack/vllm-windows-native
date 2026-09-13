@@ -14,14 +14,20 @@ if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw "Test archive
 function Test-ExpectedFailure {
     param(
         [Parameter(Mandatory)][scriptblock]$Action,
-        [Parameter(Mandatory)][string]$Name
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$ExpectedMessage
     )
     try {
         & $Action
         throw "Expected failure did not occur: $Name"
-    } catch {
-        if ($_.Exception.Message -eq "Expected failure did not occur: $Name") { throw }
-        Write-Host "REJECT $Name :: $($_.Exception.Message)"
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($message -eq "Expected failure did not occur: $Name") { throw }
+        if ($message.IndexOf($ExpectedMessage, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "Expected failure '$Name' to contain '$ExpectedMessage', got: $message"
+        }
+        Write-Host "REJECT $Name :: $message"
     }
 }
 
@@ -72,13 +78,21 @@ try {
     if (-not (Test-Path -LiteralPath $result.receipt -PathType Leaf)) { throw 'Forensic receipt is missing.' }
     Write-Host 'VALID_BOOTSTRAP_OK'
 
+    $badPythonManifest = Join-Path $base 'bad-python-relative-manifest.json'
+    [void](Write-FixtureManifest -Archive $archive -Path $badPythonManifest -EntryCount 3303 -ManagedRelativePath 'python\managed\bad-python-relative' -PythonExecutable '..\..\evil.exe' -RequiredFiles @('python.exe'))
+    Test-ExpectedFailure -Action { & $bootstrap -ManifestPath $badPythonManifest -InstallationRoot (Join-Path $base 'bad-python-relative-root') -ArchivePath $archive -Json | Out-Null } -Name 'python-executable-traversal' -ExpectedMessage 'Python executable path contains an unsafe path segment'
+    $badRequiredManifest = Join-Path $base 'bad-required-relative-manifest.json'
+    [void](Write-FixtureManifest -Archive $archive -Path $badRequiredManifest -EntryCount 3303 -ManagedRelativePath 'python\managed\bad-required-relative' -PythonExecutable 'python.exe' -RequiredFiles @('..\..\evil.dll'))
+    Test-ExpectedFailure -Action { & $bootstrap -ManifestPath $badRequiredManifest -InstallationRoot (Join-Path $base 'bad-required-relative-root') -ArchivePath $archive -Json | Out-Null } -Name 'required-file-traversal' -ExpectedMessage 'Required Python file path contains an unsafe path segment'
+    Write-Host 'MANIFEST_RELATIVE_PATH_REJECTIONS_OK'
+
     $managedLeaf = [IO.Path]::GetFileName($result.root)
     $fileTargetRoot = Join-Path $base 'file-target-root'
     $fileTargetParent = Join-Path $fileTargetRoot 'python\managed'
     [void][IO.Directory]::CreateDirectory($fileTargetParent)
     $fileTarget = Join-Path $fileTargetParent $managedLeaf
     Set-Content -LiteralPath $fileTarget -Value 'DO-NOT-DELETE' -Encoding ascii
-    Test-ExpectedFailure { & $bootstrap -InstallationRoot $fileTargetRoot -ArchivePath $archive -Force -Json | Out-Null } 'managed-target-file'
+    Test-ExpectedFailure -Action { & $bootstrap -InstallationRoot $fileTargetRoot -ArchivePath $archive -Force -Json | Out-Null } -Name 'managed-target-file' -ExpectedMessage 'exists but is not a directory'
     if (-not (Test-Path -LiteralPath $fileTarget -PathType Leaf)) { throw 'Managed target file was removed by forced bootstrap.' }
     if ((Get-Content -LiteralPath $fileTarget -Raw).Trim() -ne 'DO-NOT-DELETE') { throw 'Managed target file content changed.' }
     Write-Host 'MANAGED_TARGET_FILE_PRESERVED'
@@ -88,7 +102,7 @@ try {
     [void][IO.Directory]::CreateDirectory($receiptDirectory)
     $receiptDirectorySentinel = Join-Path $receiptDirectory 'sentinel.txt'
     Set-Content -LiteralPath $receiptDirectorySentinel -Value 'DO-NOT-TOUCH' -Encoding ascii
-    Test-ExpectedFailure { & $bootstrap -InstallationRoot $receiptDirectoryRoot -ArchivePath $archive -Json | Out-Null } 'receipt-path-directory'
+    Test-ExpectedFailure -Action { & $bootstrap -InstallationRoot $receiptDirectoryRoot -ArchivePath $archive -Json | Out-Null } -Name 'receipt-path-directory' -ExpectedMessage 'exists but is not a file'
     if ((Get-Content -LiteralPath $receiptDirectorySentinel -Raw).Trim() -ne 'DO-NOT-TOUCH') { throw 'Receipt directory rejection modified its sentinel.' }
     $unexpectedTarget = Join-Path $receiptDirectoryRoot ('python\managed\' + $managedLeaf)
     if (Test-Path -LiteralPath $unexpectedTarget) { throw 'Receipt-directory rejection activated a Python target.' }
@@ -97,7 +111,7 @@ try {
     $lockRoot = Join-Path $base 'lock-contention'
     $heldLock = Enter-VllmOperationLock -InstallationRoot $lockRoot -Operation 'portable-python-test-holder'
     try {
-        Test-ExpectedFailure { & $bootstrap -InstallationRoot $lockRoot -ArchivePath $archive -Json | Out-Null } 'bootstrap-operation-lock-contention'
+        Test-ExpectedFailure -Action { & $bootstrap -InstallationRoot $lockRoot -ArchivePath $archive -Json | Out-Null } -Name 'bootstrap-operation-lock-contention' -ExpectedMessage 'Another vLLM Windows Native lifecycle operation is active'
         if (Test-Path -LiteralPath (Join-Path $lockRoot 'python')) { throw 'Contended bootstrap created managed Python state before acquiring the operation lock.' }
     }
     finally {
@@ -105,7 +119,7 @@ try {
     }
     Write-Host 'BOOTSTRAP_LOCK_CONTENTION_OK'
 
-    Test-ExpectedFailure { & $bootstrap -InstallationRoot $root -ArchivePath $archive -Json | Out-Null } 'existing-target-without-force'
+    Test-ExpectedFailure -Action { & $bootstrap -InstallationRoot $root -ArchivePath $archive -Json | Out-Null } -Name 'existing-target-without-force' -ExpectedMessage 'Managed Python target already exists'
     if (-not (Test-Path -LiteralPath $result.python -PathType Leaf)) { throw 'Existing target was modified after fail-closed rerun.' }
 
     $marker = Join-Path $result.root 'replace-me.marker'
@@ -120,7 +134,7 @@ try {
     $receiptBefore = Get-Content -LiteralPath $forced.receipt -Raw
     $receiptHandle = [IO.File]::Open($forced.receipt,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
     try {
-        Test-ExpectedFailure { & $bootstrap -InstallationRoot $root -ArchivePath $archive -Force -Json | Out-Null } 'receipt-commit-rollback'
+        Test-ExpectedFailure -Action { & $bootstrap -InstallationRoot $root -ArchivePath $archive -Force -Json | Out-Null } -Name 'receipt-commit-rollback' -ExpectedMessage 'Cannot create a file'
     }
     finally {
         $receiptHandle.Dispose()
@@ -148,7 +162,7 @@ try {
     [void][IO.Directory]::CreateDirectory($activationOldRoot)
     $activationMarker = Join-Path $activationOldRoot 'old-runtime.marker'
     Set-Content -LiteralPath $activationMarker -Value 'OLD-ACTIVE-RUNTIME' -Encoding ascii
-    Test-ExpectedFailure { & $bootstrap -ManifestPath $activationManifest -InstallationRoot $activationRoot -ArchivePath $activationArchive -Force -Json | Out-Null } 'activation-final-validation-rollback'
+    Test-ExpectedFailure -Action { & $bootstrap -ManifestPath $activationManifest -InstallationRoot $activationRoot -ArchivePath $activationArchive -Force -Json | Out-Null } -Name 'activation-final-validation-rollback' -ExpectedMessage 'Activated Python runtime failed final validation'
     if (-not (Test-Path -LiteralPath $activationMarker -PathType Leaf)) { throw 'Activation failure did not restore the prior runtime.' }
     if ((Get-Content -LiteralPath $activationMarker -Raw).Trim() -ne 'OLD-ACTIVE-RUNTIME') { throw 'Activation rollback restored the wrong prior runtime content.' }
     $activationManagedParent = Split-Path -Parent $activationOldRoot
@@ -190,12 +204,12 @@ with tarfile.open(out_path, "w:gz") as tf:
 "@
     [IO.File]::WriteAllText($tarGenerator,$tarGeneratorBody,[Text.UTF8Encoding]::new($false))
     $archiveCases = @(
-        [pscustomobject]@{ Name='root-escape'; EntryCount=1 },
-        [pscustomobject]@{ Name='traversal'; EntryCount=1 },
-        [pscustomobject]@{ Name='trailing-dot'; EntryCount=1 },
-        [pscustomobject]@{ Name='reserved-name'; EntryCount=1 },
-        [pscustomobject]@{ Name='duplicate'; EntryCount=2 },
-        [pscustomobject]@{ Name='symlink'; EntryCount=1 }
+        [pscustomobject]@{ Name='root-escape'; EntryCount=1; Message='entry escapes expected root' },
+        [pscustomobject]@{ Name='traversal'; EntryCount=1; Message='member contains an unsafe path segment' },
+        [pscustomobject]@{ Name='trailing-dot'; EntryCount=1; Message='member has a Windows-ambiguous trailing dot/space' },
+        [pscustomobject]@{ Name='reserved-name'; EntryCount=1; Message='member uses a reserved Windows device name' },
+        [pscustomobject]@{ Name='duplicate'; EntryCount=2; Message='contains duplicate entry' },
+        [pscustomobject]@{ Name='symlink'; EntryCount=1; Message='contains a non-regular-file entry' }
     )
     foreach ($archiveCase in $archiveCases) {
         $fixtureArchive = Join-Path $base ("malicious-$($archiveCase.Name).tar.gz")
@@ -204,7 +218,7 @@ with tarfile.open(out_path, "w:gz") as tf:
         $fixtureManifest = Join-Path $base ("malicious-$($archiveCase.Name)-manifest.json")
         [void](Write-FixtureManifest -Archive $fixtureArchive -Path $fixtureManifest -EntryCount $archiveCase.EntryCount -ManagedRelativePath ("python\managed\malicious-$($archiveCase.Name)"))
         $fixtureRoot = Join-Path $base ("malicious-$($archiveCase.Name)-root")
-        Test-ExpectedFailure { & $bootstrap -ManifestPath $fixtureManifest -InstallationRoot $fixtureRoot -ArchivePath $fixtureArchive -Json | Out-Null } ("archive-layout-$($archiveCase.Name)")
+        Test-ExpectedFailure -Action { & $bootstrap -ManifestPath $fixtureManifest -InstallationRoot $fixtureRoot -ArchivePath $fixtureArchive -Json | Out-Null } -Name ("archive-layout-$($archiveCase.Name)") -ExpectedMessage $archiveCase.Message
         $fixtureTarget = Join-Path $fixtureRoot ("python\managed\malicious-$($archiveCase.Name)")
         if (Test-Path -LiteralPath $fixtureTarget) { throw "Unsafe archive '$($archiveCase.Name)' reached target activation." }
     }
@@ -213,7 +227,7 @@ with tarfile.open(out_path, "w:gz") as tf:
     $badArchive = Join-Path $base 'corrupt.tar.gz'
     [IO.File]::WriteAllBytes($badArchive, [byte[]](1,2,3,4,5))
     $badRoot = Join-Path $base 'corrupt-root'
-    Test-ExpectedFailure { & $bootstrap -InstallationRoot $badRoot -ArchivePath $badArchive -Json | Out-Null } 'corrupt-archive'
+    Test-ExpectedFailure -Action { & $bootstrap -InstallationRoot $badRoot -ArchivePath $badArchive -Json | Out-Null } -Name 'corrupt-archive' -ExpectedMessage 'does not match the pinned size/SHA-256'
     Write-Host 'CORRUPT_ARCHIVE_REJECTED'
 
     $junctionRoot = Join-Path $base 'junction-root'
@@ -223,7 +237,7 @@ with tarfile.open(out_path, "w:gz") as tf:
     $sentinel = Join-Path $outside 'sentinel.txt'
     Set-Content -LiteralPath $sentinel -Value 'DO-NOT-TOUCH' -Encoding ascii
     New-Item -ItemType Junction -Path (Join-Path $junctionRoot 'python') -Target $outside | Out-Null
-    Test-ExpectedFailure { & $bootstrap -InstallationRoot $junctionRoot -ArchivePath $archive -Json | Out-Null } 'managed-python-junction'
+    Test-ExpectedFailure -Action { & $bootstrap -InstallationRoot $junctionRoot -ArchivePath $archive -Json | Out-Null } -Name 'managed-python-junction' -ExpectedMessage 'resolves through a filesystem alias outside expected location'
     if ((Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'DO-NOT-TOUCH') { throw 'Junction rejection modified outside sentinel.' }
     Write-Host 'JUNCTION_SENTINEL_PRESERVED'
 

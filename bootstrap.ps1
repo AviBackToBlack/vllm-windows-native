@@ -42,8 +42,10 @@ $archiveName = [IO.Path]::GetFileName([string]$dependency.archive.relative_path)
 $archivePath = Join-Path $CacheDir $archiveName
 $expectedSize = [int64]$dependency.archive.size_bytes
 $expectedSha = ([string]$dependency.archive.sha256).ToUpperInvariant()
-$targetRoot = Join-Path $DependenciesDir ([string]$dependency.archive.extraction_root)
-$requiredFiles = @($dependency.archive.required_files | ForEach-Object { ([string]$_).Replace('/','\') })
+$extractionRoot = Assert-VllmSafeRelativePath -RelativePath ([string]$dependency.archive.extraction_root) -Label 'cuSOLVER archive extraction root'
+$expectedEntryCount = [int]$dependency.archive.entry_count
+$targetRoot = Join-Path $DependenciesDir $extractionRoot
+$requiredFiles = @($dependency.archive.required_files | ForEach-Object { Assert-VllmSafeRelativePath -RelativePath ([string]$_) -Label 'Required cuSOLVER file path' })
 
 function Test-DependencyRoot {
     param([Parameter(Mandatory)][string]$Root)
@@ -102,19 +104,20 @@ if ($targetValid -and -not $Force -and -not $Refresh) {
 
     $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
     if (-not $tar) { throw 'tar.exe is required to extract the NVIDIA cuSOLVER archive.' }
+    [void](Assert-VllmSafeArchiveLayout -Path $archivePath -TarCommand $tar -ExpectedRoot $extractionRoot -ExpectedEntryCount $expectedEntryCount -EntryPolicy 'FilesAndDirectories' -Label 'cuSOLVER archive')
     $tempRoot = Join-Path $DependenciesDir ('.extract-' + [guid]::NewGuid().ToString('N'))
     $backupRoot = $null
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     try {
         & $tar.Source -xf $archivePath -C $tempRoot
         if ($LASTEXITCODE -ne 0) { throw "tar extraction failed (exit $LASTEXITCODE)." }
-        $materialized = Join-Path $tempRoot ([string]$dependency.archive.extraction_root)
+        $materialized = Join-Path $tempRoot $extractionRoot
         if (-not (Test-DependencyRoot -Root $materialized)) {
             throw "Extracted cuSOLVER archive is missing required files under $materialized"
         }
 
         if (Test-Path -LiteralPath $targetRoot) {
-            $backupRoot = Join-Path $DependenciesDir ('.backup-' + [string]$dependency.archive.extraction_root + '-' + [guid]::NewGuid().ToString('N'))
+            $backupRoot = Join-Path $DependenciesDir ('.backup-' + $extractionRoot + '-' + [guid]::NewGuid().ToString('N'))
             Move-Item -LiteralPath $targetRoot -Destination $backupRoot
         }
         try {
