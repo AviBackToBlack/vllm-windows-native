@@ -2,3 +2,4 @@
 *.ps1 text eol=lf
 requirements/*.in text eol=lf
 requirements/*.lock.txt text eol=lf
+tests/fixtures/*.lock.txt text eol=lf

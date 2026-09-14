@@ -117,6 +117,8 @@ Installation implementation MUST:
 
 An interrupted install must be distinguishable from a complete installation. Presence of a directory alone is not proof of success.
 
+For replace-in-place runtime transactions, materialization SHOULD complete and validate in a managed staging path before the live target is moved. If activation requires a backup/swap, the implementation MUST persist a managed transaction record before the first destructive rename. Recovery MUST use recorded generation identity and verified receipts to distinguish an uncommitted generation that requires rollback from a committed generation that requires cleanup only; it MUST NOT infer commit solely from the presence of a plausible target directory.
+
 ## 8. Update contract
 
 Update MUST be an explicit, provenance-preserving transition between recorded releases.
