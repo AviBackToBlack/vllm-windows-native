@@ -57,9 +57,22 @@ The first accepted milestone is intentionally narrow: it is a proven baseline, n
 
 The exact machine-readable pins live in [`manifests/runtime/v0.27.1-rtx5090-sm120.json`](manifests/runtime/v0.27.1-rtx5090-sm120.json).
 
-## Build from source: current workflow
+## Install the accepted managed runtime
 
-There is no one-click installer yet. The supported development workflow is intentionally explicit while bootstrap/install productization is completed.
+`install.ps1` is the supported top-level runtime installer for the accepted Windows x64 milestone. The project wheel is still caller-supplied until release publication is implemented:
+
+```powershell
+.\install.ps1 `
+  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl'
+```
+
+With `-InstallationRoot` omitted, the installer uses `D:\AI\vLLM`; `-ModelsRoot` defaults to `<InstallRoot>\models`. Before any runtime mutation, the installer verifies the canonical release manifest, every owned distribution-file size/SHA-256, and the exact project-wheel identity. It materializes a self-contained copy of the runtime distribution under the installation root, then resumes the proven CPython -> uv -> unseeded venv -> 28-package predecessor -> 160-distribution final-runtime chain from the highest independently verified receipt. A completed installation is committed atomically as `<InstallRoot>\state\install-state.json`, binding release ownership, upstream/patchset identity, wheel identity, Python/uv provenance, runtime receipts, `InstallRoot`, and `ModelsRoot`.
+
+Interrupted installation is resumable without treating directory presence as proof of success. Existing distribution drift, malformed/contradictory install state, invalid downstream provenance, an unrecognized runtime state, or a wheel mismatch fails closed. Successful reruns are idempotent and validate the final runtime without rebuilding earlier layers. `-Offline` requires pinned Python/uv archives when those layers are not already present and requires all Python dependency artifacts to exist in the contained uv cache. The exact owned runtime payload is recorded in [`manifests/release/v0.27.1-windows-x86_64.json`](manifests/release/v0.27.1-windows-x86_64.json).
+
+## Build from source / inspect individual bootstrap layers
+
+The lower-level commands remain supported for development, forensic validation, and release engineering. They expose each independently receipt-backed layer explicitly.
 
 ### 1. Bootstrap the pinned external cuSOLVER package
 
@@ -181,8 +194,6 @@ By default it expects `runtime\venv\Scripts\vllm.exe` below the install root and
 
 If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the install/containment root short. PyTorch AOT cache filenames can otherwise cross the 260-character boundary. The canonical `D:\AI\vLLM` root is intentionally short; the validation record documents the reproduced boundary.
 
-## Not automated yet
+## Remaining lifecycle work
 
-The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base, uv tool, contained runtime venv, accepted 28-package dependency layer, 159-package final-runtime lock, verified project-wheel identity, and crash-recoverable managed vLLM materialization are now productized. The next release-engineering work is the top-level install/update/uninstall orchestration and release artifact publication/signing.
-
-`install.ps1` therefore remains intentionally unimplemented instead of pretending an unverified installer is supported.
+The lifecycle safety boundary is specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). Portable CPython, uv, the contained runtime venv, the accepted dependency graph, managed vLLM materialization, canonical runtime distribution ownership, and top-level installation are now productized. Remaining release-engineering work includes `update.ps1`, `uninstall.ps1`, release artifact publication/signing, and later service/process ownership work.

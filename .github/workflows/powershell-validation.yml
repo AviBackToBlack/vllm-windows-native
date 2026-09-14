@@ -49,6 +49,10 @@ jobs:
             throw "PowerShell parser found $($parseErrors.Count) error(s)."
           }
 
+      - name: Validate canonical release manifest
+        shell: pwsh
+        run: ./tests/release-manifest.ps1
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force

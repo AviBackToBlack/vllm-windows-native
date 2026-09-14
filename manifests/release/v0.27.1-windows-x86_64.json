@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "component": "runtime-release",
+  "release": "v0.27.1-native-windows-single-gpu-sm120",
+  "platform": "windows-x86_64",
+  "self_path": "manifests/release/v0.27.1-windows-x86_64.json",
+  "upstream": {
+    "repository": "https://github.com/vllm-project/vllm.git",
+    "tag": "v0.27.1",
+    "commit": "6e448d0ea9bf3d88d898b65449ca6dc2aec170ac"
+  },
+  "windows_patchset": {
+    "implementation_commit": "9f18048a2052072166ccc3b0ffef364e72bb4d11",
+    "tree": "115fa3e10d4b5a45c3e647cb343680a1fc743d18",
+    "patch_sha256": "08416EBB43632A0AC485839644A98E875A4AD9EBC49BE193DA25AB804AE6A272"
+  },
+  "wheel": {
+    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl",
+    "version": "0.27.2.dev0+g6e448d0ea.d20260909",
+    "size_bytes": 176769951,
+    "sha256": "66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6"
+  },
+  "orchestration": {
+    "python_manifest": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
+    "uv_manifest": "manifests/bootstrap/uv-0.12.13-windows-x86_64.json",
+    "venv_manifest": "manifests/bootstrap/venv-v0.27.1-windows-x86_64.json",
+    "dependency_manifest": "manifests/runtime/dependencies-v0.27.1-windows-x86_64.json",
+    "runtime_manifest": "manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json",
+    "python_receipt": "forensic/python-bootstrap-3.13.15.json",
+    "uv_receipt": "forensic/uv-bootstrap-0.12.13.json",
+    "venv_receipt": "forensic/venv-bootstrap-v0.27.1.json",
+    "dependency_receipt": "forensic/runtime-dependencies-v0.27.1.json",
+    "runtime_receipt": "forensic/runtime-vllm-v0.27.1.json",
+    "runtime_root": "runtime/venv"
+  },
+  "managed_paths": [
+    "python/managed/cpython-3.13.15-windows-x86_64-none",
+    "tools/uv/0.12.13",
+    "runtime/venv",
+    "cache/uv",
+    "forensic/python-bootstrap-3.13.15.json",
+    "forensic/uv-bootstrap-0.12.13.json",
+    "forensic/venv-bootstrap-v0.27.1.json",
+    "forensic/runtime-dependencies-v0.27.1.json",
+    "forensic/runtime-vllm-v0.27.1.json",
+    "state/install-state.json",
+    "state/install-orchestrator.lock",
+    ".vllm-operation.lock"
+  ],
+  "files": [
+    {
+      "path": "install.ps1",
+      "size_bytes": 28310,
+      "sha256": "45B18C46B2E1D64A843E7FE3943EA2F51F9A6CB83672ED2E28174CD7E2117869"
+    },
+    {
+      "path": "update.ps1",
+      "size_bytes": 100,
+      "sha256": "F2A8C3230C28CB4E79592FC30DEF206F7A6BC0A4AFCF888BED9A89B0644356DA"
+    },
+    {
+      "path": "uninstall.ps1",
+      "size_bytes": 104,
+      "sha256": "241EED84705DA7A1819F28622FDC073D50A423F4B3979939733F5308DE3F5E5C"
+    },
+    {
+      "path": "start.ps1",
+      "size_bytes": 2726,
+      "sha256": "8D386B6BCA510E5D7391F604EF07C7336E4166DDA57EE23E35B6F1C06D13BAA0"
+    },
+    {
+      "path": "bootstrap-python.ps1",
+      "size_bytes": 18267,
+      "sha256": "0CDBE8C9247AA0CC6CBF5E4460F4139A05845B9802E880D9D0E4104EAE48B176"
+    },
+    {
+      "path": "bootstrap-uv.ps1",
+      "size_bytes": 19146,
+      "sha256": "A5FCF3EB37F0F4B7B1685FBC610A5712B6B1F6AB697AA2B3CA290625D6EFD95E"
+    },
+    {
+      "path": "bootstrap-venv.ps1",
+      "size_bytes": 19593,
+      "sha256": "42698260C61F250DECA98356A2232EF21ED9418F9252B4BCE2EFC54EE0D329F2"
+    },
+    {
+      "path": "bootstrap-dependencies.ps1",
+      "size_bytes": 41703,
+      "sha256": "7A4562EE1E70043B1B85C67F1574C2F61AB02587CBE8EDD27222853B9255CFAD"
+    },
+    {
+      "path": "bootstrap-vllm.ps1",
+      "size_bytes": 34658,
+      "sha256": "A5F7BDF035B93C7B78CB051C286CDFD692CE42D2FA97D74E005EEB3B50D6E739"
+    },
+    {
+      "path": "scripts/common.ps1",
+      "size_bytes": 27916,
+      "sha256": "EFE240B69A248C0C8D3BDDE17CA4D9E22C41DA349BF0B76191CE72B1221621DF"
+    },
+    {
+      "path": "scripts/env.ps1",
+      "size_bytes": 5108,
+      "sha256": "0C50261D6A7AE2E8379282D435E7569E43964410DBE3E0CEAF8949E0F9F9EED0"
+    },
+    {
+      "path": "config.example.psd1",
+      "size_bytes": 127,
+      "sha256": "7560E7F2D72715F202293E265C11834271BB23558005CB4E30AB9C2A83CCD5CB"
+    },
+    {
+      "path": "LICENSE",
+      "size_bytes": 629,
+      "sha256": "F5F7B3EDB091A586F4C98389E5325FFE8B6DC28C3039BEF31AA34DD5D4F624DE"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "size_bytes": 1564,
+      "sha256": "CB636445DB435C64F72B7E1A6F189096E691AD14B62FC979A06B56618ACEB21B"
+    },
+    {
+      "path": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
+      "size_bytes": 1222,
+      "sha256": "82CC0096BBB2709147076035477D38361C3EAC960B4E770A8B17437602341833"
+    },
+    {
+      "path": "manifests/bootstrap/uv-0.12.13-windows-x86_64.json",
+      "size_bytes": 1023,
+      "sha256": "5421B453248042AFEA53323870C85A495DD95D1AA32F6F267B0DC9F6A6D9545A"
+    },
+    {
+      "path": "manifests/bootstrap/venv-v0.27.1-windows-x86_64.json",
+      "size_bytes": 1283,
+      "sha256": "A9ABA6BA27A573E8D2D4DED2C71AE33E2D55D7CB450ADB0788C2F5F6C04BC69C"
+    },
+    {
+      "path": "manifests/runtime/dependencies-v0.27.1-windows-x86_64.json",
+      "size_bytes": 6237,
+      "sha256": "6B0C9599FA2C2F971A0AA272F4E9F8D468D130105C97F01C421165CC35B9FE5F"
+    },
+    {
+      "path": "manifests/runtime/vllm-runtime-packages-v0.27.1-windows-x86_64.json",
+      "size_bytes": 4304,
+      "sha256": "B2C1D8644764E79585893177F53CBAACB24AD221E05CFFEDC9348D20093CFD8D"
+    },
+    {
+      "path": "manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json",
+      "size_bytes": 3413,
+      "sha256": "BF51030C91808A83A9BFB77ED5920A8D936A76612A31BC762E73BE5CA5080EE6"
+    },
+    {
+      "path": "requirements/runtime-v0.27.1.in",
+      "size_bytes": 734,
+      "sha256": "ABE2A7F5BBB0909036BCABF8895A7FDEB3BBEA94AB434EB2D3797CB62B06462F"
+    },
+    {
+      "path": "requirements/runtime-v0.27.1.lock.txt",
+      "size_bytes": 41213,
+      "sha256": "F9D3CABBB3A6131FDB15DB8E3602A72884C69F81BCD59835FBD2FE36518D2FB1"
+    },
+    {
+      "path": "requirements/vllm-runtime-v0.27.1.in",
+      "size_bytes": 2362,
+      "sha256": "A155381867ED94D9892D717314E27EFC8E837A656F7E29135BAFE64EB10591F6"
+    },
+    {
+      "path": "requirements/vllm-runtime-v0.27.1.lock.txt",
+      "size_bytes": 343053,
+      "sha256": "717684DA356DA529D317587083EB18B6464DE962CE762A558044B60C227B4CDA"
+    }
+  ]
+}
