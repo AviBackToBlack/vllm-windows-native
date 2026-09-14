@@ -56,6 +56,9 @@
     "vcs-versioning": "2.3.4",
     "wheel": "0.48.0"
   },
+  "allowed_extra_distributions": [
+    "vllm"
+  ],
   "direct_requirements": [
     "build==1.6.0",
     "cmake==4.4.3",
@@ -91,6 +94,14 @@
       "sha256": "ce09a7b144b7982b46c8fe399cf5f91d43dda571e9d6ddba67e928567551f614",
       "hash_provenance": "official-index-hash-and-local-digest"
     },
+    "ninja": {
+      "filename": "ninja-1.13.2-py3-none-win_amd64.whl",
+      "package_version": "1.13.2",
+      "executable_version": "1.13.2.git.kitware.jobserver-pipe-1",
+      "executable_sha256": "a7f084e8ee37bff0872aa8bd3d17cc19632d2a37734f6c242dd3dee22d77c0b4",
+      "sha256": "1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118",
+      "hash_provenance": "accepted-uv-cache-wheel-source-hash-present-in-lock"
+    },
     "triton-windows": {
       "filename": "triton_windows-3.7.1.post27-cp313-cp313-win_amd64.whl",
       "size_bytes": 49684257,
@@ -108,5 +119,5 @@
     "index_is_immutable_snapshot": false,
     "canonical_artifact": "requirements/runtime-v0.27.1.lock.txt"
   },
-  "note": "This committed lock is the canonical supply-chain artifact for the accepted 28-package environment. Acceptance-time regeneration was byte-identical, but the public package index is not treated as an immutable snapshot. Package installation is intentionally deferred to a separate transactional lifecycle change."
+  "note": "This committed lock is the canonical supply-chain artifact for the accepted 28-package environment. Acceptance-time regeneration was byte-identical, but the public package index is not treated as an immutable snapshot. The separately governed project distribution `vllm` is the only allowed extra distribution when validating a final environment. Package installation is intentionally deferred to a separate transactional lifecycle change."
 }

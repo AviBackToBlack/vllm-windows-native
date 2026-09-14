@@ -49,6 +49,14 @@ $expectedHeader=@(
 )
 if($lockLines.Count -lt 3 -or $lockLines[0] -ne $expectedHeader[0] -or $lockLines[1] -ne $expectedHeader[1]){throw 'Dependency lock generator header drifted.'}
 $accepted=Get-ManifestPackageMap -Object $manifest.accepted_packages
+$allowedExtras=@{}
+foreach($item in @($manifest.allowed_extra_distributions)){
+    $normalized=([string]$item).ToLowerInvariant().Replace('_','-')
+    if([string]::IsNullOrWhiteSpace($normalized)){throw 'Allowed extra distribution name may not be empty.'}
+    if($accepted.ContainsKey($normalized)){throw "Allowed extra distribution duplicates accepted dependency: $normalized"}
+    if($allowedExtras.ContainsKey($normalized)){throw "Duplicate allowed extra distribution: $normalized"}
+    $allowedExtras[$normalized]=$true
+}
 $locked=@{}
 $blocks=@{}
 $currentName=$null
@@ -96,6 +104,9 @@ foreach($artifactProperty in $manifest.accepted_binary_artifacts.PSObject.Proper
     $name=[string]$artifactProperty.Name
     $artifact=$artifactProperty.Value
     $hash=([string]$artifact.sha256).ToLowerInvariant()
+    if($artifact.PSObject.Properties.Name -contains 'package_version'){
+        if(-not $accepted.ContainsKey($name) -or [string]$accepted[$name] -ne [string]$artifact.package_version){throw "Accepted binary artifact package version disagrees with accepted package map: $name"}
+    }
     if($lockText.IndexOf('--hash=sha256:'+$hash,[StringComparison]::OrdinalIgnoreCase) -lt 0){throw "Accepted binary artifact hash is absent from lock: $name $hash"}
     if($artifact.PSObject.Properties.Name -contains 'url'){
         $direct=[string]$artifact.url+'#sha256='+$hash
@@ -120,9 +131,15 @@ if(-not[string]::IsNullOrWhiteSpace($AcceptedPython)){
         $environment[$parts[0]]=$parts[1]
     }
     $environmentDelta=@()
-    foreach($name in @($accepted.Keys+$environment.Keys|Sort-Object -Unique)){
-        if(-not $accepted.ContainsKey($name)-or-not $environment.ContainsKey($name)-or $accepted[$name] -ne $environment[$name]){
-            $environmentDelta+=($name+': manifest='+$accepted[$name]+' environment='+$environment[$name])
+    foreach($name in @($accepted.Keys|Sort-Object)){
+        if(-not $environment.ContainsKey($name) -or $accepted[$name] -ne $environment[$name]){
+            $actual=if($environment.ContainsKey($name)){$environment[$name]}else{'<missing>'}
+            $environmentDelta+=($name+': manifest='+$accepted[$name]+' environment='+$actual)
+        }
+    }
+    foreach($name in @($environment.Keys|Sort-Object)){
+        if(-not $accepted.ContainsKey($name) -and -not $allowedExtras.ContainsKey($name)){
+            $environmentDelta+=($name+': unexpected environment distribution='+$environment[$name])
         }
     }
     if($environmentDelta.Count){throw "Accepted environment drift: $($environmentDelta -join '; ')"}
