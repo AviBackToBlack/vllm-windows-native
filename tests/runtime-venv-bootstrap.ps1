@@ -10,6 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $bootstrapPython = Join-Path $repoRoot 'bootstrap-python.ps1'
 $bootstrapUv = Join-Path $repoRoot 'bootstrap-uv.ps1'
 $bootstrapVenv = Join-Path $repoRoot 'bootstrap-venv.ps1'
+$startScript = Join-Path $repoRoot 'start.ps1'
 foreach($path in @($PythonArchivePath,$UvArchivePath)){ if(-not(Test-Path -LiteralPath $path -PathType Leaf)){throw "Fixture archive missing: $path"} }
 
 function Test-ExpectedFailure {
@@ -40,9 +41,20 @@ function Write-VenvFixtureManifest {
     [IO.File]::WriteAllText($Path,($m|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
 }
 
+$emptySentinel='VLLM_EMPTY_ENV_SENTINEL'
+$extraEmptyProbe='VLLM_EXTRA_EMPTY_RESTORE_PROBE'
 $base=Join-Path ([IO.Path]::GetTempPath()) ('vllm-runtime-venv-test-'+[guid]::NewGuid().ToString('N'))
 try {
     [void][IO.Directory]::CreateDirectory($base)
+    [VllmWindowsNative.NativeEnvironment]::SetProcessVariable($emptySentinel,'')
+    $helperBefore=Get-TestEnvironmentSnapshot
+    [Environment]::SetEnvironmentVariable($emptySentinel,'MUTATED','Process')
+    [VllmWindowsNative.NativeEnvironment]::SetProcessVariable($extraEmptyProbe,'')
+    Restore-VllmProcessEnvironment -Snapshot $helperBefore
+    $helperAfter=Get-TestEnvironmentSnapshot
+    Assert-EnvironmentEqual -Before $helperBefore -After $helperAfter
+    if($helperAfter.ContainsKey($extraEmptyProbe)){throw 'Exact restore retained an extra empty environment variable.'}
+    Write-Host 'EXACT_ENV_HELPER_EMPTY_ROUNDTRIP_OK'
     $root=Join-Path $base 'root'
     & $bootstrapPython -InstallationRoot $root -ArchivePath $PythonArchivePath -Json | Out-Null
     & $bootstrapUv -InstallationRoot $root -ArchivePath $UvArchivePath -Json | Out-Null
@@ -70,14 +82,22 @@ try {
     finally { Exit-VllmOperationLock -Lock $held }
     Write-Host 'VENV_LOCK_CONTENTION_OK'
 
+    [VllmWindowsNative.NativeEnvironment]::SetProcessVariable($emptySentinel,'')
     $env:UV_VENV_SEED='1'; $env:UV_PROJECT_ENVIRONMENT='C:\BAD'; $env:PYTHONPATH='C:\BAD'; $env:VIRTUAL_ENV='C:\OLD'
     $before=Get-TestEnvironmentSnapshot
+    if(-not $before.ContainsKey($emptySentinel) -or $before[$emptySentinel] -ne ''){throw 'Empty environment sentinel precondition failed.'}
     $result=(& $bootstrapVenv -InstallationRoot $root -Json)|ConvertFrom-Json
     $after=Get-TestEnvironmentSnapshot
     Assert-EnvironmentEqual -Before $before -After $after
     if(-not $result.ready -or $result.seeded -or $result.python_version -ne '3.13.15' -or $result.uv_version -ne '0.12.13'){throw 'Happy-path venv receipt mismatch.'}
     if(Test-Path -LiteralPath (Join-Path $result.root 'Lib\site-packages\pip') -PathType Container){throw 'pip was unexpectedly seeded.'}
     Write-Host 'VENV_HAPPY_PATH_AND_ENV_RESTORE_OK'
+    $beforeStart=Get-TestEnvironmentSnapshot
+    $startContainment=Join-Path $root 'start-containment'
+    & $startScript -Model 'fixture-model' -VllmExe (Join-Path $env:SystemRoot 'System32\where.exe') -ContainmentRoot $startContainment -ValidateOnly *> $null
+    $afterStart=Get-TestEnvironmentSnapshot
+    Assert-EnvironmentEqual -Before $beforeStart -After $afterStart
+    Write-Host 'START_EXACT_ENV_RESTORE_OK'
 
     Test-ExpectedFailure -Action { & $bootstrapVenv -InstallationRoot $root -Json | Out-Null } -Name 'existing-target-without-force' -ExpectedMessage 'Managed venv target already exists'
     $marker=Join-Path $result.root 'replace-me.marker'; [IO.File]::WriteAllText($marker,'OLD',[Text.Encoding]::ASCII)
@@ -131,5 +151,7 @@ try {
     Write-Host 'RUNTIME_VENV_BOOTSTRAP_REGRESSION_OK'
 }
 finally {
+    [Environment]::SetEnvironmentVariable($emptySentinel,$null,'Process')
+    [Environment]::SetEnvironmentVariable($extraEmptyProbe,$null,'Process')
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -58,26 +58,6 @@ $pythonManagedRelative = Assert-VllmSafeRelativePath -RelativePath ([string]$pyt
 $pythonExeRelative = Assert-VllmSafeRelativePath -RelativePath ([string]$pythonManifest.install.python_executable) -Label 'Python executable path'
 $uvManagedRelative = Assert-VllmSafeRelativePath -RelativePath ([string]$uvManifest.install.managed_relative_path) -Label 'Managed uv path'
 $uvExeRelative = Assert-VllmSafeRelativePath -RelativePath ([string]$uvManifest.install.uv_executable) -Label 'uv executable path'
-function Get-ProcessEnvironmentSnapshot {
-    $snapshot = @{}
-    foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
-        $snapshot[[string]$entry.Key] = [string]$entry.Value
-    }
-    return $snapshot
-}
-
-function Restore-ProcessEnvironment {
-    param([Parameter(Mandatory)][hashtable]$Snapshot)
-    $current = [Environment]::GetEnvironmentVariables('Process')
-    foreach ($key in @($current.Keys)) {
-        $name = [string]$key
-        if (-not $Snapshot.ContainsKey($name)) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue }
-    }
-    foreach ($name in $Snapshot.Keys) {
-        [Environment]::SetEnvironmentVariable([string]$name,[string]$Snapshot[$name],'Process')
-    }
-}
-
 function Test-ManagedPython {
     param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$Exe)
     if (-not (Test-Path -LiteralPath $Root -PathType Container) -or -not (Test-Path -LiteralPath $Exe -PathType Leaf)) { return $false }
@@ -196,7 +176,7 @@ try {
     }
     try {
         try {
-            $environmentSnapshot = Get-ProcessEnvironmentSnapshot
+            $environmentSnapshot = Get-VllmProcessEnvironmentSnapshot
             foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
                 $name = [string]$key
                 if ($name.StartsWith('UV_',[StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue }
@@ -216,7 +196,7 @@ try {
         }
         finally {
             if ($null -ne $environmentSnapshot) {
-                Restore-ProcessEnvironment -Snapshot $environmentSnapshot
+                Restore-VllmProcessEnvironment -Snapshot $environmentSnapshot
                 $environmentSnapshot = $null
             }
         }
@@ -326,7 +306,7 @@ try {
 }
 finally {
     if ($null -ne $environmentSnapshot) {
-        try { Restore-ProcessEnvironment -Snapshot $environmentSnapshot } catch { Write-Warning "Failed to restore caller environment exactly: $($_.Exception.Message)" }
+        try { Restore-VllmProcessEnvironment -Snapshot $environmentSnapshot } catch { Write-Warning "Failed to restore caller environment exactly: $($_.Exception.Message)" }
     }
     if ($null -ne $lock) { Exit-VllmOperationLock -Lock $lock }
 }

@@ -294,6 +294,59 @@ namespace VllmWindowsNative {
 '@
 }
 
+
+if (-not ('VllmWindowsNative.NativeEnvironment' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace VllmWindowsNative {
+    public static class NativeEnvironment {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetEnvironmentVariable(string lpName, string lpValue);
+
+        public static void SetProcessVariable(string name, string value) {
+            if (!SetEnvironmentVariable(name, value)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+
+        public static void DeleteProcessVariable(string name) {
+            if (!SetEnvironmentVariable(name, null)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+    }
+}
+'@
+}
+
+function Get-VllmProcessEnvironmentSnapshot {
+    $snapshot = @{}
+    foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+        $snapshot[[string]$entry.Key] = [string]$entry.Value
+    }
+    return $snapshot
+}
+
+function Restore-VllmProcessEnvironment {
+    param([Parameter(Mandatory)][hashtable]$Snapshot)
+    $current = [Environment]::GetEnvironmentVariables('Process')
+    foreach ($key in @($current.Keys)) {
+        $name = [string]$key
+        if (-not $Snapshot.ContainsKey($name)) {
+            [VllmWindowsNative.NativeEnvironment]::DeleteProcessVariable([string]$name)
+        }
+    }
+    foreach ($name in $Snapshot.Keys) {
+        [VllmWindowsNative.NativeEnvironment]::SetProcessVariable([string]$name, [string]$Snapshot[$name])
+    }
+}
+
+
+
 function Get-VllmPathWithoutTrailingSeparator {
     param([Parameter(Mandatory)][string]$Path)
     $pathRoot = [System.IO.Path]::GetPathRoot($Path)

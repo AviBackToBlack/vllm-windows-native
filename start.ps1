@@ -58,7 +58,7 @@ if ($VllmArgs) {
     $arguments += $VllmArgs
 }
 
-$originalEnvironment = [Environment]::GetEnvironmentVariables('Process')
+$originalEnvironment = Get-VllmProcessEnvironmentSnapshot
 try {
     $containment = Initialize-VllmContainedEnvironment -Root $ContainmentRoot
     $ContainmentRoot = $containment.Root
@@ -86,13 +86,6 @@ try {
     }
 }
 finally {
-    $currentEnvironment = [Environment]::GetEnvironmentVariables('Process')
-    foreach ($name in @($currentEnvironment.Keys)) {
-        if (-not $originalEnvironment.Contains($name)) {
-            Remove-Item -LiteralPath ('Env:{0}' -f [string]$name) -ErrorAction SilentlyContinue
-        }
-    }
-    foreach ($entry in $originalEnvironment.GetEnumerator()) {
-        [Environment]::SetEnvironmentVariable([string]$entry.Key, [string]$entry.Value, 'Process')
-    }
+    Restore-VllmProcessEnvironment -Snapshot $originalEnvironment
+
 }
