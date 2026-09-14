@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "component": "uv",
+  "version": "0.12.13",
+  "platform": "windows-x86_64",
+  "release": {
+    "tag": "0.12.13",
+    "commit": "0ebbd9274a55a8a53a13970be3b97e4209598e17",
+    "repository": "https://github.com/astral-sh/uv"
+  },
+  "archive": {
+    "name": "uv-x86_64-pc-windows-msvc.zip",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.12.13/uv-x86_64-pc-windows-msvc.zip",
+    "sha256": "A86C9DC7BAD9B03F388583B7187C05FE9951C2E0D392217E8FD43D97787F6EC2",
+    "size_bytes": 17612025,
+    "entry_count": 3,
+    "required_files": [
+      "uv.exe",
+      "uvw.exe",
+      "uvx.exe"
+    ]
+  },
+  "install": {
+    "managed_relative_path": "tools/uv/0.12.13",
+    "uv_executable": "uv.exe"
+  },
+  "acceptance": {
+    "expected_version": "0.12.13",
+    "expected_commit_prefix": "0ebbd9274",
+    "github_attestation_verified": true,
+    "authenticode_verified": true,
+    "authenticode_subject": "CN=\"OpenAI OpCo, LLC\", O=\"OpenAI OpCo, LLC\", L=San Francisco, S=California, C=US"
+  }
+}
