@@ -195,32 +195,32 @@ try {
         Move-Item -LiteralPath $targetRoot -Destination $backupRoot
     }
     try {
-        $environmentSnapshot = Get-ProcessEnvironmentSnapshot
-        foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-            $name = [string]$key
-            if ($name.StartsWith('UV_',[StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue }
+        try {
+            $environmentSnapshot = Get-ProcessEnvironmentSnapshot
+            foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+                $name = [string]$key
+                if ($name.StartsWith('UV_',[StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue }
+            }
+            foreach ($name in @('PYTHONHOME','PYTHONPATH','VIRTUAL_ENV','VIRTUAL_ENV_PROMPT','CONDA_PREFIX')) {
+                Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
+            }
+            [Environment]::SetEnvironmentVariable('UV_CACHE_DIR',$cacheDir,'Process')
+            [Environment]::SetEnvironmentVariable('UV_NO_MANAGED_PYTHON','1','Process')
+            [Environment]::SetEnvironmentVariable('UV_PYTHON_DOWNLOADS','never','Process')
+            [Environment]::SetEnvironmentVariable('UV_NO_CONFIG','1','Process')
+            [Environment]::SetEnvironmentVariable('UV_NO_PROJECT','1','Process')
+            [Environment]::SetEnvironmentVariable('UV_OFFLINE','1','Process')
+            [Environment]::SetEnvironmentVariable('PYTHONNOUSERSITE','1','Process')
+            & $uvExe venv $targetRoot --python $pythonExe --no-managed-python --no-python-downloads --offline --no-project --no-config
+            if ($LASTEXITCODE -ne 0) { throw "uv venv failed with exit code $LASTEXITCODE." }
         }
-        foreach ($name in @('PYTHONHOME','PYTHONPATH','VIRTUAL_ENV','VIRTUAL_ENV_PROMPT','CONDA_PREFIX')) {
-            Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
+        finally {
+            if ($null -ne $environmentSnapshot) {
+                Restore-ProcessEnvironment -Snapshot $environmentSnapshot
+                $environmentSnapshot = $null
+            }
         }
-        [Environment]::SetEnvironmentVariable('UV_CACHE_DIR',$cacheDir,'Process')
-        [Environment]::SetEnvironmentVariable('UV_NO_MANAGED_PYTHON','1','Process')
-        [Environment]::SetEnvironmentVariable('UV_PYTHON_DOWNLOADS','never','Process')
-        [Environment]::SetEnvironmentVariable('UV_NO_CONFIG','1','Process')
-        [Environment]::SetEnvironmentVariable('UV_NO_PROJECT','1','Process')
-        [Environment]::SetEnvironmentVariable('UV_OFFLINE','1','Process')
-        [Environment]::SetEnvironmentVariable('PYTHONNOUSERSITE','1','Process')
-        & $uvExe venv $targetRoot --python $pythonExe --no-managed-python --no-python-downloads --offline --no-project --no-config
-        if ($LASTEXITCODE -ne 0) { throw "uv venv failed with exit code $LASTEXITCODE." }
-    }
-    finally {
-        if ($null -ne $environmentSnapshot) {
-            Restore-ProcessEnvironment -Snapshot $environmentSnapshot
-            $environmentSnapshot = $null
-        }
-    }
 
-    try {
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $managedRelative)
         if (-not (Test-VenvRoot -Root $targetRoot -PythonRoot $pythonRoot)) { throw 'Activated runtime venv failed final validation.' }
     }

@@ -32,10 +32,11 @@ function Assert-EnvironmentEqual {
     if($delta.Count){throw "Process environment changed: $($delta -join ', ')"}
 }
 function Write-VenvFixtureManifest {
-    param([Parameter(Mandatory)][string]$Path,[int]$CreationFileCount=17,[string]$ManagedRelativePath='runtime/venv')
+    param([Parameter(Mandatory)][string]$Path,[int]$CreationFileCount=17,[string]$ManagedRelativePath='runtime/venv',[string]$UvBootstrapManifest='')
     $m=Get-Content (Join-Path $repoRoot 'manifests\bootstrap\venv-v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json
     $m.install.expected_creation_file_count=$CreationFileCount
     $m.install.managed_relative_path=$ManagedRelativePath
+    if(-not [string]::IsNullOrWhiteSpace($UvBootstrapManifest)){$m.uv.bootstrap_manifest=$UvBootstrapManifest}
     [IO.File]::WriteAllText($Path,($m|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
 }
 
@@ -84,6 +85,25 @@ try {
     if(Test-Path -LiteralPath $marker){throw 'Forced replacement retained old marker.'}
     if(-not $forced.ready){throw 'Forced replacement did not report ready.'}
     Write-Host 'VENV_FORCE_REPLACEMENT_OK'
+
+    $creationMarker=Join-Path $forced.root 'creation-failure.marker'; [IO.File]::WriteAllText($creationMarker,'OLD-CREATION-RUNTIME',[Text.Encoding]::ASCII)
+    $uvManagedRoot=Split-Path -Parent $forced.uv
+    $fakeUv=Join-Path $uvManagedRoot 'uv-fail.cmd'
+    $fakeUvBody=@('@echo off','if "%~1"=="--version" goto version','if "%~1"=="venv" goto failvenv','exit /b 43',':version','echo uv 0.12.13 ^(0ebbd9274 2026-09-10 x86_64-pc-windows-msvc^)','exit /b 0',':failvenv','mkdir "%~2" >nul 2>nul','>"%~2\partial.txt" echo PARTIAL','exit /b 42')
+    [IO.File]::WriteAllLines($fakeUv,$fakeUvBody,[Text.Encoding]::ASCII)
+    $uvFixtureManifest=Join-Path $base 'uv-failure-manifest.json'
+    $uvFixture=Get-Content (Join-Path $repoRoot 'manifests\bootstrap\uv-0.12.13-windows-x86_64.json') -Raw|ConvertFrom-Json
+    $uvFixture.install.uv_executable='uv-fail.cmd'
+    [IO.File]::WriteAllText($uvFixtureManifest,($uvFixture|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    $creationFailureManifest=Join-Path $base 'creation-failure-manifest.json'; Write-VenvFixtureManifest -Path $creationFailureManifest -UvBootstrapManifest $uvFixtureManifest
+    $beforeCreationFailure=Get-TestEnvironmentSnapshot
+    Test-ExpectedFailure -Action { & $bootstrapVenv -ManifestPath $creationFailureManifest -InstallationRoot $root -Force -Json | Out-Null } -Name 'creation-failure-rollback' -ExpectedMessage 'uv venv failed with exit code 42'
+    $afterCreationFailure=Get-TestEnvironmentSnapshot; Assert-EnvironmentEqual -Before $beforeCreationFailure -After $afterCreationFailure
+    if(-not(Test-Path -LiteralPath $creationMarker -PathType Leaf)){throw 'Creation failure did not restore prior runtime.'}
+    if((Get-Content -LiteralPath $creationMarker -Raw).Trim() -ne 'OLD-CREATION-RUNTIME'){throw 'Creation rollback restored wrong runtime.'}
+    if(Test-Path -LiteralPath (Join-Path $forced.root 'partial.txt')){throw 'Creation rollback left partial target content.'}
+    if(@(Get-ChildItem -LiteralPath (Split-Path -Parent $forced.root) -Directory -Filter '.venv-backup-*' -ErrorAction SilentlyContinue).Count){throw 'Creation rollback left a backup directory behind.'}
+    Write-Host 'VENV_CREATION_FAILURE_ROLLBACK_OK'
     $receiptBefore=Get-Content -LiteralPath $forced.receipt -Raw
     $rollbackMarker=Join-Path $forced.root 'rollback.marker'; [IO.File]::WriteAllText($rollbackMarker,'OLD-RUNTIME',[Text.Encoding]::ASCII)
     $receiptHandle=[IO.File]::Open($forced.receipt,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None)
