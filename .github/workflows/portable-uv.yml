@@ -1,0 +1,57 @@
+name: Portable uv bootstrap regression
+
+on:
+  workflow_dispatch:
+# Intentionally no pull_request trigger: this workflow downloads and executes pinned uv binaries.
+# AGENTS.md requires public PR CI to remain source-level only. Trusted local validation occurs
+# before merge; push-to-main is the repository backstop.
+  push:
+    branches: [main]
+    paths:
+      - 'bootstrap-uv.ps1'
+      - 'scripts/common.ps1'
+      - 'manifests/bootstrap/uv-0.12.13-windows-x86_64.json'
+      - 'tests/portable-uv-bootstrap.ps1'
+      - '.github/workflows/portable-uv.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  portable-uv:
+    name: Portable uv bootstrap regression
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download and materialize pinned uv
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'vllm-portable-uv-download'
+          $json = & ./bootstrap-uv.ps1 -InstallationRoot $root -Json
+          $result = $json | ConvertFrom-Json
+          if (-not $result.ready) { throw 'Portable uv bootstrap did not report ready.' }
+          if (-not (Test-Path -LiteralPath $result.archive -PathType Leaf)) { throw 'Pinned uv archive is missing after bootstrap.' }
+          "VLLM_UV_ARCHIVE=$($result.archive)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VLLM_UV_DOWNLOAD_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run PowerShell 7 and Windows PowerShell 5.1 regression
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/portable-uv-bootstrap.ps1 -ArchivePath $env:VLLM_UV_ARCHIVE
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 portable uv regression failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/portable-uv-bootstrap.ps1 -ArchivePath $env:VLLM_UV_ARCHIVE
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 portable uv regression failed with exit $LASTEXITCODE." }
+
+      - name: Clean trusted test root
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:VLLM_UV_DOWNLOAD_ROOT -Recurse -Force -ErrorAction SilentlyContinue

@@ -82,9 +82,19 @@ With `-InstallationRoot` omitted, the canonical `D:\AI\vLLM` install root is use
 
 The exact source release, commit, asset URL, size, digest and archive shape are pinned in [`manifests/bootstrap/cpython-3.13.15-windows-x86_64.json`](manifests/bootstrap/cpython-3.13.15-windows-x86_64.json). A verified local archive can be supplied with `-ArchivePath`; `-Force` is required to replace an existing managed Python target. `-Json` emits the resolved interpreter and provenance receipt.
 
-This is intentionally only the portable base interpreter. Creation of the pinned build/runtime virtual environment and installation of Torch, Triton-Windows and the project vLLM wheel remain subsequent release-engineering steps.
+The portable base interpreter is intentionally separate from its environment tooling. The next layer uses the pinned uv binary below to create the build/runtime virtual environment; Torch, Triton-Windows and the project vLLM wheel remain subsequent release-engineering steps.
 
-### 3. Run the prerequisite doctor
+### 3. Bootstrap the pinned portable uv tool
+
+```powershell
+.\bootstrap-uv.ps1
+```
+
+`bootstrap-uv.ps1` acquires uv `0.12.13` for Windows x64, verifies the pinned size and SHA-256, requires the exact three-file archive layout (`uv.exe`, `uvw.exe`, `uvx.exe`), and atomically materializes it under `tools/uv/0.12.13/`. It uses the lifecycle operation lock and transactional receipt/rollback rules used by the Python bootstrap.
+
+The exact release commit, asset URL, size, digest and acceptance provenance are pinned in [`manifests/bootstrap/uv-0.12.13-windows-x86_64.json`](manifests/bootstrap/uv-0.12.13-windows-x86_64.json). A verified local archive may be supplied with `-ArchivePath`; `-Force` is required to replace an existing managed uv target. This step does not create a virtual environment or mutate the user's PATH.
+
+### 4. Run the prerequisite doctor
 
 Provide the exact build Python, then run the read-only preflight before spending hours compiling CUDA. The doctor automatically discovers the managed cuSOLVER root created by `bootstrap.ps1`; `-CuSolverRoot` remains available for custom locations.
 
@@ -104,7 +114,7 @@ Provide the exact build Python, then run the read-only preflight before spending
 
 For automation, use `-Json`. Build-blocking failures return a non-zero exit code.
 
-### 4. Validate source reconstruction and toolchain
+### 5. Validate source reconstruction and toolchain
 
 ```powershell
 .\build.ps1 `
@@ -114,7 +124,7 @@ For automation, use `-Json`. Build-blocking failures return a non-zero exit code
 
 The build driver reconstructs the accepted Windows source tree from official `vllm-project/vllm` Git objects plus this repository's versioned patchset, then rejects source or toolchain drift before compilation. Git long-path handling is enabled per invocation rather than by changing the user's global Git configuration.
 
-### 5. Build the wheel
+### 6. Build the wheel
 
 Run the same command without `-ValidateOnly`. Long CUDA builds should be run detached with dedicated log and exit files.
 
@@ -134,6 +144,6 @@ If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the
 
 ## Not automated yet
 
-The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base is now productized; the next release-engineering work is the pinned build/runtime virtual environment and remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows dependency layer. Wheel installation/lifecycle implementation follows incrementally.
+The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base and uv tool are now productized; the next release-engineering work is the pinned build/runtime virtual environment and remaining CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows dependency layer. Wheel installation/lifecycle implementation follows incrementally.
 
 `install.ps1` therefore remains intentionally unimplemented instead of pretending an unverified installer is supported.
