@@ -82,7 +82,7 @@ With `-InstallationRoot` omitted, the canonical `D:\AI\vLLM` install root is use
 
 The exact source release, commit, asset URL, size, digest and archive shape are pinned in [`manifests/bootstrap/cpython-3.13.15-windows-x86_64.json`](manifests/bootstrap/cpython-3.13.15-windows-x86_64.json). A verified local archive can be supplied with `-ArchivePath`; `-Force` is required to replace an existing managed Python target. `-Json` emits the resolved interpreter and provenance receipt.
 
-The portable base interpreter is intentionally separate from its environment tooling. The next layer uses the pinned uv binary below to create the build/runtime virtual environment; Torch, Triton-Windows and the project vLLM wheel remain subsequent release-engineering steps.
+The portable base interpreter is intentionally separate from its environment tooling. The next layers use the pinned uv binary below to create the build/runtime virtual environment, materialize the accepted CUDA dependency graph, and finally assemble the verified managed vLLM runtime.
 
 ### 3. Bootstrap the pinned portable uv tool
 
@@ -120,7 +120,20 @@ The CUDA `13.0` PyTorch trio is pinned to direct official wheel URLs so the reso
 
 A receipt-backed dependency-ready environment is idempotent without `-Force`; unexpected distributions or receipt drift fail closed. `-Force` performs a full transactional replacement rather than mutating the live environment. A durable transaction receipt and generation ID make interrupted materialization recoverable on the next invocation: an uncommitted generation rolls back to the deterministic backup, while a generation whose dependency receipt was already committed only cleans leftover staging/backup state. `-Offline` is available when every required artifact is already present in the contained uv cache.
 
-### 7. Run the prerequisite doctor
+### 7. Materialize the managed vLLM runtime
+
+```powershell
+.\bootstrap-vllm.ps1 `
+  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl'
+```
+
+`bootstrap-vllm.ps1` requires the exact receipt-backed 28-package predecessor state from step 6 and a caller-supplied project wheel. Before mutation it verifies the committed 159-package runtime lock and accepted package map plus the wheel filename, size, SHA-256, tags, version, and nine expected native extensions. The canonical accepted wheel SHA-256 is `66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6`.
+
+The final runtime is assembled in relocatable staging: uv synchronizes the 159 hash-locked dependency distributions, the verified project wheel is installed with `--no-deps --no-index`, and the staged environment must contain exactly 160 distributions and pass `uv pip check` before a short activation swap. A durable transaction receipt makes interrupted materialization recoverable; successful reruns are idempotent and do not rewrite the final receipt. `-Force` performs full replacement, while `-Offline` requires every dependency artifact to already exist in the contained uv cache.
+
+The complete contract is [`manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json`](manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json); the exact 159-package map is [`manifests/runtime/vllm-runtime-packages-v0.27.1-windows-x86_64.json`](manifests/runtime/vllm-runtime-packages-v0.27.1-windows-x86_64.json).
+
+### 8. Run the prerequisite doctor
 
 Provide the exact build Python, then run the read-only preflight before spending hours compiling CUDA. The doctor automatically discovers the managed cuSOLVER root created by `bootstrap.ps1`; `-CuSolverRoot` remains available for custom locations.
 
@@ -140,7 +153,7 @@ Provide the exact build Python, then run the read-only preflight before spending
 
 For automation, use `-Json`. Build-blocking failures return a non-zero exit code.
 
-### 8. Validate source reconstruction and toolchain
+### 9. Validate source reconstruction and toolchain
 
 ```powershell
 .\build.ps1 `
@@ -150,7 +163,7 @@ For automation, use `-Json`. Build-blocking failures return a non-zero exit code
 
 The build driver reconstructs the accepted Windows source tree from official `vllm-project/vllm` Git objects plus this repository's versioned patchset, then rejects source or toolchain drift before compilation. Git long-path handling is enabled per invocation rather than by changing the user's global Git configuration.
 
-### 9. Build the wheel
+### 10. Build the wheel
 
 Run the same command without `-ValidateOnly`. Long CUDA builds should be run detached with dedicated log and exit files.
 
@@ -170,6 +183,6 @@ If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the
 
 ## Not automated yet
 
-The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base, uv tool, contained runtime venv, accepted 28-package hash lock, and transactional dependency materialization are now productized. The next release-engineering work is project-wheel installation and its lifecycle/provenance layer.
+The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base, uv tool, contained runtime venv, accepted 28-package dependency layer, 159-package final-runtime lock, verified project-wheel identity, and crash-recoverable managed vLLM materialization are now productized. The next release-engineering work is the top-level install/update/uninstall orchestration and release artifact publication/signing.
 
 `install.ps1` therefore remains intentionally unimplemented instead of pretending an unverified installer is supported.
