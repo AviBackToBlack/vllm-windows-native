@@ -104,8 +104,15 @@ The exact release commit, asset URL, size, digest and acceptance provenance are 
 
 The venv is intentionally created without `pip`, setuptools, wheel, Torch or Triton. `-Force` performs transactional replacement with rollback of the previous `runtime\venv` if creation, final validation, or forensic receipt commit fails. The machine-readable contract is [`manifests/bootstrap/venv-v0.27.1-windows-x86_64.json`](manifests/bootstrap/venv-v0.27.1-windows-x86_64.json).
 
+### 5. Inspect the accepted dependency lock
 
-### 5. Run the prerequisite doctor
+The accepted Windows/cp313 build/runtime dependency graph is pinned in [`requirements/runtime-v0.27.1.lock.txt`](requirements/runtime-v0.27.1.lock.txt), generated from [`requirements/runtime-v0.27.1.in`](requirements/runtime-v0.27.1.in) by the productized uv `0.12.13`. The lock contains exactly 28 package versions and SHA-256 hashes. Acceptance-time regeneration with the pinned CPython `3.13.15` and uv inputs reproduced the committed lock byte-for-byte; the committed lock and its digest are canonical because the public package index is not an immutable snapshot.
+
+The CUDA `13.0` PyTorch trio is pinned to direct official wheel URLs so the resolver cannot drift to non-CUDA builds. The exact accepted package set, lock/input digests, generator identity, and accepted Torch/Triton binary provenance are recorded in [`manifests/runtime/dependencies-v0.27.1-windows-x86_64.json`](manifests/runtime/dependencies-v0.27.1-windows-x86_64.json). The dependency validator requires all 28 packages at their exact versions and rejects unexpected third-party distributions; the separately governed project wheel (`vllm`) is the sole allowed extra when validating a complete runtime. The accepted `ninja` distribution version is `1.13.2`; its Windows wheel contains a `ninja.exe` that reports the build string `1.13.2.git.kitware.jobserver-pipe-1`.
+
+This step is currently a **supply-chain contract only**: `bootstrap-venv.ps1` still creates an unseeded environment, and this PR does not install the 28 packages. Transactional materialization of the committed lock into `runtime\venv` is the next lifecycle layer.
+
+### 6. Run the prerequisite doctor
 
 Provide the exact build Python, then run the read-only preflight before spending hours compiling CUDA. The doctor automatically discovers the managed cuSOLVER root created by `bootstrap.ps1`; `-CuSolverRoot` remains available for custom locations.
 
@@ -125,7 +132,7 @@ Provide the exact build Python, then run the read-only preflight before spending
 
 For automation, use `-Json`. Build-blocking failures return a non-zero exit code.
 
-### 6. Validate source reconstruction and toolchain
+### 7. Validate source reconstruction and toolchain
 
 ```powershell
 .\build.ps1 `
@@ -135,7 +142,7 @@ For automation, use `-Json`. Build-blocking failures return a non-zero exit code
 
 The build driver reconstructs the accepted Windows source tree from official `vllm-project/vllm` Git objects plus this repository's versioned patchset, then rejects source or toolchain drift before compilation. Git long-path handling is enabled per invocation rather than by changing the user's global Git configuration.
 
-### 7. Build the wheel
+### 8. Build the wheel
 
 Run the same command without `-ValidateOnly`. Long CUDA builds should be run detached with dedicated log and exit files.
 
@@ -155,6 +162,6 @@ If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the
 
 ## Not automated yet
 
-The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base, uv tool, and contained unseeded runtime venv are now productized; the next release-engineering work is the locked CUDA/MSVC/CMake/Ninja/Torch/Triton-Windows dependency layer inside that environment. Wheel installation/lifecycle implementation follows incrementally.
+The lifecycle safety boundary is now specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). The pinned portable CPython base, uv tool, contained unseeded runtime venv, and accepted 28-package hash lock are now productized. The next release-engineering work is transactional materialization of that dependency lock into `runtime\venv`; project wheel installation/lifecycle implementation follows incrementally.
 
 `install.ps1` therefore remains intentionally unimplemented instead of pretending an unverified installer is supported.

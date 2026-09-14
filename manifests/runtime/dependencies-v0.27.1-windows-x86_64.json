@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "component": "runtime-dependencies",
+  "milestone": "v0.27.1-native-windows-single-gpu-sm120",
+  "platform": "windows-x86_64",
+  "python_version": "3.13.15",
+  "generator": {
+    "tool": "uv",
+    "version": "0.12.13",
+    "commit": "0ebbd9274a55a8a53a13970be3b97e4209598e17",
+    "target": "x86_64-pc-windows-msvc",
+    "index": "https://pypi.org/simple",
+    "python_downloads": "never"
+  },
+  "input": {
+    "path": "requirements/runtime-v0.27.1.in",
+    "size_bytes": 734,
+    "sha256": "ABE2A7F5BBB0909036BCABF8895A7FDEB3BBEA94AB434EB2D3797CB62B06462F",
+    "eol": "lf"
+  },
+  "lock": {
+    "path": "requirements/runtime-v0.27.1.lock.txt",
+    "size_bytes": 41213,
+    "sha256": "F9D3CABBB3A6131FDB15DB8E3602A72884C69F81BCD59835FBD2FE36518D2FB1",
+    "package_count": 28,
+    "hashes_required": true,
+    "eol": "lf"
+  },
+  "accepted_packages": {
+    "build": "1.6.0",
+    "cmake": "4.4.3",
+    "colorama": "0.4.6",
+    "filelock": "3.32.6",
+    "fsspec": "2026.7.0",
+    "jinja2": "3.1.6",
+    "markupsafe": "3.0.3",
+    "mpmath": "1.3.0",
+    "networkx": "3.6.1",
+    "ninja": "1.13.2",
+    "numpy": "2.5.3",
+    "packaging": "26.3",
+    "pillow": "12.3.0",
+    "protobuf": "7.36.1",
+    "pyproject-hooks": "1.2.0",
+    "regex": "2026.9.3",
+    "semantic-version": "2.10.0",
+    "setuptools": "80.10.2",
+    "setuptools-rust": "1.13.0",
+    "setuptools-scm": "10.2.3",
+    "sympy": "1.14.0",
+    "torch": "2.13.0+cu130",
+    "torchaudio": "2.11.0+cu130",
+    "torchvision": "0.28.0+cu130",
+    "triton-windows": "3.7.1.post27",
+    "typing-extensions": "4.16.0",
+    "vcs-versioning": "2.3.4",
+    "wheel": "0.48.0"
+  },
+  "allowed_extra_distributions": [
+    "vllm"
+  ],
+  "direct_requirements": [
+    "build==1.6.0",
+    "cmake==4.4.3",
+    "ninja==1.13.2",
+    "protobuf==7.36.1",
+    "regex==2026.9.3",
+    "setuptools==80.10.2",
+    "setuptools-rust==1.13.0",
+    "setuptools-scm==10.2.3",
+    "torch @ https://download-r2.pytorch.org/whl/cu130/torch-2.13.0%2Bcu130-cp313-cp313-win_amd64.whl#sha256=cf23236e9deed7d3510d14d9b9592d75d272ef7b35bbfee31a02bea339c73971",
+    "torchaudio @ https://download-r2.pytorch.org/whl/cu130/torchaudio-2.11.0%2Bcu130-cp313-cp313-win_amd64.whl#sha256=ce09a7b144b7982b46c8fe399cf5f91d43dda571e9d6ddba67e928567551f614",
+    "torchvision @ https://download-r2.pytorch.org/whl/cu130/torchvision-0.28.0%2Bcu130-cp313-cp313-win_amd64.whl#sha256=6ac4fadfd4f908f2983a46478d4ef56735b579da57ec215494b9812b6ebd3526",
+    "triton-windows==3.7.1.post27",
+    "vcs-versioning==2.3.4",
+    "wheel==0.48.0"
+  ],
+  "accepted_binary_artifacts": {
+    "torch": {
+      "url": "https://download-r2.pytorch.org/whl/cu130/torch-2.13.0%2Bcu130-cp313-cp313-win_amd64.whl",
+      "size_bytes": 1915517499,
+      "sha256": "cf23236e9deed7d3510d14d9b9592d75d272ef7b35bbfee31a02bea339c73971",
+      "hash_provenance": "frozen-local-digest-of-official-url"
+    },
+    "torchvision": {
+      "url": "https://download-r2.pytorch.org/whl/cu130/torchvision-0.28.0%2Bcu130-cp313-cp313-win_amd64.whl",
+      "size_bytes": 9162750,
+      "sha256": "6ac4fadfd4f908f2983a46478d4ef56735b579da57ec215494b9812b6ebd3526",
+      "hash_provenance": "frozen-local-digest-of-official-url"
+    },
+    "torchaudio": {
+      "url": "https://download-r2.pytorch.org/whl/cu130/torchaudio-2.11.0%2Bcu130-cp313-cp313-win_amd64.whl",
+      "size_bytes": 1722738,
+      "sha256": "ce09a7b144b7982b46c8fe399cf5f91d43dda571e9d6ddba67e928567551f614",
+      "hash_provenance": "official-index-hash-and-local-digest"
+    },
+    "ninja": {
+      "filename": "ninja-1.13.2-py3-none-win_amd64.whl",
+      "package_version": "1.13.2",
+      "executable_version": "1.13.2.git.kitware.jobserver-pipe-1",
+      "executable_sha256": "a7f084e8ee37bff0872aa8bd3d17cc19632d2a37734f6c242dd3dee22d77c0b4",
+      "sha256": "1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118",
+      "hash_provenance": "accepted-uv-cache-wheel-source-hash-present-in-lock"
+    },
+    "triton-windows": {
+      "filename": "triton_windows-3.7.1.post27-cp313-cp313-win_amd64.whl",
+      "size_bytes": 49684257,
+      "sha256": "e8ed215c02afc85a81f0097196f8bebdf6f68085f1bc0fe8771b9a74783f15ab",
+      "hash_provenance": "accepted-local-wheel-digest-present-in-lock"
+    }
+  },
+  "regeneration": {
+    "working_directory": "requirements",
+    "environment": [
+      "UV_PYTHON=<managed CPython 3.13.15 python.exe>",
+      "UV_PYTHON_DOWNLOADS=never"
+    ],
+    "command": "uv pip compile .\\runtime-v0.27.1.in --output-file .\\runtime-v0.27.1.lock.txt --generate-hashes --python-platform x86_64-pc-windows-msvc --default-index https://pypi.org/simple --no-config",
+    "index_is_immutable_snapshot": false,
+    "canonical_artifact": "requirements/runtime-v0.27.1.lock.txt"
+  },
+  "note": "This committed lock is the canonical supply-chain artifact for the accepted 28-package environment. Acceptance-time regeneration was byte-identical, but the public package index is not treated as an immutable snapshot. The separately governed project distribution `vllm` is the only allowed extra distribution when validating a final environment. Package installation is intentionally deferred to a separate transactional lifecycle change."
+}
