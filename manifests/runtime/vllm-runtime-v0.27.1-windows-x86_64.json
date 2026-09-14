@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "component": "vllm-runtime",
+  "milestone": "v0.27.1-native-windows-single-gpu-sm120",
+  "platform": "windows-x86_64",
+  "python_version": "3.13.15",
+  "generator": {
+    "tool": "uv",
+    "version": "0.12.13",
+    "commit": "0ebbd9274a55a8a53a13970be3b97e4209598e17",
+    "target": "x86_64-pc-windows-msvc",
+    "index": "https://pypi.org/simple",
+    "python_downloads": "never"
+  },
+  "predecessor": {
+    "component": "runtime-dependencies",
+    "manifest": "manifests/runtime/dependencies-v0.27.1-windows-x86_64.json",
+    "receipt_relative_path": "forensic/runtime-dependencies-v0.27.1.json",
+    "required_package_count": 28,
+    "semantics": "receipt-backed-exact-state-before-final-runtime-materialization"
+  },
+  "input": {
+    "path": "requirements/vllm-runtime-v0.27.1.in",
+    "size_bytes": 2362,
+    "sha256": "A155381867ED94D9892D717314E27EFC8E837A656F7E29135BAFE64EB10591F6",
+    "eol": "lf",
+    "provenance": "accepted-trial-input"
+  },
+  "lock": {
+    "path": "requirements/vllm-runtime-v0.27.1.lock.txt",
+    "size_bytes": 343053,
+    "sha256": "717684DA356DA529D317587083EB18B6464DE962CE762A558044B60C227B4CDA",
+    "package_count": 159,
+    "hashes_required": true,
+    "eol": "lf",
+    "accepted_trial_sha256": "723262735924E0BAA16FDD5DEF3309EAE8D9FE137153097AF0A804ADCDE881CC",
+    "accepted_trial_noncomment_payload_identical": true
+  },
+  "accepted_packages": {
+    "path": "manifests/runtime/vllm-runtime-packages-v0.27.1-windows-x86_64.json",
+    "size_bytes": 4304,
+    "sha256": "B2C1D8644764E79585893177F53CBAACB24AD221E05CFFEDC9348D20093CFD8D",
+    "package_count": 159
+  },
+  "project_wheel": {
+    "distribution": "vllm",
+    "version": "0.27.2.dev0+g6e448d0ea.d20260909",
+    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl",
+    "size_bytes": 176769951,
+    "sha256": "66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6",
+    "python_tag": "cp313",
+    "abi_tag": "cp313",
+    "platform_tag": "win_amd64",
+    "acquisition": "provided-only-until-project-release-exists",
+    "dependency_install": "no-deps-no-index",
+    "native_extension_count": 9,
+    "native_extensions": [
+      "vllm\\_C_stable_libtorch.pyd",
+      "vllm\\_flashkda_C.cp313-win_amd64.pyd",
+      "vllm\\_moe_C_stable_libtorch.pyd",
+      "vllm\\_qutlass_C.pyd",
+      "vllm\\cumem_allocator.pyd",
+      "vllm\\fs_io_C.pyd",
+      "vllm\\spinloop.pyd",
+      "vllm\\third_party\\deep_gemm\\_C.cp313-win_amd64.pyd",
+      "vllm\\vllm_flash_attn\\_vllm_fa2_C.pyd"
+    ]
+  },
+  "materialization": {
+    "target_relative_path": "runtime/venv",
+    "staging_relative_path": "runtime/.venv-vllm-staging",
+    "backup_relative_path": "runtime/.venv-vllm-backup",
+    "cache_relative_path": "cache/uv",
+    "predecessor_manifest": "manifests/runtime/dependencies-v0.27.1-windows-x86_64.json",
+    "predecessor_receipt_relative_path": "forensic/runtime-dependencies-v0.27.1.json",
+    "receipt_relative_path": "forensic/runtime-vllm-v0.27.1.json",
+    "transaction_receipt_relative_path": "forensic/runtime-vllm-transaction-v0.27.1.json",
+    "receipt_schema_version": 1,
+    "installer": "uv pip sync + uv pip install",
+    "require_hashes": true,
+    "only_binary": true,
+    "link_mode": "copy",
+    "strict": true,
+    "default_index": "https://pypi.org/simple",
+    "wheel_install": "no-deps-no-index",
+    "final_package_count": 160
+  }
+}
