@@ -299,7 +299,8 @@ try {
                 }
                 throw "Venv receipt commit failed and cleanup cannot safely remove the new environment. Original: $($receiptError.Exception.Message) Cleanup: $($_.Exception.Message)"
             }
-        }        if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
+        }
+        if ($backupRoot -and (Test-Path -LiteralPath $backupRoot)) {
             try {
                 Move-Item -LiteralPath $backupRoot -Destination $targetRoot
                 $backupRoot = $null
