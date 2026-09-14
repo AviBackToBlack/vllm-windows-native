@@ -1,0 +1,14 @@
+build==1.6.0
+cmake==4.4.3
+ninja==1.13.2
+protobuf==7.36.1
+regex==2026.9.3
+setuptools==80.10.2
+setuptools-rust==1.13.0
+setuptools-scm==10.2.3
+torch @ https://download-r2.pytorch.org/whl/cu130/torch-2.13.0%2Bcu130-cp313-cp313-win_amd64.whl#sha256=cf23236e9deed7d3510d14d9b9592d75d272ef7b35bbfee31a02bea339c73971
+torchaudio @ https://download-r2.pytorch.org/whl/cu130/torchaudio-2.11.0%2Bcu130-cp313-cp313-win_amd64.whl#sha256=ce09a7b144b7982b46c8fe399cf5f91d43dda571e9d6ddba67e928567551f614
+torchvision @ https://download-r2.pytorch.org/whl/cu130/torchvision-0.28.0%2Bcu130-cp313-cp313-win_amd64.whl#sha256=6ac4fadfd4f908f2983a46478d4ef56735b579da57ec215494b9812b6ebd3526
+triton-windows==3.7.1.post27
+vcs-versioning==2.3.4
+wheel==0.48.0

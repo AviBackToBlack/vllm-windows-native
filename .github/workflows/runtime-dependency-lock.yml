@@ -1,0 +1,43 @@
+name: Runtime dependency lock regression
+
+on:
+  workflow_dispatch:
+# Intentionally no pull_request trigger: AGENTS.md keeps public PR CI source-level only.
+# This trusted/main workflow validates the committed dependency supply-chain contract without installing packages.
+  push:
+    branches: [main]
+    paths:
+      - 'requirements/runtime-v0.27.1.in'
+      - 'requirements/runtime-v0.27.1.lock.txt'
+      - 'manifests/runtime/dependencies-v0.27.1-windows-x86_64.json'
+      - 'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json'
+      - 'manifests/bootstrap/uv-0.12.13-windows-x86_64.json'
+      - 'scripts/common.ps1'
+      - 'tests/runtime-dependency-lock.ps1'
+      - '.github/workflows/runtime-dependency-lock.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dependency-lock:
+    name: Runtime dependency lock regression
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate lock in PowerShell 7 and Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/runtime-dependency-lock.ps1
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 dependency lock regression failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/runtime-dependency-lock.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 dependency lock regression failed with exit $LASTEXITCODE." }
