@@ -30,3 +30,8 @@ The accepted environment tool is uv `0.12.13` from `astral-sh/uv`, release sourc
 The archive contains exactly three regular top-level files: `uv.exe`, `uvw.exe`, and `uvx.exe`. Acceptance also observed a valid Authenticode signature on all three binaries with subject `CN="OpenAI OpCo, LLC", O="OpenAI OpCo, LLC", L=San Francisco, S=California, C=US`. Runtime materialization is integrity-pinned by the archive size/SHA and validates `uv.exe --version` against version `0.12.13` and commit prefix `0ebbd9274`.
 
 The machine-readable acquisition/layout contract is [`manifests/bootstrap/uv-0.12.13-windows-x86_64.json`](../manifests/bootstrap/uv-0.12.13-windows-x86_64.json).
+## Runtime venv bootstrap contract
+
+The accepted empty build/runtime environment is created by uv `0.12.13` from the managed CPython `3.13.15` base and is tied to milestone `v0.27.1-native-windows-single-gpu-sm120`. The machine-readable contract is [`manifests/bootstrap/venv-v0.27.1-windows-x86_64.json`](../manifests/bootstrap/venv-v0.27.1-windows-x86_64.json).
+
+Creation is offline and unseeded: no `pip`, setuptools, wheel, Torch, Triton-Windows, or other package is installed by this layer. The pinned uv creates 17 files before the first interpreter validation; the validation run creates the expected `_virtualenv.cpython-313.pyc`, so the forensic receipt records 18 files on the accepted path. The venv must report CPython `3.13.15`, a 64-bit interpreter, uv `0.12.13`, the managed CPython root as `sys.base_prefix`, and `runtime/venv` as `sys.prefix`.
