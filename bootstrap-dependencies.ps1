@@ -112,6 +112,17 @@ $expectedUvVersion=[string]$manifest.generator.version
 $expectedUvCommit=[string]$manifest.generator.commit
 $expectedUvCommitPrefix=[string]$uvManifest.acceptance.expected_commit_prefix
 $baseRequiredFiles=@($baseVenvManifest.install.required_files|ForEach-Object{Assert-VllmSafeRelativePath -RelativePath ([string]$_) -Label 'Base venv required file'})
+$baseExpectedCreationFileCount=[int]$baseVenvManifest.install.expected_creation_file_count
+$baseIncludeSystemSitePackages=[bool]$baseVenvManifest.acceptance.include_system_site_packages
+$basePipMustBeAbsent=[bool]$baseVenvManifest.acceptance.pip_must_be_absent
+$stagingRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.staging_relative_path) -Label 'Dependency staging path'
+$backupRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.backup_relative_path) -Label 'Dependency backup path'
+$transactionRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.transaction_receipt_relative_path) -Label 'Dependency transaction receipt path'
+$receiptSchemaVersion=[int]$manifest.materialization.receipt_schema_version
+if($stagingRelative -ne 'runtime\.venv-dependencies-staging'){throw "Dependency staging path must remain runtime\.venv-dependencies-staging: $stagingRelative"}
+if($backupRelative -ne 'runtime\.venv-dependencies-backup'){throw "Dependency backup path must remain runtime\.venv-dependencies-backup: $backupRelative"}
+if($transactionRelative -ne 'forensic\runtime-dependencies-transaction-v0.27.1.json'){throw "Unexpected dependency transaction receipt path: $transactionRelative"}
+if($receiptSchemaVersion -ne 2){throw "Unsupported dependency receipt schema: $receiptSchemaVersion"}
 function Test-ManagedPython {
     param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$Exe)
     if(-not(Test-Path -LiteralPath $Root -PathType Container)-or-not(Test-Path -LiteralPath $Exe -PathType Leaf)){return $false}
@@ -127,13 +138,20 @@ function Test-ManagedUv {
     return ($LASTEXITCODE -eq 0 -and $probe.StartsWith("uv $expectedUvVersion ($expectedUvCommitPrefix",[StringComparison]::Ordinal))
 }
 function Test-VenvIdentity {
-    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$PythonRoot)
+    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$PythonRoot,[Parameter(Mandatory)][string]$RelativePath,[switch]$Relocatable)
     if(-not(Test-Path -LiteralPath $Root -PathType Container)){return $false}
-    try{[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $Root -RelativePath $targetRelative)}catch{return $false}
-    foreach($relative in $baseRequiredFiles){
+    try{[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $Root -RelativePath $RelativePath)}catch{return $false}
+    $required=@($baseRequiredFiles)
+    if($Relocatable){$required=@($required|Where-Object{$_ -ne 'Scripts\activate.csh'})}
+    foreach($relative in $required){
         $candidate=Join-Path $Root $relative
-        try{[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $candidate -RelativePath ($targetRelative+'\'+$relative))}catch{return $false}
+        try{[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $candidate -RelativePath ($RelativePath+'\'+$relative))}catch{return $false}
         if(-not(Test-Path -LiteralPath $candidate -PathType Leaf)){return $false}
+    }
+    $cfgLines=@(Get-Content -LiteralPath (Join-Path $Root 'pyvenv.cfg'))
+    if($Relocatable){
+        if($cfgLines -notcontains 'relocatable = true'){return $false}
+        if(Test-Path -LiteralPath (Join-Path $Root 'Scripts\activate.csh') -PathType Leaf){return $false}
     }
     $python=Join-Path $Root 'Scripts\python.exe'
     $probe=(& $python -I -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}|{64 if sys.maxsize > 2**32 else 32}|{sys.prefix}|{sys.base_prefix}')" 2>&1|Out-String).Trim()
@@ -160,39 +178,73 @@ function Get-VenvDistributionMap {
     return $map
 }
 function Test-UnseededVenvRoot {
-    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$PythonRoot)
-    if(-not(Test-VenvIdentity -Root $Root -PythonRoot $PythonRoot)){return $false}
+    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$PythonRoot,[Parameter(Mandatory)][string]$BaseReceiptPath)
+    if(-not(Test-VenvIdentity -Root $Root -PythonRoot $PythonRoot -RelativePath $targetRelative)){return $false}
+    $baseReceipt=Read-JsonReceipt -Path $BaseReceiptPath
+    if($null -eq $baseReceipt){return $false}
+    if(@(Get-ChildItem -LiteralPath $Root -Recurse -File -Force).Count -ne [int]$baseReceipt.file_count){return $false}
     try{$map=Get-VenvDistributionMap -Root $Root}catch{return $false}
     if($map.Count -ne 0){return $false}
     $site=Join-Path $Root 'Lib\site-packages'
-    if(Test-Path -LiteralPath (Join-Path $site 'pip') -PathType Container){return $false}
-    if(@(Get-ChildItem -LiteralPath $site -Force -ErrorAction SilentlyContinue|Where-Object{$_.Name -match '^pip(?:-|\.)'}).Count){return $false}
+    if($basePipMustBeAbsent){
+        if(Test-Path -LiteralPath (Join-Path $site 'pip') -PathType Container){return $false}
+        if(@(Get-ChildItem -LiteralPath $site -Force -ErrorAction SilentlyContinue|Where-Object{$_.Name -match '^pip(?:-|\.)'}).Count){return $false}
+    }
+    $cfgLines=@(Get-Content -LiteralPath (Join-Path $Root 'pyvenv.cfg'))
+    if($cfgLines -notcontains ('uv = '+$expectedUvVersion)){return $false}
+    if($cfgLines -notcontains ('version_info = '+$expectedPythonVersion)){return $false}
+    $includeLine='include-system-site-packages = '+$baseIncludeSystemSitePackages.ToString().ToLowerInvariant()
+    if($cfgLines -notcontains $includeLine){return $false}
+    $homeLine=@($cfgLines|Where-Object{$_ -like 'home = *'})
+    if($homeLine.Count -ne 1 -or (Get-VllmNormalizedPath $homeLine[0].Substring(7)) -ne (Get-VllmNormalizedPath $PythonRoot)){return $false}
+    $activation=Get-Content -LiteralPath (Join-Path $Root 'Scripts\activate.bat') -Raw
+    if($activation.IndexOf($Root,[StringComparison]::OrdinalIgnoreCase) -lt 0){return $false}
     return $true
 }
 function Test-DependencyReadyRoot {
-    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$PythonRoot)
-    if(-not(Test-VenvIdentity -Root $Root -PythonRoot $PythonRoot)){return $false}
+    param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$PythonRoot,[Parameter(Mandatory)][string]$RelativePath)
+    if(-not(Test-VenvIdentity -Root $Root -PythonRoot $PythonRoot -RelativePath $RelativePath -Relocatable)){return $false}
     try{$map=Get-VenvDistributionMap -Root $Root}catch{return $false}
     foreach($name in $accepted.Keys){if(-not $map.ContainsKey($name)-or $map[$name] -ne $accepted[$name]){return $false}}
     foreach($name in $map.Keys){if(-not $accepted.ContainsKey($name)-and-not $allowedExtras.ContainsKey($name)){return $false}}
     return $true
+}
+function Test-ExactPropertySet {
+    param([Parameter(Mandatory)]$Object,[Parameter(Mandatory)][string[]]$Expected)
+    $actual=@($Object.PSObject.Properties.Name|Sort-Object)
+    $wanted=@($Expected|Sort-Object)
+    return (@(Compare-Object -ReferenceObject $wanted -DifferenceObject $actual).Count -eq 0)
 }
 function Read-JsonReceipt {
     param([Parameter(Mandatory)][string]$Path)
     if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return $null}
     try{return (Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json)}catch{return $null}
 }
+function Test-ReceiptTimestamp {
+    param([Parameter(Mandatory)]$Value)
+    if($Value -is [DateTime] -or $Value -is [DateTimeOffset]){return $true}
+    $parsed=[DateTimeOffset]::MinValue
+    return [DateTimeOffset]::TryParseExact([string]$Value,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$parsed)
+}
 function Test-BaseVenvReceipt {
     param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Target,[Parameter(Mandatory)][string]$PythonExe,[Parameter(Mandatory)][string]$UvExe)
     $r=Read-JsonReceipt -Path $Path
     if($null -eq $r){return $false}
     try{
-        if([string]$r.component -ne 'runtime-venv' -or -not [bool]$r.ready -or [bool]$r.seeded){return $false}
+        $expected=@('schema_version','component','milestone','platform','ready','root','python','base_python','uv','python_version','uv_version','uv_commit','seeded','file_count','python_bootstrap_manifest','uv_bootstrap_manifest','manifest','created_at')
+        if(-not(Test-ExactPropertySet -Object $r -Expected $expected)){return $false}
+        if([int]$r.schema_version -ne 1 -or [string]$r.component -ne 'runtime-venv' -or -not [bool]$r.ready -or [bool]$r.seeded){return $false}
         if([string]$r.milestone -ne [string]$manifest.milestone -or [string]$r.platform -ne [string]$manifest.platform){return $false}
         if((Get-VllmNormalizedPath ([string]$r.root)) -ne (Get-VllmNormalizedPath $Target)){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.python)) -ne (Get-VllmNormalizedPath (Join-Path $Target 'Scripts\python.exe'))){return $false}
         if((Get-VllmNormalizedPath ([string]$r.base_python)) -ne (Get-VllmNormalizedPath $PythonExe)){return $false}
         if((Get-VllmNormalizedPath ([string]$r.uv)) -ne (Get-VllmNormalizedPath $UvExe)){return $false}
         if([string]$r.python_version -ne $expectedPythonVersion -or [string]$r.uv_version -ne $expectedUvVersion -or [string]$r.uv_commit -ne $expectedUvCommit){return $false}
+        if([int]$r.file_count -lt $baseExpectedCreationFileCount){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.python_bootstrap_manifest)) -ne (Get-VllmNormalizedPath $pythonManifestPath)){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.uv_bootstrap_manifest)) -ne (Get-VllmNormalizedPath $uvManifestPath)){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.manifest)) -ne (Get-VllmNormalizedPath $baseVenvManifestPath)){return $false}
+        if(-not(Test-ReceiptTimestamp -Value $r.created_at)){return $false}
         return $true
     }catch{return $false}
 }
@@ -201,20 +253,119 @@ function Test-DependencyReceipt {
     $r=Read-JsonReceipt -Path $Path
     if($null -eq $r){return $false}
     try{
-        if([string]$r.component -ne 'runtime-dependencies' -or -not [bool]$r.ready){return $false}
+        $expected=@('schema_version','component','milestone','platform','ready','idempotent','transaction_id','root','python','base_python','uv','python_version','uv_version','uv_commit','package_count','lock','lock_sha256','lock_size_bytes','require_hashes','only_binary','strict','link_mode','offline','cache','base_venv_manifest','base_venv_receipt','base_venv_receipt_sha256','base_venv_receipt_semantics','manifest','created_at')
+        if(-not(Test-ExactPropertySet -Object $r -Expected $expected)){return $false}
+        if([int]$r.schema_version -ne $receiptSchemaVersion -or [string]$r.component -ne 'runtime-dependencies' -or -not [bool]$r.ready -or [bool]$r.idempotent){return $false}
         if([string]$r.milestone -ne [string]$manifest.milestone -or [string]$r.platform -ne [string]$manifest.platform){return $false}
+        $tx=[guid]::Empty
+        if(-not [guid]::TryParse([string]$r.transaction_id,[ref]$tx) -or $tx -eq [guid]::Empty){return $false}
         if((Get-VllmNormalizedPath ([string]$r.root)) -ne (Get-VllmNormalizedPath $Target)){return $false}
-        if([string]$r.lock_sha256 -ne [string]$manifest.lock.sha256 -or [int64]$r.lock_size_bytes -ne [int64]$manifest.lock.size_bytes -or [int]$r.package_count -ne [int]$manifest.lock.package_count){return $false}
-        if([string]$r.uv_version -ne $expectedUvVersion -or [string]$r.uv_commit -ne $expectedUvCommit){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.python)) -ne (Get-VllmNormalizedPath (Join-Path $Target 'Scripts\python.exe'))){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.base_python)) -ne (Get-VllmNormalizedPath $pythonExe)){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.uv)) -ne (Get-VllmNormalizedPath $uvExe)){return $false}
+        if([string]$r.python_version -ne $expectedPythonVersion -or [string]$r.uv_version -ne $expectedUvVersion -or [string]$r.uv_commit -ne $expectedUvCommit){return $false}
+        if([int]$r.package_count -ne [int]$manifest.lock.package_count -or [string]$r.lock_sha256 -ne [string]$manifest.lock.sha256 -or [int64]$r.lock_size_bytes -ne [int64]$manifest.lock.size_bytes){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.lock)) -ne (Get-VllmNormalizedPath $lockPath)){return $false}
+        if(-not [bool]$r.require_hashes -or -not [bool]$r.only_binary -or -not [bool]$r.strict -or [string]$r.link_mode -ne 'copy'){return $false}
+        if($r.offline -isnot [bool]){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.cache)) -ne (Get-VllmNormalizedPath $cacheDir)){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.base_venv_manifest)) -ne (Get-VllmNormalizedPath $baseVenvManifestPath)){return $false}
         if((Get-VllmNormalizedPath ([string]$r.base_venv_receipt)) -ne (Get-VllmNormalizedPath $BaseReceiptPath)){return $false}
         $baseReceiptHash=(Get-FileHash -LiteralPath $BaseReceiptPath -Algorithm SHA256).Hash
         if([string]$r.base_venv_receipt_sha256 -ne $baseReceiptHash){return $false}
-        if(-not [bool]$r.require_hashes -or -not [bool]$r.only_binary -or -not [bool]$r.strict -or [string]$r.link_mode -ne 'copy'){return $false}
+        if([string]$r.base_venv_receipt_semantics -ne [string]$manifest.materialization.base_venv_receipt_semantics){return $false}
+        if((Get-VllmNormalizedPath ([string]$r.manifest)) -ne (Get-VllmNormalizedPath $manifestResolved)){return $false}
+        if(-not(Test-ReceiptTimestamp -Value $r.created_at)){return $false}
         return $true
     }catch{return $false}
 }
+function Write-AtomicJsonFile {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)]$Value,[int]$Depth=10)
+    $temp=$Path+'.partial.'+[guid]::NewGuid().ToString('N')
+    try{
+        [IO.File]::WriteAllText($temp,($Value|ConvertTo-Json -Depth $Depth),[Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temp -Destination $Path -Force
+    }
+    finally{Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue}
+}
+function Test-TransactionState {
+    param([Parameter(Mandatory)]$State,[Parameter(Mandatory)][string]$Target,[Parameter(Mandatory)][string]$Staging,[Parameter(Mandatory)][string]$Backup,[Parameter(Mandatory)][string]$TransactionPath,[Parameter(Mandatory)][string]$BaseReceiptPath,[Parameter(Mandatory)][string]$DependencyReceiptPath)
+    try{
+        $expected=@('schema_version','component','milestone','platform','transaction_id','phase','target','staging','backup','transaction_receipt','dependency_receipt','base_venv_receipt','manifest','lock_sha256')
+        if(-not(Test-ExactPropertySet -Object $State -Expected $expected)){return $false}
+        if([int]$State.schema_version -ne 1 -or [string]$State.component -ne 'runtime-dependencies-transaction'){return $false}
+        if([string]$State.milestone -ne [string]$manifest.milestone -or [string]$State.platform -ne [string]$manifest.platform){return $false}
+        $tx=[guid]::Empty
+        if(-not [guid]::TryParse([string]$State.transaction_id,[ref]$tx) -or $tx -eq [guid]::Empty){return $false}
+        if(@('materializing','prepared') -notcontains [string]$State.phase){return $false}
+        foreach($pair in @(@([string]$State.target,$Target),@([string]$State.staging,$Staging),@([string]$State.backup,$Backup),@([string]$State.transaction_receipt,$TransactionPath),@([string]$State.dependency_receipt,$DependencyReceiptPath),@([string]$State.base_venv_receipt,$BaseReceiptPath),@([string]$State.manifest,$manifestResolved))){
+            if((Get-VllmNormalizedPath $pair[0]) -ne (Get-VllmNormalizedPath $pair[1])){return $false}
+        }
+        if([string]$State.lock_sha256 -ne [string]$manifest.lock.sha256){return $false}
+        return $true
+    }catch{return $false}
+}
+function Write-TransactionState {
+    param([Parameter(Mandatory)][string]$TransactionId,[Parameter(Mandatory)][ValidateSet('materializing','prepared')][string]$Phase)
+    $state=[ordered]@{
+        schema_version=1; component='runtime-dependencies-transaction'; milestone=[string]$manifest.milestone; platform=[string]$manifest.platform
+        transaction_id=$TransactionId; phase=$Phase; target=$targetRoot; staging=$stagingRoot; backup=$backupRoot
+        transaction_receipt=$transactionPath; dependency_receipt=$receiptPath; base_venv_receipt=$baseReceiptPath; manifest=$manifestResolved; lock_sha256=[string]$manifest.lock.sha256
+    }
+    Write-AtomicJsonFile -Path $transactionPath -Value $state -Depth 6
+}
+function Invoke-ManagedDirectoryRemoval {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$RelativePath)
+    if(Test-Path -LiteralPath $Path){
+        if(-not(Test-Path -LiteralPath $Path -PathType Container)){throw "Reserved managed directory path is not a directory: $Path"}
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $Path -RelativePath $RelativePath)
+        Remove-Item -LiteralPath $Path -Recurse -Force
+    }
+}
+function Invoke-TransactionReceiptRemoval {
+    if(Test-Path -LiteralPath $transactionPath){
+        if(-not(Test-Path -LiteralPath $transactionPath -PathType Leaf)){throw "Reserved transaction receipt path is not a file: $transactionPath"}
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $transactionPath -RelativePath $transactionRelative)
+        Remove-Item -LiteralPath $transactionPath -Force
+    }
+}
+function Invoke-InterruptedTransactionRecovery {
+    if(-not(Test-Path -LiteralPath $transactionPath)){
+        if(Test-Path -LiteralPath $stagingRoot){throw "Reserved dependency staging path exists without a valid transaction receipt: $stagingRoot"}
+        if(Test-Path -LiteralPath $backupRoot){throw "Reserved dependency backup path exists without a valid transaction receipt: $backupRoot"}
+        return 'none'
+    }
+    if(-not(Test-Path -LiteralPath $transactionPath -PathType Leaf)){throw "Reserved transaction receipt path is not a file: $transactionPath"}
+    $state=Read-JsonReceipt -Path $transactionPath
+    if($null -eq $state -or -not(Test-TransactionState -State $state -Target $targetRoot -Staging $stagingRoot -Backup $backupRoot -TransactionPath $transactionPath -BaseReceiptPath $baseReceiptPath -DependencyReceiptPath $receiptPath)){throw "Dependency transaction receipt is malformed or contradictory: $transactionPath"}
+    $targetExists=Test-Path -LiteralPath $targetRoot -PathType Container
+    $backupExists=Test-Path -LiteralPath $backupRoot -PathType Container
+    $stagingExists=Test-Path -LiteralPath $stagingRoot -PathType Container
+    $committed=$false
+    if($targetExists -and (Test-DependencyReadyRoot -Root $targetRoot -PythonRoot $pythonRoot -RelativePath $targetRelative) -and (Test-DependencyReceipt -Path $receiptPath -Target $targetRoot -BaseReceiptPath $baseReceiptPath)){
+        $dependencyReceipt=Read-JsonReceipt -Path $receiptPath
+        $committed=([string]$dependencyReceipt.transaction_id -eq [string]$state.transaction_id)
+    }
+    if($committed){
+        if($stagingExists){Invoke-ManagedDirectoryRemoval -Path $stagingRoot -RelativePath $stagingRelative}
+        if($backupExists){Invoke-ManagedDirectoryRemoval -Path $backupRoot -RelativePath $backupRelative}
+        Invoke-TransactionReceiptRemoval
+        return 'committed-cleanup'
+    }
+    if($backupExists){
+        if($targetExists){Invoke-ManagedDirectoryRemoval -Path $targetRoot -RelativePath $targetRelative}
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $backupRoot -RelativePath $backupRelative)
+        Move-Item -LiteralPath $backupRoot -Destination $targetRoot
+        $targetExists=$true
+    }
+    elseif(-not $targetExists){
+        throw "Interrupted dependency transaction cannot be recovered automatically because both the live target and prior backup are missing. Transaction evidence preserved at '$transactionPath'."
+    }
+    if($stagingExists){Invoke-ManagedDirectoryRemoval -Path $stagingRoot -RelativePath $stagingRelative}
+    Invoke-TransactionReceiptRemoval
+    return 'rolled-back'
+}
 $lock=$null
-$backupRoot=$null
 $environmentSnapshot=$null
 $result=$null
 try{
@@ -231,44 +382,49 @@ try{
     $cacheDir=Join-Path $InstallationRoot $cacheRelative
     $forensicDir=Join-Path $InstallationRoot 'forensic'
     $targetRoot=Join-Path $InstallationRoot $targetRelative
+    $stagingRoot=Join-Path $InstallationRoot $stagingRelative
+    $backupRoot=Join-Path $InstallationRoot $backupRelative
     $baseReceiptPath=Join-Path $InstallationRoot $baseReceiptRelative
     $receiptPath=Join-Path $InstallationRoot $receiptRelative
+    $transactionPath=Join-Path $InstallationRoot $transactionRelative
     foreach($pathInfo in @(
         @{Path=$runtimeParent;Relative='runtime'},@{Path=$cacheDir;Relative=$cacheRelative},@{Path=$forensicDir;Relative='forensic'},
-        @{Path=$targetRoot;Relative=$targetRelative},@{Path=$baseReceiptPath;Relative=$baseReceiptRelative},@{Path=$receiptPath;Relative=$receiptRelative}
+        @{Path=$targetRoot;Relative=$targetRelative},@{Path=$stagingRoot;Relative=$stagingRelative},@{Path=$backupRoot;Relative=$backupRelative},
+        @{Path=$baseReceiptPath;Relative=$baseReceiptRelative},@{Path=$receiptPath;Relative=$receiptRelative},@{Path=$transactionPath;Relative=$transactionRelative}
     )){[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $pathInfo.Path -RelativePath $pathInfo.Relative)}
     foreach($directory in @($runtimeParent,$cacheDir,$forensicDir)){[void][IO.Directory]::CreateDirectory($directory)}
     [void](Assert-VllmExistingManagedTopLevelLocations -InstallationRoot $InstallationRoot)
-    if((Test-Path -LiteralPath $receiptPath)-and-not(Test-Path -LiteralPath $receiptPath -PathType Leaf)){throw "Reserved dependency receipt path exists but is not a file: $receiptPath"}
-    if((Test-Path -LiteralPath $baseReceiptPath)-and-not(Test-Path -LiteralPath $baseReceiptPath -PathType Leaf)){throw "Base venv receipt path exists but is not a file: $baseReceiptPath"}
+    foreach($reservedFile in @($receiptPath,$baseReceiptPath,$transactionPath)){if((Test-Path -LiteralPath $reservedFile)-and-not(Test-Path -LiteralPath $reservedFile -PathType Leaf)){throw "Reserved receipt path exists but is not a file: $reservedFile"}}
+    foreach($reservedDirectory in @($stagingRoot,$backupRoot)){if((Test-Path -LiteralPath $reservedDirectory)-and-not(Test-Path -LiteralPath $reservedDirectory -PathType Container)){throw "Reserved dependency transaction path exists but is not a directory: $reservedDirectory"}}
+    $recovery=Invoke-InterruptedTransactionRecovery
     if(-not(Test-Path -LiteralPath $targetRoot)){throw "Managed runtime venv is missing: $targetRoot. Run .\bootstrap-venv.ps1 -InstallationRoot '$InstallationRoot' first."}
     if(-not(Test-Path -LiteralPath $targetRoot -PathType Container)){throw "Managed runtime venv target exists but is not a directory: $targetRoot"}
     [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $targetRelative)
     if(-not(Test-BaseVenvReceipt -Path $baseReceiptPath -Target $targetRoot -PythonExe $pythonExe -UvExe $uvExe)){throw "Base runtime venv receipt is missing or invalid: $baseReceiptPath"}
-    $ready=Test-DependencyReadyRoot -Root $targetRoot -PythonRoot $pythonRoot
+    $ready=Test-DependencyReadyRoot -Root $targetRoot -PythonRoot $pythonRoot -RelativePath $targetRelative
     $receiptReady=Test-DependencyReceipt -Path $receiptPath -Target $targetRoot -BaseReceiptPath $baseReceiptPath
     if($ready -and $receiptReady -and -not $Force){
+        $storedReceipt=Read-JsonReceipt -Path $receiptPath
         $venvPython=Join-Path $targetRoot 'Scripts\python.exe'
         $result=[ordered]@{
-            schema_version=1; component='runtime-dependencies'; milestone=[string]$manifest.milestone; platform=[string]$manifest.platform
-            ready=$true; idempotent=$true; root=$targetRoot; python=$venvPython; base_python=$pythonExe; uv=$uvExe
+            schema_version=$receiptSchemaVersion; component='runtime-dependencies'; milestone=[string]$manifest.milestone; platform=[string]$manifest.platform
+            ready=$true; idempotent=$true; transaction_id=[string]$storedReceipt.transaction_id; root=$targetRoot; python=$venvPython; base_python=$pythonExe; uv=$uvExe
             python_version=$expectedPythonVersion; uv_version=$expectedUvVersion; uv_commit=$expectedUvCommit
             package_count=[int]$manifest.lock.package_count; lock=$lockPath; lock_sha256=[string]$manifest.lock.sha256; lock_size_bytes=[int64]$manifest.lock.size_bytes
-            require_hashes=$true; only_binary=$true; strict=$true; link_mode='copy'; offline=[bool]$Offline; cache=$cacheDir
-            base_venv_receipt=$baseReceiptPath; receipt=$receiptPath
+            require_hashes=$true; only_binary=$true; strict=$true; link_mode='copy'; offline=[bool]$storedReceipt.offline; cache=$cacheDir
+            base_venv_manifest=$baseVenvManifestPath; base_venv_receipt=$baseReceiptPath; base_venv_receipt_sha256=[string]$storedReceipt.base_venv_receipt_sha256
+            base_venv_receipt_semantics=[string]$manifest.materialization.base_venv_receipt_semantics; manifest=$manifestResolved; receipt=$receiptPath; recovery=$recovery
         }
     }
     else {
         if(-not $Force){
             if($receiptReady -or (Test-Path -LiteralPath $receiptPath)){throw 'Runtime dependency receipt exists but the managed venv does not match the committed dependency state. Re-run with -Force only when full replacement is intended.'}
-            if(-not(Test-UnseededVenvRoot -Root $targetRoot -PythonRoot $pythonRoot)){throw 'Managed runtime venv is neither the exact unseeded bootstrap state nor a receipt-backed dependency-ready state. Re-run with -Force only when full replacement is intended.'}
+            if(-not(Test-UnseededVenvRoot -Root $targetRoot -PythonRoot $pythonRoot -BaseReceiptPath $baseReceiptPath)){throw 'Managed runtime venv is neither the exact unseeded bootstrap state nor a receipt-backed dependency-ready state. Re-run with -Force only when full replacement is intended.'}
         }
-        $backupName='.venv-dependencies-backup-'+[guid]::NewGuid().ToString('N')
-        $backupRoot=Join-Path $runtimeParent $backupName
-        $backupRelative='runtime\'+$backupName
-        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $backupRoot -RelativePath $backupRelative)
-        Move-Item -LiteralPath $targetRoot -Destination $backupRoot
+        $transactionId=[guid]::NewGuid().ToString('D')
+        $materializationError=$null
         try{
+            Write-TransactionState -TransactionId $transactionId -Phase 'materializing'
             try{
                 $environmentSnapshot=Get-VllmProcessEnvironmentSnapshot
                 foreach($key in @([Environment]::GetEnvironmentVariables('Process').Keys)){
@@ -282,86 +438,48 @@ try{
                 [VllmWindowsNative.NativeEnvironment]::SetProcessVariable('UV_NO_CONFIG','1')
                 [VllmWindowsNative.NativeEnvironment]::SetProcessVariable('UV_NO_PROJECT','1')
                 [VllmWindowsNative.NativeEnvironment]::SetProcessVariable('PYTHONNOUSERSITE','1')
-                if($Offline){[VllmWindowsNative.NativeEnvironment]::SetProcessVariable('UV_OFFLINE','1')}                & $uvExe venv $targetRoot --python $pythonExe --no-managed-python --no-python-downloads --offline --no-project --no-config
+                if($Offline){[VllmWindowsNative.NativeEnvironment]::SetProcessVariable('UV_OFFLINE','1')}
+                & $uvExe venv $stagingRoot --python $pythonExe --relocatable --no-managed-python --no-python-downloads --offline --no-project --no-config
                 if($LASTEXITCODE -ne 0){throw "uv venv failed with exit code $LASTEXITCODE."}
-                $venvPython=Join-Path $targetRoot 'Scripts\python.exe'
-                $syncArgs=@(
-                    'pip','sync',$lockPath,'--python',$venvPython,'--require-hashes','--only-binary',':all:',
-                    '--link-mode','copy','--strict','--cache-dir',$cacheDir,'--no-python-downloads','--no-config','--default-index',$defaultIndex
-                )
+                $stagingPython=Join-Path $stagingRoot 'Scripts\python.exe'
+                $syncArgs=@('pip','sync',$lockPath,'--python',$stagingPython,'--require-hashes','--only-binary',':all:','--link-mode','copy','--strict','--cache-dir',$cacheDir,'--no-python-downloads','--no-config','--default-index',$defaultIndex)
                 if($Offline){$syncArgs+='--offline'}
                 & $uvExe @syncArgs
                 if($LASTEXITCODE -ne 0){throw "uv pip sync failed with exit code $LASTEXITCODE."}
-                & $uvExe pip check --python $venvPython --no-python-downloads --no-config
+                & $uvExe pip check --python $stagingPython --no-python-downloads --no-config
                 if($LASTEXITCODE -ne 0){throw "uv pip check failed with exit code $LASTEXITCODE."}
             }
             finally{
                 if($null -ne $environmentSnapshot){Restore-VllmProcessEnvironment -Snapshot $environmentSnapshot;$environmentSnapshot=$null}
             }
-            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $targetRelative)
-            if(-not(Test-DependencyReadyRoot -Root $targetRoot -PythonRoot $pythonRoot)){throw 'Materialized runtime dependency environment failed exact final validation.'}
-        }
-        catch{
-            $materializationError=$_
-            if(Test-Path -LiteralPath $targetRoot){
-                try{
-                    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $targetRelative)
-                    Remove-Item -LiteralPath $targetRoot -Recurse -Force
-                }
-                catch{throw "Dependency materialization failed and rollback cannot safely remove the failed target. Backup preserved at '$backupRoot'. Original: $($materializationError.Exception.Message) Cleanup: $($_.Exception.Message)"}
-            }
-            if($backupRoot -and(Test-Path -LiteralPath $backupRoot)){
-                try{Move-Item -LiteralPath $backupRoot -Destination $targetRoot;$backupRoot=$null}
-                catch{throw "Dependency materialization failed and rollback could not restore the prior environment. Backup preserved at '$backupRoot'. Original: $($materializationError.Exception.Message) Rollback: $($_.Exception.Message)"}
-            }
-            throw $materializationError
-        }
-        try{
-            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $receiptPath -RelativePath $receiptRelative)
-            if((Test-Path -LiteralPath $receiptPath)-and-not(Test-Path -LiteralPath $receiptPath -PathType Leaf)){throw "Reserved dependency receipt path changed into a non-file before commit: $receiptPath"}
+            if(-not(Test-DependencyReadyRoot -Root $stagingRoot -PythonRoot $pythonRoot -RelativePath $stagingRelative)){throw 'Staged runtime dependency environment failed exact validation.'}
+            Write-TransactionState -TransactionId $transactionId -Phase 'prepared'
+            Move-Item -LiteralPath $targetRoot -Destination $backupRoot
+            Move-Item -LiteralPath $stagingRoot -Destination $targetRoot
+            if(-not(Test-DependencyReadyRoot -Root $targetRoot -PythonRoot $pythonRoot -RelativePath $targetRelative)){throw 'Activated runtime dependency environment failed exact final validation.'}
             $venvPython=Join-Path $targetRoot 'Scripts\python.exe'
             $baseReceiptSha=(Get-FileHash -LiteralPath $baseReceiptPath -Algorithm SHA256).Hash
-            $result=[ordered]@{
-                schema_version=1; component='runtime-dependencies'; milestone=[string]$manifest.milestone; platform=[string]$manifest.platform
-                ready=$true; idempotent=$false; root=$targetRoot; python=$venvPython; base_python=$pythonExe; uv=$uvExe
+            $receiptValue=[ordered]@{
+                schema_version=$receiptSchemaVersion; component='runtime-dependencies'; milestone=[string]$manifest.milestone; platform=[string]$manifest.platform
+                ready=$true; idempotent=$false; transaction_id=$transactionId; root=$targetRoot; python=$venvPython; base_python=$pythonExe; uv=$uvExe
                 python_version=$expectedPythonVersion; uv_version=$expectedUvVersion; uv_commit=$expectedUvCommit
                 package_count=[int]$manifest.lock.package_count; lock=$lockPath; lock_sha256=[string]$manifest.lock.sha256; lock_size_bytes=[int64]$manifest.lock.size_bytes
                 require_hashes=$true; only_binary=$true; strict=$true; link_mode='copy'; offline=[bool]$Offline; cache=$cacheDir
                 base_venv_manifest=$baseVenvManifestPath; base_venv_receipt=$baseReceiptPath; base_venv_receipt_sha256=$baseReceiptSha
-                base_venv_receipt_semantics='historical-after-materialization'; manifest=$manifestResolved; created_at=(Get-Date).ToString('o')
+                base_venv_receipt_semantics=[string]$manifest.materialization.base_venv_receipt_semantics; manifest=$manifestResolved; created_at=(Get-Date).ToString('o')
             }
-            $receiptTemp=$receiptPath+'.partial.'+[guid]::NewGuid().ToString('N')
-            try{
-                [IO.File]::WriteAllText($receiptTemp,($result|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
-                Move-Item -LiteralPath $receiptTemp -Destination $receiptPath -Force
-            }
-            finally{Remove-Item -LiteralPath $receiptTemp -Force -ErrorAction SilentlyContinue}
+            Write-AtomicJsonFile -Path $receiptPath -Value $receiptValue -Depth 10
+            $result=[ordered]@{}+$receiptValue
             $result.receipt=$receiptPath
+            $result.recovery=$recovery
         }
         catch{
-            $receiptError=$_
-            if(Test-Path -LiteralPath $targetRoot){
-                try{
-                    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $targetRoot -RelativePath $targetRelative)
-                    Remove-Item -LiteralPath $targetRoot -Recurse -Force
-                }
-                catch{throw "Dependency receipt commit failed and rollback cannot safely remove the new environment. Prior environment backup preserved at '$backupRoot'. Original: $($receiptError.Exception.Message) Cleanup: $($_.Exception.Message)"}
-            }
-            if($backupRoot -and(Test-Path -LiteralPath $backupRoot)){
-                try{Move-Item -LiteralPath $backupRoot -Destination $targetRoot;$backupRoot=$null}
-                catch{throw "Dependency receipt commit failed and rollback could not restore the prior environment. Backup preserved at '$backupRoot'. Original: $($receiptError.Exception.Message) Rollback: $($_.Exception.Message)"}
-            }
-            throw $receiptError
+            $materializationError=$_
+            try{[void](Invoke-InterruptedTransactionRecovery)}
+            catch{throw "Dependency materialization failed and automatic recovery also failed. Transaction evidence is preserved at '$transactionPath'. Original: $($materializationError.Exception.Message) Recovery: $($_.Exception.Message)"}
+            throw $materializationError
         }
-        if($backupRoot -and(Test-Path -LiteralPath $backupRoot)){
-            $backupRelative='runtime\'+[IO.Path]::GetFileName($backupRoot)
-            try{
-                [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $backupRoot -RelativePath $backupRelative)
-                Remove-Item -LiteralPath $backupRoot -Recurse -Force
-                $backupRoot=$null
-            }
-            catch{Write-Warning "Runtime dependencies committed successfully, but the prior venv backup could not be removed and was preserved at '$backupRoot': $($_.Exception.Message)"}
-        }
+        [void](Invoke-InterruptedTransactionRecovery)
     }
 }
 finally{

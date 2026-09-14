@@ -50,15 +50,21 @@ jobs:
           "VLLM_CPYTHON_ARCHIVE=$($python.archive)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VLLM_UV_ARCHIVE=$($uv.archive)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VLLM_DEP_PREREQ_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VLLM_DEP_TEST_ROOT=$($env:RUNNER_TEMP)\vllm-runtime-dependency-regression" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run PowerShell 7 and Windows PowerShell 5.1 regression
         shell: pwsh
         run: |
-          & pwsh.exe -NoLogo -NoProfile -File ./tests/runtime-dependency-materialization.ps1 -PythonArchivePath $env:VLLM_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_UV_ARCHIVE
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/runtime-dependency-materialization.ps1 -PythonArchivePath $env:VLLM_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_UV_ARCHIVE -ScratchRoot $env:VLLM_DEP_TEST_ROOT
           if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 dependency materialization regression failed with exit $LASTEXITCODE." }
-          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/runtime-dependency-materialization.ps1 -PythonArchivePath $env:VLLM_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_UV_ARCHIVE
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/runtime-dependency-materialization.ps1 -PythonArchivePath $env:VLLM_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_UV_ARCHIVE -ScratchRoot $env:VLLM_DEP_TEST_ROOT
           if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 dependency materialization regression failed with exit $LASTEXITCODE." }
 
       - name: Clean trusted test root
         if: always()
         shell: pwsh
-        run: Remove-Item -LiteralPath $env:VLLM_DEP_PREREQ_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+        run: |
+          foreach ($path in @($env:VLLM_DEP_PREREQ_ROOT, $env:VLLM_DEP_TEST_ROOT)) {
+            if ([string]::IsNullOrWhiteSpace($path)) { continue }
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $path) { throw "Trusted regression cleanup failed: $path" }
+          }
