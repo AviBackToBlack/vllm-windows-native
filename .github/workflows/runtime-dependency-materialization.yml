@@ -1,0 +1,64 @@
+name: Runtime dependency materialization regression
+
+on:
+  workflow_dispatch:
+# Intentionally no pull_request trigger: this workflow downloads and executes pinned Python/uv
+# binaries and installs a hashed package fixture. Public PR CI remains source-level only.
+  push:
+    branches: [main]
+    paths:
+      - 'bootstrap-dependencies.ps1'
+      - 'bootstrap-venv.ps1'
+      - 'bootstrap-python.ps1'
+      - 'bootstrap-uv.ps1'
+      - 'scripts/common.ps1'
+      - 'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json'
+      - 'manifests/bootstrap/uv-0.12.13-windows-x86_64.json'
+      - 'manifests/bootstrap/venv-v0.27.1-windows-x86_64.json'
+      - 'manifests/runtime/dependencies-v0.27.1-windows-x86_64.json'
+      - 'requirements/runtime-v0.27.1.lock.txt'
+      - 'tests/fixtures/runtime-dependencies-colorama.lock.txt'
+      - 'tests/fixtures/runtime-dependencies-colorama-bad-hash.lock.txt'
+      - 'tests/runtime-dependency-materialization.ps1'
+      - '.github/workflows/runtime-dependency-materialization.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  runtime-dependency-materialization:
+    name: Runtime dependency materialization regression
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Acquire pinned prerequisites
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'vllm-runtime-dependency-prereqs'
+          $python = (& ./bootstrap-python.ps1 -InstallationRoot $root -Json) | ConvertFrom-Json
+          $uv = (& ./bootstrap-uv.ps1 -InstallationRoot $root -Json) | ConvertFrom-Json
+          if (-not $python.ready -or -not $uv.ready) { throw 'Pinned prerequisite bootstrap did not report ready.' }
+          "VLLM_CPYTHON_ARCHIVE=$($python.archive)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VLLM_UV_ARCHIVE=$($uv.archive)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VLLM_DEP_PREREQ_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run PowerShell 7 and Windows PowerShell 5.1 regression
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/runtime-dependency-materialization.ps1 -PythonArchivePath $env:VLLM_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_UV_ARCHIVE
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 dependency materialization regression failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/runtime-dependency-materialization.ps1 -PythonArchivePath $env:VLLM_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_UV_ARCHIVE
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 dependency materialization regression failed with exit $LASTEXITCODE." }
+
+      - name: Clean trusted test root
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:VLLM_DEP_PREREQ_ROOT -Recurse -Force -ErrorAction SilentlyContinue
