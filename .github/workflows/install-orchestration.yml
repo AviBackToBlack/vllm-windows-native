@@ -1,0 +1,79 @@
+name: Top-level install orchestration regression
+
+on:
+  workflow_dispatch:
+# Intentionally no pull_request trigger: this workflow downloads and executes pinned Python/uv
+# binaries and performs a real mini-runtime install. Public PR CI remains source-level only.
+  push:
+    branches: [main]
+    paths:
+      - '.gitattributes'
+      - 'install.ps1'
+      - 'start.ps1'
+      - 'update.ps1'
+      - 'uninstall.ps1'
+      - 'bootstrap-python.ps1'
+      - 'bootstrap-uv.ps1'
+      - 'bootstrap-venv.ps1'
+      - 'bootstrap-dependencies.ps1'
+      - 'bootstrap-vllm.ps1'
+      - 'scripts/**'
+      - 'manifests/bootstrap/**'
+      - 'manifests/runtime/**'
+      - 'manifests/release/**'
+      - 'requirements/**'
+      - 'config.example.psd1'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.md'
+      - 'tests/fixtures/runtime-dependencies-colorama.lock.txt'
+      - 'tests/install-orchestration.ps1'
+      - 'tests/release-manifest.ps1'
+      - '.github/workflows/install-orchestration.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  install-orchestration:
+    name: Top-level install orchestration regression
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Acquire pinned prerequisites
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'vllm-install-prereqs'
+          $python = (& ./bootstrap-python.ps1 -InstallationRoot $root -Json) | ConvertFrom-Json
+          $uv = (& ./bootstrap-uv.ps1 -InstallationRoot $root -Json) | ConvertFrom-Json
+          if (-not $python.ready -or -not $uv.ready) { throw 'Pinned prerequisite bootstrap did not report ready.' }
+          "VLLM_INSTALL_CPYTHON_ARCHIVE=$($python.archive)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VLLM_INSTALL_UV_ARCHIVE=$($uv.archive)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VLLM_INSTALL_PREREQ_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VLLM_INSTALL_TEST_ROOT=$($env:RUNNER_TEMP)\vllm-install-regression" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run PowerShell 7 and Windows PowerShell 5.1 regression
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/install-orchestration.ps1 -PythonArchivePath $env:VLLM_INSTALL_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_INSTALL_UV_ARCHIVE -ScratchRoot $env:VLLM_INSTALL_TEST_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 install orchestration regression failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/install-orchestration.ps1 -PythonArchivePath $env:VLLM_INSTALL_CPYTHON_ARCHIVE -UvArchivePath $env:VLLM_INSTALL_UV_ARCHIVE -ScratchRoot $env:VLLM_INSTALL_TEST_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 install orchestration regression failed with exit $LASTEXITCODE." }
+
+      - name: Clean trusted test root
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($path in @($env:VLLM_INSTALL_PREREQ_ROOT, $env:VLLM_INSTALL_TEST_ROOT)) {
+            if ([string]::IsNullOrWhiteSpace($path)) { continue }
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $path) { throw "Trusted installer regression cleanup failed: $path" }
+          }
