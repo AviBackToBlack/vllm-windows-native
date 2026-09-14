@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "component": "runtime-venv",
+  "milestone": "v0.27.1-native-windows-single-gpu-sm120",
+  "platform": "windows-x86_64",
+  "python": {
+    "version": "3.13.15",
+    "bootstrap_manifest": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json"
+  },
+  "uv": {
+    "version": "0.12.13",
+    "commit": "0ebbd9274a55a8a53a13970be3b97e4209598e17",
+    "bootstrap_manifest": "manifests/bootstrap/uv-0.12.13-windows-x86_64.json"
+  },
+  "install": {
+    "managed_relative_path": "runtime/venv",
+    "seeded": false,
+    "required_files": [
+      ".gitignore",
+      "CACHEDIR.TAG",
+      "Lib/site-packages/_virtualenv.pth",
+      "Lib/site-packages/_virtualenv.py",
+      "pyvenv.cfg",
+      "Scripts/activate",
+      "Scripts/activate_this.py",
+      "Scripts/activate.bat",
+      "Scripts/activate.csh",
+      "Scripts/activate.fish",
+      "Scripts/activate.nu",
+      "Scripts/activate.ps1",
+      "Scripts/activate.xsh",
+      "Scripts/deactivate.bat",
+      "Scripts/pydoc.bat",
+      "Scripts/python.exe",
+      "Scripts/pythonw.exe"
+    ],
+    "expected_creation_file_count": 17
+  },
+  "acceptance": {
+    "expected_python_version": "3.13.15",
+    "expected_pointer_bits": 64,
+    "pip_must_be_absent": true,
+    "include_system_site_packages": false
+  }
+}
