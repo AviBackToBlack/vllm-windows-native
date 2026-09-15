@@ -127,6 +127,8 @@ Update implementation MUST acquire the operation lock, verify current state befo
 
 Update MUST NOT convert an unknown or partially owned installation into a destructive cleanup operation.
 
+The concrete transaction state machine, crash-recovery rules, and implementation slicing are defined in docs/update-transaction-design.md.
+
 ## 9. Uninstall contract
 
 `uninstall.ps1` MUST use `CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')` or equivalent explicit destructive-operation semantics.
