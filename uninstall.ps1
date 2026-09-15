@@ -338,6 +338,9 @@ function Exit-UninstallOrchestratorLock {
 function Assert-NoManagedRuntimeProcesses {
     param([Parameter(Mandatory)]$Plan)
     $runtimeRoot = Get-VllmNormalizedPath ([string]$Plan.RuntimeRoot)
+    $managedExecutableRoots = @(
+        $Plan.ManagedPaths | Where-Object { $_.Role -eq 'managed' -and $_.Exists -and $_.IsDirectory } | ForEach-Object { Get-VllmNormalizedPath ([string]$_.Path) }
+    )
     try {
         $processes = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
     } catch {
@@ -351,11 +354,18 @@ function Assert-NoManagedRuntimeProcesses {
         $managed = $false
         if (-not [string]::IsNullOrWhiteSpace($executable)) {
             try {
-                $managed = Test-VllmPathInsideOrEqual -Path (Get-VllmNormalizedPath $executable) -Parent $runtimeRoot
+                $normalizedExecutable = Get-VllmNormalizedPath $executable
+                foreach ($managedRoot in $managedExecutableRoots) {
+                    if (Test-VllmPathInsideOrEqual -Path $normalizedExecutable -Parent $managedRoot) {
+                        $managed = $true
+                        break
+                    }
+                }
             } catch {
                 $managed = $false
             }
         }
+        # Keep command-line fallback scoped to runtimeRoot: broader matching would see this uninstaller's own -InstallationRoot argument.
         if (-not $managed -and -not [string]::IsNullOrWhiteSpace($commandLine)) {
             $normalizedCommand = $commandLine.Replace('/','\')
             $managed = $normalizedCommand.IndexOf($runtimeRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0

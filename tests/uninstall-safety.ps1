@@ -301,6 +301,23 @@ try {
         Remove-Item -LiteralPath $managedCmd -Force -ErrorAction SilentlyContinue
     }
     [void](Invoke-UninstallJson -Root $root -Preview)
+
+    $managedPythonCmd = Join-Path $root 'python/managed/test-python/managed-python-cmd.exe'
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32/cmd.exe') -Destination $managedPythonCmd -Force
+    $pythonProcess = $null
+    try {
+        $pythonProcess = Start-Process -FilePath $managedPythonCmd -ArgumentList @('/d','/c','ping -n 60 127.0.0.1 >nul') -WindowStyle Hidden -PassThru
+        Start-Sleep -Milliseconds 750
+        if ($pythonProcess.HasExited) { throw 'Managed Python-root process test executable exited early.' }
+        Test-ExpectedFailure { [void](Invoke-UninstallJson -Root $root -Preview) } 'managed-python-process' '*Managed runtime process is still running*'
+    } finally {
+        if ($null -ne $pythonProcess -and -not $pythonProcess.HasExited) {
+            Stop-Process -Id $pythonProcess.Id -Force -ErrorAction SilentlyContinue
+            try { $pythonProcess.WaitForExit() } catch { Write-Verbose "Managed Python-root process wait failed during cleanup: $($_.Exception.Message)" }
+        }
+        Remove-Item -LiteralPath $managedPythonCmd -Force -ErrorAction SilentlyContinue
+    }
+    [void](Invoke-UninstallJson -Root $root -Preview)
     Write-Host 'UNINSTALL_PROCESS_REFUSAL_OK'
 
     $driftPath = Join-Path $root 'start.ps1'
