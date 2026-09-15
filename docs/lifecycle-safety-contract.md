@@ -127,6 +127,8 @@ Update implementation MUST acquire the operation lock, verify current state befo
 
 Update MUST NOT convert an unknown or partially owned installation into a destructive cleanup operation.
 
+A valid pending update transaction is lifecycle-wide maintenance state. Non-update entries that could launch the managed runtime or mutate the installation (including start, install, and uninstall) MUST refuse while that transaction is pending and direct recovery through the updater; unexplained reserved update residue MUST also fail closed.
+
 The concrete transaction state machine, crash-recovery rules, and implementation slicing are defined in docs/update-transaction-design.md.
 
 ## 9. Uninstall contract

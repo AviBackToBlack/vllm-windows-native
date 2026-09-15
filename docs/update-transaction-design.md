@@ -44,7 +44,7 @@ The implementation should follow the installer input model:
 - optional pinned archive/offline inputs may mirror `install.ps1` where required;
 - `ModelsRoot` comes from validated current install state and is not changeable by update;
 - `-Json` returns a machine-readable result;
-- destructive activation should use `SupportsShouldProcess` with high-impact semantics.
+- destructive activation MUST use `SupportsShouldProcess` with `ConfirmImpact = 'High'` (or equivalent explicit high-impact semantics).
 
 There is no target named `latest` and no unpinned target download.
 
@@ -54,14 +54,18 @@ Top-level update follows the existing lifecycle order:
 
 1. acquire `state\install-orchestrator.lock`;
 2. acquire `.vllm-operation.lock`;
-3. keep both locks through source validation, recovery, planning, activation, install-state commit, and required synchronous validation;
-4. release locks only after the transaction is committed or safely rolled back.
+3. keep both locks through source validation, recovery, planning, activation, install-state commit, required synchronous validation, and synchronous cleanup;
+4. release locks only after rollback is complete, or after a committed target has either completed cleanup or durably retained its transaction record for later cleanup recovery.
 
 Before destructive update activation is implemented, `start.ps1` MUST participate in lifecycle serialization. The preferred v1 behavior is for a normal foreground start to hold `.vllm-operation.lock` for the lifetime of the managed server process. `-ValidateOnly` may acquire and release it only for validation.
 
 This turns a running managed server into an OS-level maintenance conflict instead of relying only on a CIM process scan. Process inspection remains defense in depth for visible managed executables and diagnostics, not the sole race-prevention mechanism.
 
 Start must never acquire the orchestrator lock, so the order cannot invert: start holds only the operation lock; install/update/uninstall acquire orchestrator then operation.
+
+Managed-install mode and development mode are distinct. If `state\install-state.json` exists under the root from which `start.ps1` is running, start MUST treat that root as lifecycle-managed: malformed or contradictory state is a refusal, not a fallback to development mode. If no install state exists, repo-checkout/development invocations (including `-ValidateOnly` and explicit `-VllmExe` / `-ContainmentRoot` overrides) remain outside managed lifecycle serialization and MUST NOT create an untracked `.vllm-operation.lock` in the source checkout.
+
+A pending update is a lifecycle-wide maintenance state, not private updater scratch space. `start.ps1`, `install.ps1`, and `uninstall.ps1` MUST refuse a lifecycle-managed installation that contains a valid pending `state\update-transaction.json`, or unexplained reserved update residue, and direct the operator to invoke `update.ps1` recovery. They MUST NOT launch, install over, or uninstall through a generation that the pending transaction may have partially activated. Diagnostic tooling may report the condition but must not mutate it. `update.ps1` is the only normal lifecycle entry allowed to recover or clean a pending update transaction.
 
 ## 6. Source-generation proof
 
@@ -105,6 +109,10 @@ The plan covers both distribution files and managed assets. It must record enoug
 
 Protected paths (`ModelsRoot`, `config.psd1`, unrelated files, machine-wide prerequisites) never enter the destructive plan.
 
+Lifecycle-control metadata is also excluded from ordinary `reuse` / `replace` / `add` / `retire` classification even when a release manifest lists it as managed. The held lock files (`state\install-orchestrator.lock` and `.vllm-operation.lock`), `state\install-state.json`, and `state\update-transaction.json` are validated and managed by dedicated lifecycle logic only. The updater MUST NOT move, replace, retire, or back up a lock file it is holding; install state changes only at the authoritative commit point; the transaction record changes only through atomic transaction-state writes.
+
+`update.ps1` and `scripts/common.ps1` themselves may be ordinary replace-class distribution files. Self-replacement is safe only because the current PowerShell invocation has already parsed the running script and loaded its dot-sourced functions before activation; the updater MUST NOT re-load target lifecycle code mid-transaction. Any supported source-to-target transition must preserve transaction-journal compatibility sufficient for the target updater, if invoked after a crash, to interpret and recover a journal written by the source updater.
+
 `retire` operations should be deferred until after target commit whenever possible. Leaving an obsolete source-owned object temporarily present is safer than deleting it before the target generation is committed.
 
 ## 9. Persisted update transaction
@@ -114,6 +122,8 @@ The updater reserves a top-level transaction record at:
 `state\update-transaction.json`
 
 Future release manifests that ship the updater MUST reserve this path as lifecycle-owned metadata.
+
+Reserved update metadata and `work\` transaction paths are lifecycle-owned independently of the frozen source release's `managed_paths`. This is required for the first transition from v0.27.1, whose manifest predates the updater and cannot retroactively list them. A valid transaction record with matching exact reserved paths is the ownership proof for its staging/backup residue; reserved residue without a valid matching record is unexplained and MUST fail closed.
 
 Staging and backup stay on the installation volume, under reserved descendants of `work\`, so activation can use same-volume renames. The transaction record stores their exact physical/relative locations and a unique `transaction_id`.
 
@@ -220,7 +230,7 @@ A full temporary installation under `work\` is acceptable only if relocation sem
 
 Before install-state commit, any activation or validation failure triggers rollback when rollback can be proven safe. If rollback itself cannot be proven or completed, update fails with transaction evidence preserved.
 
-After install-state commit, cleanup failure is not a reason to revert a valid target generation. The transaction record remains as committed-cleanup evidence so a later lifecycle invocation can retry exact cleanup.
+After install-state commit, cleanup failure is not a reason to revert a valid target generation. Synchronous cleanup is attempted while both lifecycle locks are still held. If cleanup cannot complete safely, the transaction record remains as committed-cleanup evidence before locks are released; subsequent non-update lifecycle entries refuse mutation/start and `update.ps1` recovery retries exact cleanup under both locks.
 
 No failure path may silently adopt unknown content, delete protected data, or claim success with contradictory state.
 
