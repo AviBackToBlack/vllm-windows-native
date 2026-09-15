@@ -60,8 +60,8 @@
     },
     {
       "path": "uninstall.ps1",
-      "size_bytes": 104,
-      "sha256": "241EED84705DA7A1819F28622FDC073D50A423F4B3979939733F5308DE3F5E5C"
+      "size_bytes": 34491,
+      "sha256": "4730C3AFC5C2D0E1B4ED4B5BBA5707D0470AE1CBBB5338BBA2D5A0B6F22FE6DC"
     },
     {
       "path": "start.ps1",
