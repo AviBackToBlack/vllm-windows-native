@@ -123,11 +123,11 @@ For replace-in-place runtime transactions, materialization SHOULD complete and v
 
 Update MUST be an explicit, provenance-preserving transition between recorded releases.
 
-Update implementation MUST acquire the operation lock, verify current state before mutation, refuse unsafe runtime/process conflicts, stage new assets without overwriting the active runtime in place, verify hashes/provenance before activation, preserve `config.psd1`, models, and unrelated user files, validate the staged runtime before switching active state, update install state atomically, and preserve or restore the prior active runtime/state if activation fails.
+Update implementation MUST acquire the operation lock, verify current state before mutation, refuse unsafe runtime/process conflicts, stage new assets without overwriting the active runtime in place, verify hashes/provenance before activation, preserve `config.psd1`, models, and unrelated user files, validate the staged runtime before switching active state, update install state with a PowerShell-edition-independent atomic Windows replace primitive, and preserve or restore the prior active runtime/state if activation fails.
 
 Update MUST NOT convert an unknown or partially owned installation into a destructive cleanup operation.
 
-A valid pending update transaction is lifecycle-wide maintenance state. Non-update entries that could launch the managed runtime or mutate the installation (including start, install, and uninstall) MUST refuse while that transaction is pending and direct recovery through the updater; unexplained reserved update residue MUST also fail closed.
+Presence of `state\update-transaction.json` or the reserved `work\update-transaction` workspace is lifecycle-wide maintenance state, regardless of whether the journal is valid or parseable. Non-update entries that could launch the managed runtime or mutate the installation (including start, install, and uninstall) MUST refuse while either exists and direct recovery through the updater; they do not need journal-schema knowledge.
 
 The concrete transaction state machine, crash-recovery rules, and implementation slicing are defined in docs/update-transaction-design.md.
 

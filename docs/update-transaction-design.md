@@ -48,6 +48,8 @@ The implementation should follow the installer input model:
 
 There is no target named `latest` and no unpinned target download.
 
+`-WhatIf` still acquires the lifecycle locks and performs the same serialized read-only validation/planning snapshot, consistent with uninstall. It MUST NOT create or rewrite the update journal, create staging/workspace content, perform recovery mutation, activate, retire, or clean anything. If an existing pending transaction requires recovery, `-WhatIf` reports/refuses with the evidence intact rather than mutating it.
+
 ## 5. Required lock ordering and runtime exclusion
 
 Top-level update follows the existing lifecycle order:
@@ -63,9 +65,15 @@ This turns a running managed server into an OS-level maintenance conflict instea
 
 Start must never acquire the orchestrator lock, so the order cannot invert: start holds only the operation lock; install/update/uninstall acquire orchestrator then operation.
 
-Managed-install mode and development mode are distinct. If `state\install-state.json` exists under the root from which `start.ps1` is running, start MUST treat that root as lifecycle-managed: malformed or contradictory state is a refusal, not a fallback to development mode. If no install state exists, repo-checkout/development invocations (including `-ValidateOnly` and explicit `-VllmExe` / `-ContainmentRoot` overrides) remain outside managed lifecycle serialization and MUST NOT create an untracked `.vllm-operation.lock` in the source checkout.
+Managed-install mode and development mode are distinct, but classification MUST follow the effective execution target rather than merely the directory containing `start.ps1`. SM-18A must resolve candidate lifecycle roots from the installed/script root, the effective containment root, and the resolved runtime executable. If a candidate contains `state\install-state.json`, that state must validate and the resolved executable must be consistent with its recorded managed runtime. Multiple managed candidates must resolve to the same installation or start fails closed. A repo-checkout invocation is development mode only when no effective target resolves to a committed managed installation; development mode MUST NOT create an untracked `.vllm-operation.lock` in the source checkout.
 
-A pending update is a lifecycle-wide maintenance state, not private updater scratch space. `start.ps1`, `install.ps1`, and `uninstall.ps1` MUST refuse a lifecycle-managed installation that contains a valid pending `state\update-transaction.json`, or unexplained reserved update residue, and direct the operator to invoke `update.ps1` recovery. They MUST NOT launch, install over, or uninstall through a generation that the pending transaction may have partially activated. Diagnostic tooling may report the condition but must not mutate it. `update.ps1` is the only normal lifecycle entry allowed to recover or clean a pending update transaction.
+This means a repo-checkout `start.ps1 -VllmExe <managed-root>\runtime\venv\Scripts\vllm.exe` is still a managed start and must serialize on `<managed-root>\.vllm-operation.lock`. Process-scan defense in depth likewise keys managed-runtime ownership on the executable path under verified managed roots, regardless of which copy of `start.ps1` launched it.
+
+Managed starts are non-blocking with respect to the operation lock: if another start or maintenance operation already holds the lock, a second start fails immediately rather than queues. This is intentional for the current single-GPU support matrix.
+
+A pending update is lifecycle-wide maintenance state, not private updater scratch space. Any non-update lifecycle entry that observes `state\update-transaction.json` at all — valid, malformed, or undecodable — MUST refuse without needing to understand its schema and direct the operator to `update.ps1`. Presence of the fixed reserved subtree `work\update-transaction` also causes unconditional refusal. `start.ps1 -ValidateOnly` in managed mode follows the same rule: it may report the maintenance condition, but it does not perform ordinary launch validation through it. `update.ps1` is the only normal lifecycle entry allowed to interpret, recover, or clean this state.
+
+The pending-record/reserved-subtree check MUST occur, or be repeated, after the operation lock is held so that classification and refusal are serialized against transaction creation. SM-18A may add these forward-compatible presence checks before SM-18D can create the journal; until then they are normally absent but already define the safe behavior for future releases.
 
 ## 6. Source-generation proof
 
@@ -92,7 +100,8 @@ Before touching live payload, update MUST validate the target release from repos
 - the wheel filename, size, and SHA-256 match the target manifest;
 - all referenced bootstrap/runtime manifests and locks are part of the target release payload and match their recorded identities;
 - target managed paths are safe, non-overlapping with protected paths, and compatible with the current installation root;
-- the target release differs from the source only through an explicit recorded transition.
+- the target release differs from the source only through an explicit recorded transition;
+- the transition is compatible with the existing protected `config.psd1`. Updater v1 supports only releases that do not require destructive or implicit config migration; a target that requires new incompatible config semantics must be rejected or await an explicit versioned config-migration contract.
 
 If the target manifest digest and recorded release identity exactly equal the current source release, update is an idempotent no-op only after the current installation passes full validation. Same-name or same-version content with a different manifest digest is not idempotent and must fail unless it is represented as an explicit different recorded release.
 
@@ -121,11 +130,15 @@ The updater reserves a top-level transaction record at:
 
 `state\update-transaction.json`
 
-Future release manifests that ship the updater MUST reserve this path as lifecycle-owned metadata.
+and a fixed transaction workspace root at:
 
-Reserved update metadata and `work\` transaction paths are lifecycle-owned independently of the frozen source release's `managed_paths`. This is required for the first transition from v0.27.1, whose manifest predates the updater and cannot retroactively list them. A valid transaction record with matching exact reserved paths is the ownership proof for its staging/backup residue; reserved residue without a valid matching record is unexplained and MUST fail closed.
+`work\update-transaction`
 
-Staging and backup stay on the installation volume, under reserved descendants of `work\`, so activation can use same-volume renames. The transaction record stores their exact physical/relative locations and a unique `transaction_id`.
+Future release manifests that ship the updater MUST reserve both as lifecycle-owned metadata.
+
+Reserved update metadata and the fixed transaction workspace are lifecycle-owned independently of the frozen source release's `managed_paths`. This is required for the first transition from v0.27.1, whose manifest predates the updater and cannot retroactively list them. The journal is the ownership proof for exact descendants beneath `work\update-transaction`; any non-update entry refuses on presence of the journal or workspace root without parsing either, while `update.ps1` validates their exact relationship before recovery or cleanup.
+
+The transaction record MUST be durably created at transaction open, before the first staging file or directory is created. Phase `materializing` therefore always exists before transaction-owned residue can exist. Staging and backup remain on the installation volume under `work\update-transaction\<transaction_id>\...` so activation can use same-volume renames. The record stores their exact physical/relative locations and the unique `transaction_id`.
 
 The transaction schema must include, at minimum:
 
@@ -139,7 +152,7 @@ The transaction schema must include, at minimum:
 - the exact persisted activation plan with source/target identities;
 - creation/update timestamps.
 
-The record MUST be atomically written and semantically re-read before the first destructive rename.
+The initial record and every later phase rewrite MUST use the same cross-edition atomic file-publication helper required for install-state commit below, then be semantically re-read. `Move-Item -Force` is not an acceptable overwrite primitive for transaction metadata on Windows PowerShell 5.1.
 
 If staging or backup residue exists without a valid matching transaction record, update fails closed and preserves the evidence.
 
@@ -161,7 +174,9 @@ Transaction phase is diagnostic and constraining metadata. Commit status is neve
 
 ## 11. Commit point and install-state semantics
 
-The single authoritative commit point is atomic replacement of `state\install-state.json` with the fully validated target state.
+The single authoritative commit point is atomic replacement of `state\install-state.json` with the fully validated target state. This replacement MUST use one native same-volume Windows replace operation whose behavior is independent of PowerShell edition; v1 uses a shared P/Invoke helper that fully writes and `FlushFileBuffers`-flushes the temporary state, then calls `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`, followed by an exact semantic re-read. `Move-Item -Force` MUST NOT implement this commit point: Windows PowerShell 5.1 can delete the destination before renaming the source, creating an observable no-state window.
+
+The same helper/semantics apply to rewrites of `state\update-transaction.json`. The implementation must test atomic replacement behavior on both PowerShell 7 and Windows PowerShell 5.1, including fault injection around the publication boundary.
 
 Before that replacement, the source generation is committed even if some target files have temporarily been activated under the operation lock. A crash must therefore roll back to the source generation.
 
@@ -208,6 +223,7 @@ Recovery decisions are generation-backed:
 | malformed/contradictory transaction record | fail closed; preserve evidence |
 | valid transaction, install state still records source generation | restore every activated `replace`, remove only transaction-proven `add` targets, validate source generation, then clean staging/transaction metadata |
 | valid transaction, install state exactly records target generation | target is committed; validate target, then clean backups/retired source content/staging/transaction metadata |
+| valid transaction, `install-state.json` is absent | fail closed; preserve all transaction/workspace evidence; absence is not a normal crash state once atomic publication is implemented |
 | install state matches neither recorded generation | fail closed; preserve all evidence |
 | required source backup and live source are both missing before commit | automatic rollback is impossible; fail closed and preserve transaction evidence |
 | an object has an identity matching neither recorded source nor target | fail closed; never guess which copy is owned |
@@ -244,10 +260,13 @@ Required adversarial coverage includes:
 - source drift/malformed state refusal;
 - target manifest/file/wheel drift refusal;
 - ModelsRoot/config/unknown-file preservation;
+- managed start detection when a repo-checkout launcher targets a committed installation via `-VllmExe` or containment overrides;
+- presence-only refusal for malformed/valid update journals and the fixed reserved workspace;
 - operation/orchestrator lock contention;
 - start/update serialization and a server starting/running during maintenance;
 - target staging validation failure before live mutation;
-- crash/fault injection before first rename, after source backup, after target activation, immediately before state commit, immediately after state commit, and during cleanup;
+- crash/fault injection before the first staging write, before first rename, after source backup, after target activation, immediately before state commit, immediately after state commit, and during cleanup;
+- atomic journal/install-state publication on both PowerShell 7 and Windows PowerShell 5.1, including verification that overwrite does not expose a destination-absent window;
 - rollback of replace/add operations;
 - committed-cleanup recovery;
 - missing/malformed transaction records and unexplained staging/backup residue;
@@ -260,7 +279,7 @@ Mutation regressions remain trusted-only. Public PR CI stays source-level in acc
 
 Implementation should remain split into reviewable slices:
 
-1. **SM-18A — start/maintenance serialization.** Make normal `start.ps1` hold the operation lock for the managed server lifetime; add contention tests. No updater mutation yet.
+1. **SM-18A — start/maintenance serialization and forward-compatible maintenance guard.** Make managed `start.ps1` hold the operation lock for the server lifetime, resolve managed mode from the effective target, and make start/install/uninstall refuse on presence of the future update journal/reserved workspace while holding the relevant lifecycle lock. Add contention/dev-mode/override-target tests. No updater mutation yet.
 2. **SM-18B — update validation and transition planner.** Replace the updater stub with read-only source/target validation, same-release no-op, exact plan generation, and synthetic fixtures. No live mutation.
 3. **SM-18C — target staging.** Materialize and validate a target generation away from live paths; prove relocation/final-path semantics.
 4. **SM-18D — transaction journal and synthetic activation/recovery.** Implement persisted transaction state, replace/add rollback, target state commit, and fault-injection recovery using synthetic payloads.
