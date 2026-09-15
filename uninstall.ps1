@@ -72,6 +72,28 @@ function Assert-ExactProperties {
     }
 }
 
+function Assert-ManagedTreeNoReparsePoints {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$RelativePath
+    )
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push((Get-VllmNormalizedPath $Path))
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        $currentEntry = Get-VllmPathEntryInfo -Path $current
+        if (-not $currentEntry.Exists) { throw "Managed directory disappeared while validating recursive ownership: $RelativePath" }
+        if (-not $currentEntry.IsDirectory) { throw "Managed directory changed type while validating recursive ownership: $RelativePath" }
+        if ($currentEntry.IsReparsePoint) { throw "Managed directory tree contains a reparse point; recursive ownership is ambiguous: $current" }
+        foreach ($child in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+            $childEntry = Get-VllmPathEntryInfo -Path $child.FullName
+            if (-not $childEntry.Exists) { throw "Managed tree entry disappeared while validating recursive ownership: $($child.FullName)" }
+            if ($childEntry.IsReparsePoint) { throw "Managed directory tree contains a reparse point; recursive ownership is ambiguous: $($child.FullName)" }
+            if ($childEntry.IsDirectory) { $pending.Push($childEntry.Path) }
+        }
+    }
+}
+
 function Get-UninstallPlan {
     $statePath = Join-Path $InstallationRoot 'state\install-state.json'
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { throw "Install state is missing: $statePath" }
@@ -218,6 +240,9 @@ function Get-UninstallPlan {
 
         $role = if ($key -eq $stateKey) { 'state' } elseif ($key -eq $orchestratorLockKey) { 'orchestrator-lock' } elseif ($key -eq $operationLockKey) { 'operation-lock' } else { 'managed' }
         $entry = Get-VllmPathEntryInfo -Path $path
+        if ($role -eq 'managed' -and $entry.Exists -and $entry.IsDirectory) {
+            Assert-ManagedTreeNoReparsePoints -Path $path -RelativePath $relative
+        }
         $managedPlan.Add([pscustomobject]@{ RelativePath=$relative; Path=$path; Exists=[bool]$entry.Exists; IsDirectory=[bool]$entry.IsDirectory; Role=$role })
     }
 
@@ -395,6 +420,9 @@ function Test-ManagedRemovalTargetStable {
     if ([bool]$entry.IsDirectory -ne [bool]$Item.IsDirectory) {
         throw "Managed path type changed after planning: $relative"
     }
+    if ($entry.IsDirectory) {
+        Assert-ManagedTreeNoReparsePoints -Path $path -RelativePath $relative
+    }
     return $true
 }
 
@@ -447,6 +475,8 @@ $result = $null
 $parentCandidates = @{}
 $stateCommitted = $false
 try {
+    # WhatIf still acquires both lifecycle locks so validation observes a serialized snapshot.
+    # The operation-lock file is coordination metadata and may be refreshed; owned payload/state is not mutated.
     $orchestratorLock = Enter-UninstallOrchestratorLock
     $operationLock = Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'uninstall'
     $plan = Get-UninstallPlan

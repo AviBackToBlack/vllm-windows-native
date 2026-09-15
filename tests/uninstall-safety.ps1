@@ -328,6 +328,28 @@ try {
     }
     Write-Host 'UNINSTALL_ADVERSARIAL_PATHS_OK'
 
+    $nestedParent = Join-Path $root 'runtime/venv/nested-reparse-test'
+    [void][IO.Directory]::CreateDirectory($nestedParent)
+    $nestedJunction = Join-Path $nestedParent 'pivot'
+    New-Item -ItemType Junction -Path $nestedJunction -Target $outside | Out-Null
+    try {
+        Test-ExpectedFailure { [void](Invoke-UninstallJson -Root $root) } 'managed-nested-junction' '*Managed directory tree contains a reparse point*'
+        if ((Get-Content -LiteralPath (Join-Path $outside 'KEEP.txt') -Raw).Trim() -ne 'DO-NOT-TOUCH') { throw 'External nested-junction sentinel changed.' }
+    } finally {
+        if (Test-Path -LiteralPath $nestedJunction) { [IO.Directory]::Delete($nestedJunction) }
+        if (Test-Path -LiteralPath $nestedParent) { Remove-Item -LiteralPath $nestedParent -Recurse -Force }
+    }
+    Write-Host 'UNINSTALL_NESTED_REPARSE_OK'
+
+    $stateOriginalBytes = [IO.File]::ReadAllBytes($fixture.StatePath)
+    try {
+        Write-Utf8NoBom -Path $fixture.StatePath -Text '{not-json'
+        Test-ExpectedFailure { [void](Invoke-UninstallJson -Root $root -Preview) } 'malformed-install-state' '*Install state is malformed*'
+    } finally {
+        [IO.File]::WriteAllBytes($fixture.StatePath, $stateOriginalBytes)
+    }
+    Write-Host 'UNINSTALL_MALFORMED_STATE_OK'
+
     $removed = Invoke-UninstallJson -Root $root
     if (-not [bool]$removed.ready -or -not [bool]$removed.removed -or [bool]$removed.what_if) { throw 'Destructive uninstall result contract is invalid.' }
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Uninstall removed InstallationRoot.' }
