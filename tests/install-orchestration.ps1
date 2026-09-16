@@ -35,7 +35,7 @@ function Invoke-MiniReleaseFixtureCreation{
     $copied=@(
         'install.ps1','update.ps1','uninstall.ps1','start.ps1',
         'bootstrap-python.ps1','bootstrap-uv.ps1','bootstrap-venv.ps1','bootstrap-dependencies.ps1','bootstrap-vllm.ps1',
-        'scripts/common.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
+        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
         'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json','manifests/bootstrap/uv-0.12.13-windows-x86_64.json','manifests/bootstrap/venv-v0.27.1-windows-x86_64.json'
     )
     foreach($rel in $copied){Copy-RepoFile -SourceRelative $rel -SourceRoot $SourceRoot}
@@ -105,6 +105,25 @@ try{
     $idem=(& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json)|ConvertFrom-Json
     if(-not$idem.idempotent-or(Get-Content $marker -Raw).Trim()-ne'KEEP'-or(Get-Content $statePath -Raw)-ne$stateRaw-or(Get-Content $finalReceipt -Raw)-ne$finalRaw){throw 'Installer idempotence changed committed state/runtime.'}
     Write-Host 'INSTALL_IDEMPOTENCE_OK'
+    $guardStateRaw=Get-Content $statePath -Raw
+    $guardMarkerRaw=Get-Content $marker -Raw
+    $guardStaging=Join-Path $root 'work\install-distribution-staging'
+    [void][IO.Directory]::CreateDirectory($guardStaging)
+    $guardSentinel=Join-Path $guardStaging 'pending-update-sentinel.txt'
+    [IO.File]::WriteAllText($guardSentinel,'KEEP',[Text.Encoding]::ASCII)
+    $updateJournal=Join-Path $root 'state\update-transaction.json'
+    [IO.File]::WriteAllText($updateJournal,'{ malformed',[Text.Encoding]::ASCII)
+    Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-pending-update-journal' -ExpectedMessage 'Pending update maintenance state exists'
+    if((Get-Content $statePath -Raw)-ne$guardStateRaw-or(Get-Content $marker -Raw)-ne$guardMarkerRaw-or-not(Test-Path $guardSentinel -PathType Leaf)-or(Get-Content $guardSentinel -Raw).Trim()-ne'KEEP'){throw 'Installer pending-update journal refusal mutated committed/staging state.'}
+    Remove-Item $updateJournal -Force
+    Write-Host 'INSTALL_PENDING_UPDATE_JOURNAL_GUARD_OK'
+    $updateWorkspace=Join-Path $root 'work\update-transaction'
+    [void][IO.Directory]::CreateDirectory($updateWorkspace)
+    Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-pending-update-workspace' -ExpectedMessage 'Pending update maintenance state exists'
+    if((Get-Content $statePath -Raw)-ne$guardStateRaw-or(Get-Content $marker -Raw)-ne$guardMarkerRaw-or-not(Test-Path $guardSentinel -PathType Leaf)){throw 'Installer pending-update workspace refusal mutated committed/staging state.'}
+    Remove-Item $updateWorkspace -Recurse -Force
+    Remove-Item $guardStaging -Recurse -Force
+    Write-Host 'INSTALL_PENDING_UPDATE_WORKSPACE_GUARD_OK'
     $tampered=$stateRaw|ConvertFrom-Json;$tampered.wheel.sha256='BAD';Write-Utf8Json -Path $statePath -Value $tampered
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'install-state-tamper' -ExpectedMessage 'malformed or contradictory'
     [IO.File]::WriteAllText($statePath,$stateRaw,[Text.UTF8Encoding]::new($false));Write-Host 'INSTALL_STATE_TAMPER_REJECTED'

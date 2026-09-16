@@ -104,6 +104,32 @@ try {
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { throw 'Released operation lock should remain as stale coordination metadata.' }
     Remove-Item -LiteralPath $lockPath -Force
 
+    $inheritRoot = Join-Path $base 'inherited-lock'
+    $owner = $null
+    $borrowed = $null
+    try {
+        $owner = Enter-VllmOperationLock -InstallationRoot $inheritRoot -Operation 'top-level-owner'
+        Test-ExpectedFailure { Enter-VllmOperationLock -InstallationRoot $inheritRoot -Operation 'before-registration' } 'inherited-lock-before-registration'
+        Register-VllmInheritedOperationLock -Lock $owner
+        Test-ExpectedFailure { Enter-VllmOperationLock -InstallationRoot (Join-Path $base 'different-root') -Operation 'nested-different-root' } 'inherited-lock-different-root'
+        $borrowed = Enter-VllmOperationLock -InstallationRoot $inheritRoot -Operation 'child-bootstrap'
+        if (-not [bool]$borrowed.Borrowed) { throw 'Registered child operation did not receive a borrowed lock lease.' }
+        Exit-VllmOperationLock -Lock $borrowed
+        $borrowed = $null
+        if ($owner.Stream.SafeFileHandle.IsClosed) { throw 'Releasing a borrowed lease closed the top-level owner handle.' }
+        Clear-VllmInheritedOperationLock -Lock $owner
+        Test-ExpectedFailure { Enter-VllmOperationLock -InstallationRoot $inheritRoot -Operation 'after-clear' } 'inherited-lock-after-clear'
+        Write-Host 'INHERITED_OPERATION_LOCK_OK'
+    }
+    finally {
+        if ($null -ne $borrowed) { Exit-VllmOperationLock -Lock $borrowed }
+        if ($null -ne $owner) {
+            $registered = Get-Variable -Name VllmWindowsNativeInheritedOperationLock -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $registered) { Remove-Variable -Name VllmWindowsNativeInheritedOperationLock -Scope Global -Force }
+            Exit-VllmOperationLock -Lock $owner
+        }
+    }
+
     $sentinel = Join-Path $base 'outside-sentinel.txt'
     Set-Content -LiteralPath $sentinel -Value 'DO-NOT-TOUCH' -Encoding ascii
     New-Item -ItemType HardLink -Path $lockPath -Target $sentinel | Out-Null

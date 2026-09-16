@@ -50,8 +50,8 @@
   "files": [
     {
       "path": "install.ps1",
-      "size_bytes": 28310,
-      "sha256": "45B18C46B2E1D64A843E7FE3943EA2F51F9A6CB83672ED2E28174CD7E2117869"
+      "size_bytes": 28975,
+      "sha256": "A54D1FCC17C6C5F1DCDEBFD3C2D051709027F2ED03B0BBBEE51C36190113A947"
     },
     {
       "path": "update.ps1",
@@ -60,13 +60,13 @@
     },
     {
       "path": "uninstall.ps1",
-      "size_bytes": 34491,
-      "sha256": "4730C3AFC5C2D0E1B4ED4B5BBA5707D0470AE1CBBB5338BBA2D5A0B6F22FE6DC"
+      "size_bytes": 34618,
+      "sha256": "BFAC0CE2B54C452549560062F227BA064B675A76FE673F1C4A8BA278DDAF792E"
     },
     {
       "path": "start.ps1",
-      "size_bytes": 2726,
-      "sha256": "8D386B6BCA510E5D7391F604EF07C7336E4166DDA57EE23E35B6F1C06D13BAA0"
+      "size_bytes": 4208,
+      "sha256": "B8E153EC56D6E3A8302C0C3650916629F656F9CFC08A6D652A6A039EA58BDB8A"
     },
     {
       "path": "bootstrap-python.ps1",
@@ -95,8 +95,13 @@
     },
     {
       "path": "scripts/common.ps1",
-      "size_bytes": 27916,
-      "sha256": "EFE240B69A248C0C8D3BDDE17CA4D9E22C41DA349BF0B76191CE72B1221621DF"
+      "size_bytes": 31590,
+      "sha256": "96E14C3CA2F923ACEBD615B5F8CDFAF557628D2863537343459C5E12809EF4CB"
+    },
+    {
+      "path": "scripts/lifecycle.ps1",
+      "size_bytes": 20408,
+      "sha256": "CD1E08EABD8F817960B2977B383799927A3A87752AF9533A08D73DC1C459C6F0"
     },
     {
       "path": "scripts/env.ps1",

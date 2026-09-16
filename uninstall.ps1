@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
+. (Join-Path $PSScriptRoot 'scripts\lifecycle.ps1')
 
 if ($env:OS -ne 'Windows_NT') { throw 'Uninstall currently supports native Windows only.' }
 $InstallationRoot = Get-VllmNormalizedPath $InstallationRoot
@@ -489,6 +490,7 @@ try {
     # The operation-lock file is coordination metadata and may be refreshed; owned payload/state is not mutated.
     $orchestratorLock = Enter-UninstallOrchestratorLock
     $operationLock = Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'uninstall'
+    Assert-VllmUpdateMaintenanceAbsent -InstallationRoot $InstallationRoot
     $plan = Get-UninstallPlan
     Assert-NoManagedRuntimeProcesses -Plan $plan
 

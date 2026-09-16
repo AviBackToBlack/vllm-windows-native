@@ -578,6 +578,52 @@ function Assert-VllmSafeModelsRoot {
     return $models
 }
 
+function Test-VllmOperationLockHandle {
+    param(
+        [Parameter(Mandatory)]$Lock,
+        [Parameter(Mandatory)][string]$InstallationRoot
+    )
+    if ($null -eq $Lock -or $null -eq $Lock.Stream -or $null -eq $Lock.Stream.SafeFileHandle) { return $false }
+    if ($Lock.Stream.SafeFileHandle.IsClosed -or $Lock.Stream.SafeFileHandle.IsInvalid) { return $false }
+    $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    if (-not (Get-VllmNormalizedPath ([string]$Lock.Root)).Equals($root, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $rootPhysical = Get-VllmPhysicalCandidatePath -Path $root -Format Guid
+    $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($rootPhysical, '.vllm-operation.lock'))
+    try {
+        $actualPhysical = Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($Lock.Stream.SafeFileHandle))
+        if (-not $actualPhysical.Equals($expectedPhysical, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ([VllmWindowsNative.NativePath]::GetLinkCount($Lock.Stream.SafeFileHandle) -ne 1) { return $false }
+    } catch {
+        return $false
+    }
+    return $true
+}
+
+function Register-VllmInheritedOperationLock {
+    param([Parameter(Mandatory)]$Lock)
+    if (($Lock.PSObject.Properties.Name -contains 'Borrowed') -and [bool]$Lock.Borrowed) {
+        throw 'A borrowed operation lock cannot become the inheritance owner.'
+    }
+    if (-not (Test-VllmOperationLockHandle -Lock $Lock -InstallationRoot ([string]$Lock.Root))) {
+        throw 'Cannot register an invalid or closed operation lock for inheritance.'
+    }
+    $existing = Get-Variable -Name VllmWindowsNativeInheritedOperationLock -Scope Global -ErrorAction SilentlyContinue
+    if ($null -ne $existing -and $null -ne $existing.Value) {
+        throw 'An inherited vLLM operation lock is already registered in this process.'
+    }
+    Set-Variable -Name VllmWindowsNativeInheritedOperationLock -Scope Global -Value $Lock
+}
+
+function Clear-VllmInheritedOperationLock {
+    param([Parameter(Mandatory)]$Lock)
+    $existing = Get-Variable -Name VllmWindowsNativeInheritedOperationLock -Scope Global -ErrorAction SilentlyContinue
+    if ($null -eq $existing -or $null -eq $existing.Value) { return }
+    if (-not [object]::ReferenceEquals($existing.Value, $Lock)) {
+        throw 'Refusing to clear a different inherited vLLM operation lock.'
+    }
+    Remove-Variable -Name VllmWindowsNativeInheritedOperationLock -Scope Global -Force
+}
+
 function Enter-VllmOperationLock {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -585,6 +631,27 @@ function Enter-VllmOperationLock {
     )
     if ([string]::IsNullOrWhiteSpace($Operation)) { throw 'Operation name must not be empty.' }
     $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+
+    $inheritedVariable = Get-Variable -Name VllmWindowsNativeInheritedOperationLock -Scope Global -ErrorAction SilentlyContinue
+    if ($null -ne $inheritedVariable -and $null -ne $inheritedVariable.Value) {
+        $inherited = $inheritedVariable.Value
+        $inheritedRoot = Get-VllmNormalizedPath ([string]$inherited.Root)
+        if (-not $inheritedRoot.Equals($root, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Inherited vLLM operation lock belongs to '$inheritedRoot'. Refusing nested '$Operation' for different root '$root'."
+        }
+        if (-not (Test-VllmOperationLockHandle -Lock $inherited -InstallationRoot $root)) {
+            throw "Inherited vLLM operation lock for '$root' is invalid or closed."
+        }
+        return [pscustomobject]@{
+            Stream=$inherited.Stream
+            Path=$inherited.Path
+            Root=$root
+            Operation=$Operation
+            Borrowed=$true
+            OwnerOperation=[string]$inherited.Operation
+        }
+    }
+
     if (-not (Get-VllmPathEntryInfo -Path $root).Exists) {
         [void][System.IO.Directory]::CreateDirectory($root)
         $root = Assert-VllmSafeInstallationRoot -InstallationRoot $root
@@ -621,7 +688,7 @@ function Enter-VllmOperationLock {
             $writer.Flush()
             $stream.Flush()
         } finally { $writer.Dispose() }
-        return [pscustomobject]@{ Stream=$stream; Path=$lockPath; Root=$root; Operation=$Operation }
+        return [pscustomobject]@{ Stream=$stream; Path=$lockPath; Root=$root; Operation=$Operation; Borrowed=$false }
     } catch {
         $stream.Dispose()
         throw
@@ -630,6 +697,7 @@ function Enter-VllmOperationLock {
 
 function Exit-VllmOperationLock {
     param([Parameter(Mandatory)]$Lock)
+    if (($Lock.PSObject.Properties.Name -contains 'Borrowed') -and [bool]$Lock.Borrowed) { return }
     $stream = $Lock.Stream
     if ($null -ne $stream) { $stream.Dispose() }
     # Deliberately leave the coordination file in place. The next Enter call
