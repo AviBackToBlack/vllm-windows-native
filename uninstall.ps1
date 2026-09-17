@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
+. (Join-Path $PSScriptRoot 'scripts\lifecycle.ps1')
 
 if ($env:OS -ne 'Windows_NT') { throw 'Uninstall currently supports native Windows only.' }
 $InstallationRoot = Get-VllmNormalizedPath $InstallationRoot
@@ -489,6 +490,7 @@ try {
     # The operation-lock file is coordination metadata and may be refreshed; owned payload/state is not mutated.
     $orchestratorLock = Enter-UninstallOrchestratorLock
     $operationLock = Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'uninstall'
+    Assert-VllmUpdateMaintenanceAbsent -InstallationRoot $InstallationRoot
     $plan = Get-UninstallPlan
     Assert-NoManagedRuntimeProcesses -Plan $plan
 
@@ -524,11 +526,6 @@ try {
             Remove-Item -LiteralPath ([string]$item.Path) -Force
         }
 
-        Exit-VllmOperationLock -Lock $operationLock
-        $operationLock = $null
-        Invoke-UninstallLockCleanup -Path ([string]$plan.OperationLockPath) -RelativePath '.vllm-operation.lock'
-        Add-UninstallParentCandidates -Candidates $parentCandidates -Path ([string]$plan.OperationLockPath)
-
         if (-not (Test-Path -LiteralPath $plan.StatePath -PathType Leaf)) { throw 'Install state disappeared before commit-marker removal.' }
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $plan.StatePath -RelativePath 'state\install-state.json')
         $currentStateIdentity = Get-FileIdentity -Path $plan.StatePath
@@ -538,6 +535,18 @@ try {
         Add-UninstallParentCandidates -Candidates $parentCandidates -Path ([string]$plan.StatePath)
         Remove-Item -LiteralPath $plan.StatePath -Force
         $stateCommitted = $true
+
+        # Keep the operation lock through commit-marker removal. Once state is gone,
+        # a new start cannot observe a half-removed committed generation. Lock-file
+        # deletion is post-commit coordination cleanup and may safely be deferred.
+        Exit-VllmOperationLock -Lock $operationLock
+        $operationLock = $null
+        try {
+            Invoke-UninstallLockCleanup -Path ([string]$plan.OperationLockPath) -RelativePath '.vllm-operation.lock'
+            Add-UninstallParentCandidates -Candidates $parentCandidates -Path ([string]$plan.OperationLockPath)
+        } catch {
+            Write-Warning "Uninstall committed, but operation lock cleanup was not completed safely: $($_.Exception.Message)"
+        }
 
         Exit-UninstallOrchestratorLock -Lock $orchestratorLock
         $orchestratorLock = $null

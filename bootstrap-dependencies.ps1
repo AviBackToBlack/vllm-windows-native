@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
+. (Join-Path $PSScriptRoot 'scripts\lifecycle.ps1')
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) { throw 'bootstrap-dependencies.ps1 supports native Windows x64 only.' }
 $projectRoot = Get-ProjectRoot
 $manifestResolved = Resolve-ProjectPath -Path $ManifestPath -BasePath $projectRoot
@@ -371,6 +372,7 @@ $result=$null
 try{
     $lock=Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'bootstrap-dependencies'
     $InstallationRoot=$lock.Root
+    Assert-VllmUpdateMaintenanceAbsent -InstallationRoot $InstallationRoot
     [void](Assert-VllmExistingManagedTopLevelLocations -InstallationRoot $InstallationRoot)
     $pythonRoot=Join-Path $InstallationRoot $pythonManagedRelative
     $pythonExe=Join-Path $pythonRoot $pythonExeRelative

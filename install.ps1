@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
+. (Join-Path $PSScriptRoot 'scripts\lifecycle.ps1')
 if($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem){throw 'install.ps1 supports native Windows x64 only.'}
 $sourceRoot=Get-ProjectRoot
 $releaseManifestSource=Resolve-ProjectPath -Path $ReleaseManifestPath -BasePath $sourceRoot
@@ -221,8 +222,16 @@ function Get-InstallStateValue{
     }
 }
 $result=$null
+$operationLock=$null
+$operationLockInherited=$false
+$maintenanceClear=$false
 Enter-InstallerLock
 try{
+    $operationLock=Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'install'
+    Register-VllmInheritedOperationLock -Lock $operationLock
+    $operationLockInherited=$true
+    Assert-VllmUpdateMaintenanceAbsent -InstallationRoot $InstallationRoot
+    $maintenanceClear=$true
     $existingState=Read-JsonFile $statePath
     if(Test-Path -LiteralPath $statePath){
         if($null-eq$existingState-or-not(Test-InstallState -State $existingState)){throw "Install state exists but is malformed or contradictory: $statePath"}
@@ -279,8 +288,14 @@ try{
         $result=[ordered]@{schema_version=1;component='install';release=[string]$release.release;ready=$true;idempotent=$false;generation_id=[string]$committed.generation_id;install_root=$InstallationRoot;models_root=$ModelsRoot;runtime_root=[string]$final.root;vllm_version=[string]$final.vllm_version;package_count=[int]$final.package_count;install_state=$statePath}
     }
 }finally{
-    try{Invoke-DistributionStagingCleanup}catch{Write-Warning "Failed to clean installer staging safely: $($_.Exception.Message)"}
-    Exit-InstallerLock
+    try{
+        if($maintenanceClear){try{Invoke-DistributionStagingCleanup}catch{Write-Warning "Failed to clean installer staging safely: $($_.Exception.Message)"}}
+        if($operationLockInherited){Clear-VllmInheritedOperationLock -Lock $operationLock;$operationLockInherited=$false}
+    }finally{
+        $operationLockInherited=$false
+        if($null-ne$operationLock){Exit-VllmOperationLock -Lock $operationLock;$operationLock=$null}
+        Exit-InstallerLock
+    }
 }
 if($null-eq$result-or-not[bool]$result.ready){throw 'Top-level installation did not complete.'}
 if($Json){[pscustomobject]$result|ConvertTo-Json -Depth 8}else{Write-Host "vLLM Windows Native installed: $($result.install_root)";Write-Host "Runtime: $($result.runtime_root)";Write-Host "Version: $($result.vllm_version)";Write-Host "State:   $($result.install_state)";Write-Host 'INSTALL_READY'}

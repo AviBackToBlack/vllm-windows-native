@@ -15,6 +15,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
+. (Join-Path $PSScriptRoot 'scripts\lifecycle.ps1')
 . (Join-Path $PSScriptRoot 'scripts\env.ps1')
 
 if ($env:OS -ne 'Windows_NT') {
@@ -39,6 +40,7 @@ foreach ($argument in $VllmArgs) {
 if ([string]::IsNullOrWhiteSpace($ContainmentRoot)) {
     $ContainmentRoot = $projectRoot
 }
+$ContainmentRoot = Get-VllmNormalizedPath $ContainmentRoot
 
 if ([string]::IsNullOrWhiteSpace($VllmExe)) {
     $VllmExe = Join-Path $projectRoot 'runtime\venv\Scripts\vllm.exe'
@@ -58,8 +60,26 @@ if ($VllmArgs) {
     $arguments += $VllmArgs
 }
 
-$originalEnvironment = Get-VllmProcessEnvironmentSnapshot
+$managedRoot = Resolve-VllmStartManagedRoot -ProjectRoot $projectRoot -ContainmentRoot $ContainmentRoot -VllmExe $VllmExe
+$operationLock = $null
+$originalEnvironment = $null
 try {
+    if ($null -ne $managedRoot) {
+        $operationLock = Enter-VllmOperationLock -InstallationRoot $managedRoot -Operation $(if ($ValidateOnly) { 'start-validate' } else { 'start' })
+
+        # Maintenance presence is checked under the operation lock before full generation
+        # validation so an interrupted update reports recovery state rather than payload drift.
+        Assert-VllmUpdateMaintenanceAbsent -InstallationRoot $managedRoot
+
+        $lockedRoot = Resolve-VllmStartManagedRoot -ProjectRoot $projectRoot -ContainmentRoot $ContainmentRoot -VllmExe $VllmExe
+        if ($null -eq $lockedRoot -or -not $lockedRoot.Equals($managedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Managed start ownership changed while acquiring the operation lock.'
+        }
+        $context = Get-VllmCommittedInstallationContext -InstallationRoot $managedRoot
+        Assert-VllmStartMatchesCommittedContext -Context $context -VllmExe $VllmExe
+    }
+
+    $originalEnvironment = Get-VllmProcessEnvironmentSnapshot
     $containment = Initialize-VllmContainedEnvironment -Root $ContainmentRoot
     $ContainmentRoot = $containment.Root
 
@@ -72,6 +92,7 @@ try {
     Write-Host "vLLM:       $VllmExe"
     Write-Host "Model:      $Model"
     Write-Host "Endpoint:   http://${ListenHost}:$ListenPort"
+    if ($null -ne $managedRoot) { Write-Host "Managed:    $managedRoot" }
 
     if ($ValidateOnly) {
         Write-Host 'Runtime arguments validated; passthrough values are not displayed.'
@@ -86,6 +107,10 @@ try {
     }
 }
 finally {
-    Restore-VllmProcessEnvironment -Snapshot $originalEnvironment
-
+    if ($null -ne $originalEnvironment) {
+        Restore-VllmProcessEnvironment -Snapshot $originalEnvironment
+    }
+    if ($null -ne $operationLock) {
+        Exit-VllmOperationLock -Lock $operationLock
+    }
 }
