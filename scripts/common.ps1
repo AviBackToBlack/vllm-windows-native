@@ -583,22 +583,22 @@ function Test-VllmOperationLockHandle {
         [Parameter(Mandatory)]$Lock,
         [Parameter(Mandatory)][string]$InstallationRoot
     )
-    if ($null -eq $Lock -or $null -eq $Lock.Stream -or $null -eq $Lock.Stream.SafeFileHandle) { return $false }
-    if ($Lock.Stream.SafeFileHandle.IsClosed -or $Lock.Stream.SafeFileHandle.IsInvalid) { return $false }
-    $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
-    if (-not (Get-VllmNormalizedPath ([string]$Lock.Root)).Equals($root, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-    $rootPhysical = Get-VllmPhysicalCandidatePath -Path $root -Format Guid
-    $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($rootPhysical, '.vllm-operation.lock'))
     try {
-        $actualPhysical = Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($Lock.Stream.SafeFileHandle))
+        if ($null -eq $Lock -or $null -eq $Lock.Stream) { return $false }
+        $handle = $Lock.Stream.SafeFileHandle
+        if ($null -eq $handle -or $handle.IsClosed -or $handle.IsInvalid) { return $false }
+        $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+        if (-not (Get-VllmNormalizedPath ([string]$Lock.Root)).Equals($root, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        $rootPhysical = Get-VllmPhysicalCandidatePath -Path $root -Format Guid
+        $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($rootPhysical, '.vllm-operation.lock'))
+        $actualPhysical = Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($handle))
         if (-not $actualPhysical.Equals($expectedPhysical, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-        if ([VllmWindowsNative.NativePath]::GetLinkCount($Lock.Stream.SafeFileHandle) -ne 1) { return $false }
+        if ([VllmWindowsNative.NativePath]::GetLinkCount($handle) -ne 1) { return $false }
+        return $true
     } catch {
         return $false
     }
-    return $true
 }
-
 function Register-VllmInheritedOperationLock {
     param([Parameter(Mandatory)]$Lock)
     if (($Lock.PSObject.Properties.Name -contains 'Borrowed') -and [bool]$Lock.Borrowed) {

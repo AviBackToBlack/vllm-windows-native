@@ -92,9 +92,9 @@ try {
     Write-Host "vLLM:       $VllmExe"
     Write-Host "Model:      $Model"
     Write-Host "Endpoint:   http://${ListenHost}:$ListenPort"
+    if ($null -ne $managedRoot) { Write-Host "Managed:    $managedRoot" }
 
     if ($ValidateOnly) {
-        if ($null -ne $managedRoot) { Write-Host "Managed:    $managedRoot" }
         Write-Host 'Runtime arguments validated; passthrough values are not displayed.'
         Write-Host 'RUNTIME_VALIDATE_ONLY_OK'
         return

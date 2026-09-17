@@ -114,6 +114,20 @@ try{
     $updateJournal=Join-Path $root 'state\update-transaction.json'
     [IO.File]::WriteAllText($updateJournal,'{ malformed',[Text.Encoding]::ASCII)
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-pending-update-journal' -ExpectedMessage 'Pending update maintenance state exists'
+    $bootstrapGuardCases=@(
+        @{Name='python';Script='bootstrap-python.ps1';Parameters=@{InstallationRoot=$root;Json=$true}},
+        @{Name='uv';Script='bootstrap-uv.ps1';Parameters=@{InstallationRoot=$root;Json=$true}},
+        @{Name='venv';Script='bootstrap-venv.ps1';Parameters=@{InstallationRoot=$root;Json=$true}},
+        @{Name='dependencies';Script='bootstrap-dependencies.ps1';Parameters=@{InstallationRoot=$root;Json=$true}},
+        @{Name='vllm';Script='bootstrap-vllm.ps1';Parameters=@{InstallationRoot=$root;WheelPath=$wheel;Json=$true}}
+    )
+    foreach($case in $bootstrapGuardCases){
+        $bootstrapScript=Join-Path $root ([string]$case.Script)
+        $bootstrapParams=[hashtable]$case.Parameters
+        Test-ExpectedFailure -Action {& $bootstrapScript @bootstrapParams|Out-Null} -Name ('standalone-bootstrap-pending-update-'+[string]$case.Name) -ExpectedMessage 'Pending update maintenance state exists'
+    }
+    if((Get-Content $statePath -Raw)-ne$guardStateRaw-or(Get-Content $marker -Raw)-ne$guardMarkerRaw-or-not(Test-Path $guardSentinel -PathType Leaf)){throw 'Standalone bootstrap maintenance refusal mutated committed/staging state.'}
+    Write-Host 'STANDALONE_BOOTSTRAP_PENDING_UPDATE_GUARDS_OK'
     if((Get-Content $statePath -Raw)-ne$guardStateRaw-or(Get-Content $marker -Raw)-ne$guardMarkerRaw-or-not(Test-Path $guardSentinel -PathType Leaf)-or(Get-Content $guardSentinel -Raw).Trim()-ne'KEEP'){throw 'Installer pending-update journal refusal mutated committed/staging state.'}
     Remove-Item $updateJournal -Force
     Write-Host 'INSTALL_PENDING_UPDATE_JOURNAL_GUARD_OK'

@@ -367,6 +367,15 @@ try {
     }
     Write-Host 'UNINSTALL_MALFORMED_STATE_OK'
 
+    $uninstallText=[IO.File]::ReadAllText($uninstallScript)
+    $stateCommitIndex=$uninstallText.IndexOf('Remove-Item -LiteralPath $plan.StatePath -Force',[StringComparison]::Ordinal)
+    $operationExitIndex=$uninstallText.IndexOf('Exit-VllmOperationLock -Lock $operationLock',[StringComparison]::Ordinal)
+    $operationCleanupIndex=$uninstallText.IndexOf('Invoke-UninstallLockCleanup -Path ([string]$plan.OperationLockPath) -RelativePath ''.vllm-operation.lock''',[StringComparison]::Ordinal)
+    $operationCleanupWarningIndex=$uninstallText.IndexOf('Uninstall committed, but operation lock cleanup was not completed safely',[StringComparison]::Ordinal)
+    if($stateCommitIndex -lt 0 -or $operationExitIndex -le $stateCommitIndex -or $operationCleanupIndex -le $operationExitIndex -or $operationCleanupWarningIndex -le $operationCleanupIndex){
+        throw 'Uninstall commit ordering must remain state commit -> operation-lock release -> post-commit lock cleanup.'
+    }
+    Write-Host 'UNINSTALL_COMMIT_LOCK_ORDER_OK'
     $removed = Invoke-UninstallJson -Root $root
     if (-not [bool]$removed.ready -or -not [bool]$removed.removed -or [bool]$removed.what_if) { throw 'Destructive uninstall result contract is invalid.' }
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Uninstall removed InstallationRoot.' }

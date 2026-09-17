@@ -288,10 +288,14 @@ try{
         $result=[ordered]@{schema_version=1;component='install';release=[string]$release.release;ready=$true;idempotent=$false;generation_id=[string]$committed.generation_id;install_root=$InstallationRoot;models_root=$ModelsRoot;runtime_root=[string]$final.root;vllm_version=[string]$final.vllm_version;package_count=[int]$final.package_count;install_state=$statePath}
     }
 }finally{
-    if($maintenanceClear){try{Invoke-DistributionStagingCleanup}catch{Write-Warning "Failed to clean installer staging safely: $($_.Exception.Message)"}}
-    if($operationLockInherited){Clear-VllmInheritedOperationLock -Lock $operationLock;$operationLockInherited=$false}
-    if($null-ne$operationLock){Exit-VllmOperationLock -Lock $operationLock;$operationLock=$null}
-    Exit-InstallerLock
+    try{
+        if($maintenanceClear){try{Invoke-DistributionStagingCleanup}catch{Write-Warning "Failed to clean installer staging safely: $($_.Exception.Message)"}}
+        if($operationLockInherited){Clear-VllmInheritedOperationLock -Lock $operationLock;$operationLockInherited=$false}
+    }finally{
+        $operationLockInherited=$false
+        if($null-ne$operationLock){Exit-VllmOperationLock -Lock $operationLock;$operationLock=$null}
+        Exit-InstallerLock
+    }
 }
 if($null-eq$result-or-not[bool]$result.ready){throw 'Top-level installation did not complete.'}
 if($Json){[pscustomobject]$result|ConvertTo-Json -Depth 8}else{Write-Host "vLLM Windows Native installed: $($result.install_root)";Write-Host "Runtime: $($result.runtime_root)";Write-Host "Version: $($result.vllm_version)";Write-Host "State:   $($result.install_state)";Write-Host 'INSTALL_READY'}
