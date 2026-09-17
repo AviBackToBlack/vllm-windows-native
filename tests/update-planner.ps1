@@ -15,9 +15,27 @@ $base=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-planner-'+[guid]::NewGu
 try{
     [void][IO.Directory]::CreateDirectory($base)
     $models=Join-Path $base 'models';[void][IO.Directory]::CreateDirectory($models)
-    $canonical=Get-VllmUpdateReleaseContext -ReleaseManifestPath (Join-Path $repoRoot 'manifests\\release\\v0.27.1-windows-x86_64.json') -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner
+    $canonical=Get-VllmUpdateReleaseContext -ReleaseManifestPath (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner
     if($canonical.DistributionMap.Count-ne27-or$canonical.ManagedMap.Count-ne12-or$canonical.ManagedContractsMap.Count-ne9){throw 'Canonical target release context shape mismatch.'}
     Write-Host 'UPDATE_TARGET_REFERENCE_GRAPH_OK'
+    function Test-ReservedDistributionRejection {
+        param([string]$RelativePath,[string]$Name)
+        $fixtureRoot=Join-Path $base ('reserved-'+$Name)
+        $release=Get-Content (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json
+        $malicious=[pscustomobject][ordered]@{path=$RelativePath;size_bytes=0;sha256=('0'*64)}
+        $release.files=@($malicious)+@($release.files)
+        $manifestPath=Join-Path $fixtureRoot ([string]$release.self_path)
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $manifestPath))
+        $json=$release|ConvertTo-Json -Depth 20
+        $json=$json.Replace([Environment]::NewLine,[string][char]10)+[string][char]10
+        [IO.File]::WriteAllText($manifestPath,$json,[Text.UTF8Encoding]::new($false))
+        Test-ExpectedFailure -Action {Get-VllmUpdateReleaseContext -ReleaseManifestPath $manifestPath -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner|Out-Null} -Name $Name -Expected 'lifecycle-owned control metadata'
+    }
+    Test-ReservedDistributionRejection -RelativePath 'state\update-transaction.json' -Name 'reserved-update-journal-distribution'
+    Test-ReservedDistributionRejection -RelativePath 'work\update-transaction' -Name 'reserved-update-workspace-distribution'
+    Test-ReservedDistributionRejection -RelativePath 'work\update-transaction\payload.bin' -Name 'reserved-update-workspace-descendant'
+    Test-ExpectedFailure -Action {Assert-VllmUpdateNoProtectedOverlap -InstallationRoot $base -ModelsRoot $models -RelativePath 'config.psd1\child' -Label 'Synthetic distribution path'} -Name 'config-subtree-overlap' -Expected 'config.psd1'
+    Write-Host 'UPDATE_LIFECYCLE_DISTRIBUTION_GUARDS_OK'
     $contradictoryRoot=Join-Path $base 'contradictory-target'
     $canonicalManifestPath=Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json'
     $contradictoryRelease=Get-Content $canonicalManifestPath -Raw|ConvertFrom-Json

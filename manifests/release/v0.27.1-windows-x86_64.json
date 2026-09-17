@@ -105,8 +105,8 @@
     },
     {
       "path": "scripts/update-planner.ps1",
-      "size_bytes": 40396,
-      "sha256": "165F68E67E98FE2351FDFE95B7C09A081AA7917EF5CA2659AC74B8C531539F55"
+      "size_bytes": 41639,
+      "sha256": "E8598766916860A798E55B58347A5CC523E31E68309416D1F22DA9781DBC43CC"
     },
     {
       "path": "scripts/env.ps1",

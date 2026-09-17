@@ -143,6 +143,11 @@ function Assert-VllmUpdateNoProtectedOverlap {
     )
     $relative = Assert-VllmSafeRelativePath -RelativePath $RelativePath -Label "$Label path"
     $path = Join-Path $InstallationRoot $relative
+    $config = Join-Path $InstallationRoot 'config.psd1'
+    if ((Test-VllmPathInsideOrEqual -Path $path -Parent $config) -or
+        (Test-VllmPathInsideOrEqual -Path $config -Parent $path)) {
+        throw "$Label must not own or contain protected config.psd1."
+    }
     [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $path -RelativePath $relative)
     if ((Test-VllmPathInsideOrEqual -Path $path -Parent $ModelsRoot) -or
         (Test-VllmPathInsideOrEqual -Path $ModelsRoot -Parent $path) -or
@@ -150,8 +155,28 @@ function Assert-VllmUpdateNoProtectedOverlap {
         (Test-VllmPathInsideOrEqual -Path $ModelsRoot -Parent $path -Physical)) {
         throw "$Label overlaps protected ModelsRoot: $relative"
     }
-    $config = Join-Path $InstallationRoot 'config.psd1'
-    if (Test-VllmUpdatePathEqual -A $path -B $config) { throw "$Label must not own protected config.psd1." }
+}
+
+function Assert-VllmUpdateDistributionNotLifecycleOwned {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][string]$RelativePath
+    )
+    $relative = Assert-VllmSafeRelativePath -RelativePath $RelativePath -Label 'Release distribution path'
+    $path = Join-Path $InstallationRoot $relative
+    foreach ($reserved in @(
+        'state\install-state.json',
+        'state\install-orchestrator.lock',
+        '.vllm-operation.lock',
+        'state\update-transaction.json',
+        'work\update-transaction'
+    )) {
+        $reservedPath = Join-Path $InstallationRoot $reserved
+        if ((Test-VllmPathInsideOrEqual -Path $path -Parent $reservedPath) -or
+            (Test-VllmPathInsideOrEqual -Path $reservedPath -Parent $path)) {
+            throw "Release distribution path overlaps lifecycle-owned control metadata: $relative"
+        }
+    }
 }
 
 function Assert-VllmUpdateManagedTreeNoReparsePoints {
@@ -211,7 +236,9 @@ function Get-VllmUpdateReleaseContext {
     $distribution = @{}
     foreach ($entry in @($release.files)) {
         Assert-VllmLifecycleExactProperties -Value $entry -Expected @('path','size_bytes','sha256') -Label 'Release distribution entry'
-        $owned = Get-VllmUpdatePayloadFile -PayloadRoot $payloadRoot -RelativePath ([string]$entry.path) -Size ([int64]$entry.size_bytes) -Sha256 ([string]$entry.sha256)
+        $entryRelative = Assert-VllmSafeRelativePath -RelativePath ([string]$entry.path) -Label 'Release distribution path'
+        Assert-VllmUpdateDistributionNotLifecycleOwned -InstallationRoot $InstallationRoot -RelativePath $entryRelative
+        $owned = Get-VllmUpdatePayloadFile -PayloadRoot $payloadRoot -RelativePath $entryRelative -Size ([int64]$entry.size_bytes) -Sha256 ([string]$entry.sha256)
         $key = Get-VllmUpdateRelativeKey $owned.RelativePath
         if ($distribution.ContainsKey($key)) { throw "Release manifest contains duplicate distribution path: $($owned.RelativePath)" }
         $distribution[$key] = $owned

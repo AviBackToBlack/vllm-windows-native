@@ -39,7 +39,7 @@ function Invoke-MiniReleaseFixtureCreation{
         'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json','manifests/bootstrap/uv-0.12.13-windows-x86_64.json','manifests/bootstrap/venv-v0.27.1-windows-x86_64.json'
     )
     foreach($rel in $copied){Copy-RepoFile -SourceRelative $rel -SourceRoot $SourceRoot}
-    $venvPath=Join-Path $SourceRoot 'manifests\\bootstrap\\venv-v0.27.1-windows-x86_64.json';$venv=Get-Content $venvPath -Raw|ConvertFrom-Json;$venv.milestone='test-v0.27.1';Write-Utf8Json -Path $venvPath -Value $venv
+    $venvPath=Join-Path $SourceRoot 'manifests\bootstrap\venv-v0.27.1-windows-x86_64.json';$venv=Get-Content $venvPath -Raw|ConvertFrom-Json;$venv.milestone='test-v0.27.1';Write-Utf8Json -Path $venvPath -Value $venv
     $runtimeIn=Join-Path $SourceRoot 'requirements\runtime-v0.27.1.in';$runtimeLock=Join-Path $SourceRoot 'requirements\runtime-v0.27.1.lock.txt'
     $finalIn=Join-Path $SourceRoot 'requirements\vllm-runtime-v0.27.1.in';$finalLock=Join-Path $SourceRoot 'requirements\vllm-runtime-v0.27.1.lock.txt'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $runtimeIn))
@@ -116,7 +116,7 @@ try{
     Assert-FinalReady -Root $root
     foreach($receipt in 'python-bootstrap-3.13.15.json','uv-bootstrap-0.12.13.json','venv-bootstrap-v0.27.1.json','runtime-dependencies-v0.27.1.json','runtime-vllm-v0.27.1.json'){$rp=Join-Path $root ('forensic\'+$receipt);$j=Get-Content $rp -Raw|ConvertFrom-Json;if(-not([string]$j.manifest).StartsWith((Get-VllmNormalizedPath $root),[StringComparison]::OrdinalIgnoreCase)){throw "Receipt points outside installed distribution: $receipt -> $($j.manifest)"}}
     Write-Host 'INSTALL_FRESH_SELF_CONTAINED_OK'
-    $fakeVllm=Join-Path $root 'runtime\\venv\\Scripts\\vllm.exe';Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\\cmd.exe') -Destination $fakeVllm -Force
+    $fakeVllm=Join-Path $root 'runtime\venv\Scripts\vllm.exe';Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $fakeVllm -Force
     $updater=Join-Path $root 'update.ps1'
     $noop=(& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json)|ConvertFrom-Json
     if(-not$noop.ready-or-not$noop.planning_only-or-not$noop.idempotent-or[string]$noop.source.generation_id-ne[string]$state.generation_id){throw 'Same-release updater no-op result mismatch.'}
@@ -131,7 +131,7 @@ try{
     $transitionStateRaw=Get-Content $statePath -Raw
     $transitionPlan=(& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -WhatIf -Json)|ConvertFrom-Json
     if(-not$transitionPlan.ready-or-not$transitionPlan.planning_only-or$transitionPlan.idempotent-or$transitionPlan.counts.distribution_replace-lt1-or$transitionPlan.counts.distribution_add-lt1-or$transitionPlan.counts.managed_replace-lt1){throw 'Mutating update WhatIf plan did not classify the synthetic target as expected.'}
-    if((Get-Content $statePath -Raw)-ne$transitionStateRaw-or(Test-Path (Join-Path $root 'state\\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\\update-transaction'))){throw 'Mutating update WhatIf changed live transaction/install state.'}
+    if((Get-Content $statePath -Raw)-ne$transitionStateRaw-or(Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Mutating update WhatIf changed live transaction/install state.'}
     Write-Host 'UPDATE_MUTATING_WHATIF_PLAN_OK'
     Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Json|Out-Null} -Name 'updater-live-activation-deferred' -ExpectedMessage 'planning only'
     if((Get-Content $statePath -Raw)-ne$transitionStateRaw){throw 'Deferred live update attempt mutated install state.'}
