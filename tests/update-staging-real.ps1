@@ -51,6 +51,7 @@ foreach($required in @($common,$stagingHelper)){
 
 $pythonManifest=Get-Content (Join-Path $InstallationRoot 'manifests\bootstrap\cpython-3.13.15-windows-x86_64.json') -Raw|ConvertFrom-Json
 $uvManifest=Get-Content (Join-Path $InstallationRoot 'manifests\bootstrap\uv-0.12.13-windows-x86_64.json') -Raw|ConvertFrom-Json
+$venvManifest=Get-Content (Join-Path $InstallationRoot 'manifests\bootstrap\venv-v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json
 $pythonRoot=Join-Path $InstallationRoot ([string]$pythonManifest.install.managed_relative_path)
 $uvRoot=Join-Path $InstallationRoot ([string]$uvManifest.install.managed_relative_path)
 $runtimeRoot=Join-Path $InstallationRoot 'runtime\venv'
@@ -61,7 +62,7 @@ try{
     [void](Initialize-VllmUpdateStagingDirectories -Layout $layout)
     $pythonStageResult=Copy-VllmUpdateManagedTreeStage -Layout $layout -SourceRoot $pythonRoot -FinalRelativePath ([string]$pythonManifest.install.managed_relative_path) -Role python -ExpectedPythonVersion ([string]$pythonManifest.version)
     $uvStageResult=Copy-VllmUpdateManagedTreeStage -Layout $layout -SourceRoot $uvRoot -FinalRelativePath ([string]$uvManifest.install.managed_relative_path) -Role uv -ExpectedUvVersion ([string]$uvManifest.version) -ExpectedUvCommitPrefix ([string]$uvManifest.acceptance.expected_commit_prefix)
-    $runtimeStageResult=Copy-VllmUpdateManagedTreeStage -Layout $layout -SourceRoot $runtimeRoot -FinalRelativePath 'runtime\venv' -Role runtime -ExpectedPythonVersion ([string]$pythonManifest.version) -ExpectedBasePythonRoot $pythonRoot
+    $runtimeStageResult=Copy-VllmUpdateManagedTreeStage -Layout $layout -SourceRoot $runtimeRoot -FinalRelativePath 'runtime\venv' -Role runtime -ExpectedPythonVersion ([string]$pythonManifest.version) -ExpectedPointerBits ([int]$venvManifest.acceptance.expected_pointer_bits) -ExpectedBasePythonRoot $pythonRoot
 
     $pythonStage=[string]$pythonStageResult.StagePath
     $uvStage=[string]$uvStageResult.StagePath
@@ -69,6 +70,10 @@ try{
     $pythonIdentity=$pythonStageResult.TreeIdentity
     $uvIdentity=$uvStageResult.TreeIdentity
     $runtimeIdentity=$runtimeStageResult.TreeIdentity
+    if(Test-VllmUpdateRelocatableVenvTree -Root $runtimeStage -ExpectedPythonVersion ([string]$pythonManifest.version) -ExpectedPointerBits 32 -ExpectedBasePythonRoot $pythonRoot){
+        throw 'Relocatable runtime validator accepted an incorrect pointer width.'
+    }
+    Write-Host 'UPDATE_POINTER_WIDTH_GUARD_OK'
     Assert-RelocationProbeLauncher -Root $runtimeStage -Label 'Staged runtime'
     Assert-NoRuntimeRootLeakInTextScripts -Root $runtimeStage -ForbiddenRoots @($runtimeRoot,$runtimeStage)
     if(-not(Test-VllmUpdateTreeIdentityEqual -A $runtimeIdentity -B (Get-VllmUpdateTreeIdentity -Root $runtimeStage))){
@@ -92,7 +97,7 @@ try{
     Write-Host 'UPDATE_CONSOLE_LAUNCHER_RELOCATION_OK'
     if(-not(Test-VllmUpdatePortablePythonTree -Root $pythonProbe -ExpectedVersion ([string]$pythonManifest.version))){throw 'Relocated portable Python failed final-location semantics.'}
     if(-not(Test-VllmUpdatePortableUvTree -Root $uvProbe -ExpectedVersion ([string]$uvManifest.version) -ExpectedCommitPrefix ([string]$uvManifest.acceptance.expected_commit_prefix))){throw 'Relocated portable uv failed final-location semantics.'}
-    if(-not(Test-VllmUpdateRelocatableVenvTree -Root $runtimeProbe -ExpectedPythonVersion ([string]$pythonManifest.version) -ExpectedBasePythonRoot $pythonRoot)){throw 'Relocated runtime venv failed final-location semantics.'}
+    if(-not(Test-VllmUpdateRelocatableVenvTree -Root $runtimeProbe -ExpectedPythonVersion ([string]$pythonManifest.version) -ExpectedPointerBits ([int]$venvManifest.acceptance.expected_pointer_bits) -ExpectedBasePythonRoot $pythonRoot)){throw 'Relocated runtime venv failed final-location semantics.'}
 
     $dependencyReceipt=Get-Content (Join-Path $InstallationRoot 'forensic\runtime-dependencies-v0.27.1.json') -Raw|ConvertFrom-Json
     $runtimeReceipt=Get-Content (Join-Path $InstallationRoot 'forensic\runtime-vllm-v0.27.1.json') -Raw|ConvertFrom-Json

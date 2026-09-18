@@ -153,7 +153,7 @@ try{
 
     if(Test-VllmUpdatePortablePythonTree -Root $probe -ExpectedVersion '0.0.0'){throw 'Synthetic tree unexpectedly passed portable Python semantics.'}
     if(Test-VllmUpdatePortableUvTree -Root $probe -ExpectedVersion '0.0.0' -ExpectedCommitPrefix 'deadbeef'){throw 'Synthetic tree unexpectedly passed portable uv semantics.'}
-    if(Test-VllmUpdateRelocatableVenvTree -Root $probe -ExpectedPythonVersion '0.0.0' -ExpectedBasePythonRoot $installation){throw 'Synthetic tree unexpectedly passed relocatable venv semantics.'}
+    if(Test-VllmUpdateRelocatableVenvTree -Root $probe -ExpectedPythonVersion '0.0.0' -ExpectedPointerBits 64 -ExpectedBasePythonRoot $installation){throw 'Synthetic tree unexpectedly passed relocatable venv semantics.'}
     Write-Host 'UPDATE_ROLE_VALIDATOR_NEGATIVE_OK'
     Write-Host 'UPDATE_STAGING_TEST_OK'
 }

@@ -124,7 +124,8 @@ function Copy-VllmUpdateManagedTreeStage {
         [string]$ExpectedPythonVersion,
         [string]$ExpectedUvVersion,
         [string]$ExpectedUvCommitPrefix,
-        [string]$ExpectedBasePythonRoot
+        [string]$ExpectedBasePythonRoot,
+        [int]$ExpectedPointerBits
     )
     [void](Assert-VllmUpdateStagingWorkspace -Layout $Layout)
     if(-not(Test-Path -LiteralPath $Layout.ManagedRoot -PathType Container)){throw "Managed staging root is missing: $($Layout.ManagedRoot)"}
@@ -150,8 +151,8 @@ function Copy-VllmUpdateManagedTreeStage {
             if(-not(Test-VllmUpdatePortableUvTree -Root $stage.StagePath -ExpectedVersion $ExpectedUvVersion -ExpectedCommitPrefix $ExpectedUvCommitPrefix)){throw 'Staged portable uv failed semantic validation.'}
         }
         'runtime' {
-            if([string]::IsNullOrWhiteSpace($ExpectedPythonVersion)-or[string]::IsNullOrWhiteSpace($ExpectedBasePythonRoot)){throw 'Runtime staging validation requires Python version and final base Python root.'}
-            if(-not(Test-VllmUpdateRelocatableVenvTree -Root $stage.StagePath -ExpectedPythonVersion $ExpectedPythonVersion -ExpectedBasePythonRoot $ExpectedBasePythonRoot)){throw 'Staged runtime venv failed semantic validation.'}
+            if([string]::IsNullOrWhiteSpace($ExpectedPythonVersion)-or[string]::IsNullOrWhiteSpace($ExpectedBasePythonRoot)-or$ExpectedPointerBits-le0){throw 'Runtime staging validation requires Python version, pointer width, and final base Python root.'}
+            if(-not(Test-VllmUpdateRelocatableVenvTree -Root $stage.StagePath -ExpectedPythonVersion $ExpectedPythonVersion -ExpectedPointerBits $ExpectedPointerBits -ExpectedBasePythonRoot $ExpectedBasePythonRoot)){throw 'Staged runtime venv failed semantic validation.'}
         }
     }
 
@@ -214,7 +215,7 @@ function Get-VllmUpdateManagedStagingPlan {
     $retiredPython=@($Plan.managed|Where-Object{$_.Role-eq'python'-and$_.Class-eq'retire'})
     $reusedRuntime=@($Plan.managed|Where-Object{$_.Role-eq'runtime'-and$_.Class-eq'reuse'})
     if($retiredPython.Count-gt0-and$reusedRuntime.Count-gt0){
-        throw 'A reused runtime cannot outlive a retired Python base; keep the source Python managed path owned by the target or rebuild the runtime against the target Python path.'
+        throw 'A reused runtime cannot outlive a retired Python base; keep the source Python managed path owned by the target. Python managed-path relocation is not supported by the SM-18C staging contract.'
     }
     $result=New-Object System.Collections.Generic.List[object]
     foreach($item in @($Plan.managed|Sort-Object RelativePath)){
@@ -266,6 +267,7 @@ function Test-VllmUpdateRelocatableVenvTree {
     param(
         [Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][string]$ExpectedPythonVersion,
+        [Parameter(Mandatory)][int]$ExpectedPointerBits,
         [Parameter(Mandatory)][string]$ExpectedBasePythonRoot
     )
     try{
@@ -276,11 +278,11 @@ function Test-VllmUpdateRelocatableVenvTree {
         $lines=@(Get-Content -LiteralPath $cfg)
         if($lines-notcontains'relocatable = true'){return $false}
         if(Test-Path -LiteralPath (Join-Path $root 'Scripts\activate.csh') -PathType Leaf){return $false}
-        $probe=(& $python -I -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}|{sys.prefix}|{sys.base_prefix}')" 2>&1|Out-String).Trim()
+        $probe=(& $python -I -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}|{64 if sys.maxsize > 2**32 else 32}|{sys.prefix}|{sys.base_prefix}')" 2>&1|Out-String).Trim()
         if($LASTEXITCODE-ne0){return $false}
         $parts=$probe.Split('|')
-        if($parts.Count-ne3-or$parts[0]-ne$ExpectedPythonVersion){return $false}
-        if((Get-VllmNormalizedPath $parts[1]) -ne $root){return $false}
-        return((Get-VllmNormalizedPath $parts[2])-eq(Get-VllmNormalizedPath $ExpectedBasePythonRoot))
+        if($parts.Count-ne4-or$parts[0]-ne$ExpectedPythonVersion-or[int]$parts[1]-ne$ExpectedPointerBits){return $false}
+        if((Get-VllmNormalizedPath $parts[2]) -ne $root){return $false}
+        return((Get-VllmNormalizedPath $parts[3])-eq(Get-VllmNormalizedPath $ExpectedBasePythonRoot))
     }catch{return $false}
 }

@@ -110,8 +110,8 @@
     },
     {
       "path": "scripts/update-staging.ps1",
-      "size_bytes": 16896,
-      "sha256": "3512FF56BC7EFA3751FD90D5E03C0A53E474B162EF66772FAC4E1966CB4AA37E"
+      "size_bytes": 17175,
+      "sha256": "3E4C0493F6E4D5C2B4DDE0232335F57227D7E03D99A662B403A83C842391E65C"
     },
     {
       "path": "scripts/env.ps1",
