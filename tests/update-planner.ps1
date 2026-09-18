@@ -11,6 +11,24 @@ function Get-TestRelease{param([string]$Name);[pscustomobject]@{release=$Name;pl
 function Get-TestDistribution{param([string]$Path,[string]$Hash,[int64]$Size=1);[pscustomobject]@{RelativePath=$Path;Size=$Size;Sha256=$Hash}}
 function Get-TestContract{param([string]$Path,[string]$Role,[string]$Contract);[pscustomobject]@{RelativePath=$Path;Role=$Role;Contract=$Contract}}
 function Get-TestMap{param([object[]]$Values);$m=@{};foreach($v in $Values){$m[(Get-VllmUpdateRelativeKey ([string]$v.RelativePath))]=$v};$m}
+function Copy-TestReleaseFiles{
+    param([Parameter(Mandatory)]$Release,[Parameter(Mandatory)][string]$Root)
+    foreach($entry in @($Release.files)){
+        $src=Join-Path $repoRoot ([string]$entry.path)
+        $dst=Join-Path $Root ([string]$entry.path)
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $dst))
+        Copy-Item -LiteralPath $src -Destination $dst
+    }
+}
+function Write-TestReleaseManifest{
+    param([Parameter(Mandatory)]$Release,[Parameter(Mandatory)][string]$Root)
+    $path=Join-Path $Root ([string]$Release.self_path)
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+    $json=$Release|ConvertTo-Json -Depth 20
+    $json=$json.Replace([Environment]::NewLine,[string][char]10)+[string][char]10
+    [IO.File]::WriteAllText($path,$json,[Text.UTF8Encoding]::new($false))
+    return $path
+}
 $base=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-planner-'+[guid]::NewGuid().ToString('N'))
 try{
     [void][IO.Directory]::CreateDirectory($base)
@@ -36,6 +54,29 @@ try{
     Test-ReservedDistributionRejection -RelativePath 'work\update-transaction\payload.bin' -Name 'reserved-update-workspace-descendant'
     Test-ExpectedFailure -Action {Assert-VllmUpdateNoProtectedOverlap -InstallationRoot $base -ModelsRoot $models -RelativePath 'config.psd1\child' -Label 'Synthetic distribution path'} -Name 'config-subtree-overlap' -Expected 'config.psd1'
     Write-Host 'UPDATE_LIFECYCLE_DISTRIBUTION_GUARDS_OK'
+
+    $selfRoot=Join-Path $base 'reserved-self-path'
+    $selfRelease=Get-Content (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json
+    Copy-TestReleaseFiles -Release $selfRelease -Root $selfRoot
+    $selfRelease.self_path='state\update-transaction.json'
+    $selfManifest=Write-TestReleaseManifest -Release $selfRelease -Root $selfRoot
+    Test-ExpectedFailure -Action {Get-VllmUpdateReleaseContext -ReleaseManifestPath $selfManifest -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner|Out-Null} -Name 'reserved-self-path-journal' -Expected 'self_path overlaps lifecycle-owned'
+    Write-Host 'UPDATE_SELF_PATH_LIFECYCLE_GUARD_OK'
+
+    function Test-ReservedContractRejection {
+        param([string]$Field,[string]$RelativePath,[string]$Name)
+        $fixtureRoot=Join-Path $base ('reserved-contract-'+$Name)
+        $release=Get-Content (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json
+        Copy-TestReleaseFiles -Release $release -Root $fixtureRoot
+        $old=[string]$release.orchestration.$Field
+        $release.orchestration.$Field=$RelativePath
+        $release.managed_paths=@($release.managed_paths|ForEach-Object{if([string]$_ -eq $old){$RelativePath}else{[string]$_}})
+        $manifest=Write-TestReleaseManifest -Release $release -Root $fixtureRoot
+        Test-ExpectedFailure -Action {Get-VllmUpdateReleaseContext -ReleaseManifestPath $manifest -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner|Out-Null} -Name $Name -Expected 'managed path overlaps lifecycle-owned'
+    }
+    Test-ReservedContractRejection -Field 'python_receipt' -RelativePath 'state\update-transaction.json' -Name 'reserved-contract-journal'
+    Test-ReservedContractRejection -Field 'uv_receipt' -RelativePath 'work\update-transaction\receipt.json' -Name 'reserved-contract-workspace-descendant'
+    Write-Host 'UPDATE_MANAGED_CONTRACT_LIFECYCLE_GUARDS_OK'
     $contradictoryRoot=Join-Path $base 'contradictory-target'
     $canonicalManifestPath=Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json'
     $contradictoryRelease=Get-Content $canonicalManifestPath -Raw|ConvertFrom-Json
