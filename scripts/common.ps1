@@ -194,8 +194,12 @@ namespace VllmWindowsNative {
         private const uint INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
         private const int ERROR_FILE_NOT_FOUND = 2;
         private const int ERROR_PATH_NOT_FOUND = 3;
+        private const int ERROR_ACCESS_DENIED = 5;
+        private const int ERROR_SHARING_VIOLATION = 32;
         private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
         private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+        private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+        private const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern SafeFileHandle CreateFile(
@@ -228,6 +232,14 @@ namespace VllmWindowsNative {
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetFileInformationByHandle(
             SafeFileHandle hFile, out ByHandleFileInformation fileInformation);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool FlushFileBuffers(SafeFileHandle hFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
 
         private static SafeFileHandle OpenPath(string path) {
             SafeFileHandle handle = CreateFile(
@@ -282,6 +294,24 @@ namespace VllmWindowsNative {
             return info.NumberOfLinks;
         }
 
+        public static void FlushFile(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
+            if (!FlushFileBuffers(handle)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        public static void MoveReplaceWriteThrough(string source, string destination) {
+            const int attempts = 100;
+            for (int attempt = 0; attempt < attempts; attempt++) {
+                if (MoveFileEx(source, destination, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return;
+                int error = Marshal.GetLastWin32Error();
+                if (error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION) {
+                    throw new Win32Exception(error);
+                }
+                if (attempt == attempts - 1) throw new Win32Exception(error);
+                System.Threading.Thread.Sleep(5);
+            }
+        }
+
         public static long GetAttributesNoFollow(string path) {
             uint attributes = GetFileAttributes(path);
             if (attributes != INVALID_FILE_ATTRIBUTES) return (long)attributes;
@@ -294,6 +324,75 @@ namespace VllmWindowsNative {
 '@
 }
 
+
+function Write-VllmAtomicJsonFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$Value,
+        [ValidateRange(2,64)][int]$Depth = 24,
+        [scriptblock]$Validate,
+        [ValidateSet('None','BeforePublish','AfterPublish')][string]$FaultPoint = 'None'
+    )
+
+    $destination = Get-VllmNormalizedPath $Path
+    $parent = Split-Path -Parent $destination
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "Atomic JSON parent directory is missing: $parent"
+    }
+    $entry = Get-VllmPathEntryInfo -Path $destination
+    if ($entry.Exists -and ($entry.IsDirectory -or $entry.IsReparsePoint)) {
+        throw "Atomic JSON destination is not a safe regular file path: $destination"
+    }
+
+    $temporary = Join-Path $parent ('.' + [IO.Path]::GetFileName($destination) + '.partial.' + [guid]::NewGuid().ToString('N'))
+    if ((Get-VllmPathEntryInfo -Path $temporary).Exists) {
+        throw "Atomic JSON temporary path unexpectedly exists: $temporary"
+    }
+
+    try {
+        $json = $Value | ConvertTo-Json -Depth $Depth
+        $json = $json.Replace([Environment]::NewLine,[string][char]10) + [string][char]10
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+        $stream = [IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        try {
+            $stream.Write($bytes,0,$bytes.Length)
+            $stream.Flush()
+            [VllmWindowsNative.NativePath]::FlushFile($stream.SafeFileHandle)
+        } finally {
+            $stream.Dispose()
+        }
+
+        $tempEntry = Get-VllmPathEntryInfo -Path $temporary
+        if (-not $tempEntry.Exists -or $tempEntry.IsDirectory -or $tempEntry.IsReparsePoint) {
+            throw "Atomic JSON temporary file is unsafe: $temporary"
+        }
+        $candidate = Get-Content -LiteralPath $temporary -Raw | ConvertFrom-Json
+        if ($null -eq $candidate) { throw 'Atomic JSON candidate parsed to null.' }
+        if ($null -ne $Validate) { & $Validate $candidate $temporary }
+
+        if ($FaultPoint -eq 'BeforePublish') {
+            throw 'FAULT_INJECTED:BeforePublish'
+        }
+
+        [VllmWindowsNative.NativePath]::MoveReplaceWriteThrough(
+            (ConvertTo-VllmExtendedPath $temporary),
+            (ConvertTo-VllmExtendedPath $destination)
+        )
+
+        if ($FaultPoint -eq 'AfterPublish') {
+            throw 'FAULT_INJECTED:AfterPublish'
+        }
+
+        $published = Get-Content -LiteralPath $destination -Raw | ConvertFrom-Json
+        if ($null -eq $published) { throw 'Atomic JSON publication parsed to null.' }
+        if ($null -ne $Validate) { & $Validate $published $destination }
+        return $published
+    } finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 if (-not ('VllmWindowsNative.NativeEnvironment' -as [type])) {
     Add-Type -TypeDefinition @'

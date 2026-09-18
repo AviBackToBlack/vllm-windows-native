@@ -45,7 +45,9 @@
     "forensic/runtime-vllm-v0.27.1.json",
     "state/install-state.json",
     "state/install-orchestrator.lock",
-    ".vllm-operation.lock"
+    ".vllm-operation.lock",
+    "state/update-transaction.json",
+    "work/update-transaction"
   ],
   "files": [
     {
@@ -55,8 +57,8 @@
     },
     {
       "path": "update.ps1",
-      "size_bytes": 5778,
-      "sha256": "9C34B35642B79EDEE7D4C6A1702FBC14A0631D66946256E9EC5ACEE6E5398F9A"
+      "size_bytes": 6880,
+      "sha256": "EA331C444C8B720A4863F6E543B97B08D3FA924FB01022340240E565EE54E310"
     },
     {
       "path": "uninstall.ps1",
@@ -95,8 +97,8 @@
     },
     {
       "path": "scripts/common.ps1",
-      "size_bytes": 31563,
-      "sha256": "635EC028DCE28F9A073BDF318EE9171D27E353D59870A3A198834E535ECFF3F3"
+      "size_bytes": 36077,
+      "sha256": "4A7D3640B57C7CABEE3D72BF03EC148BF7834F368807B3052BE3BA59E7C0B9EF"
     },
     {
       "path": "scripts/lifecycle.ps1",
@@ -105,13 +107,18 @@
     },
     {
       "path": "scripts/update-planner.ps1",
-      "size_bytes": 42012,
-      "sha256": "E22FFFFB99DCEB28A6CAFE952449126FB2B07D9B0E094AE05881F7CFCB665746"
+      "size_bytes": 42241,
+      "sha256": "86F5486FAC58556013350C1F65929766A62EB144D67FED3017AA62D82D98BE5E"
     },
     {
       "path": "scripts/update-staging.ps1",
       "size_bytes": 17175,
       "sha256": "3E4C0493F6E4D5C2B4DDE0232335F57227D7E03D99A662B403A83C842391E65C"
+    },
+    {
+      "path": "scripts/update-transaction.ps1",
+      "size_bytes": 41880,
+      "sha256": "0321927AF38C4FF052D69963C4F02EF542851F5D5D63E7B721CFEDA520A30E17"
     },
     {
       "path": "scripts/env.ps1",
