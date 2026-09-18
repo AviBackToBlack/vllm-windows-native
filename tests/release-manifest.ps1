@@ -13,7 +13,7 @@ $runtime=Get-Content -LiteralPath $runtimePath -Raw|ConvertFrom-Json
 $accepted=Get-Content -LiteralPath $acceptedPath -Raw|ConvertFrom-Json
 if([int]$release.schema_version -ne 1 -or [string]$release.component -ne 'runtime-release' -or [string]$release.platform -ne 'windows-x86_64'){throw 'Unsupported release manifest identity.'}
 if([string]$release.self_path -ne 'manifests/release/v0.27.1-windows-x86_64.json'){throw 'Unexpected release manifest self_path.'}
-if(@($release.files).Count -ne 25){throw "Expected 25 owned distribution files, got $(@($release.files).Count)."}
+if(@($release.files).Count -ne 26){throw "Expected 26 owned distribution files, got $(@($release.files).Count)."}
 $seen=@{}
 foreach($entry in @($release.files)){
     $relative=Assert-VllmSafeRelativePath -RelativePath ([string]$entry.path) -Label 'Release file path'
@@ -22,7 +22,7 @@ foreach($entry in @($release.files)){
     $file=Join-Path $repoRoot $relative;if(-not(Test-Path -LiteralPath $file -PathType Leaf)){throw "Release file missing: $relative"}
     $item=Get-Item -LiteralPath $file;$hash=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
     if($item.Length -ne [int64]$entry.size_bytes -or $hash -ne [string]$entry.sha256){throw "Release file identity mismatch: $relative"}
-}foreach($required in @('install.ps1','start.ps1','update.ps1','uninstall.ps1','scripts/common.ps1','scripts/lifecycle.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md')){if(-not$seen.ContainsKey($required.ToLowerInvariant())){throw "Required distribution file missing from release manifest: $required"}}
+}foreach($required in @('install.ps1','start.ps1','update.ps1','uninstall.ps1','scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md')){if(-not$seen.ContainsKey($required.ToLowerInvariant())){throw "Required distribution file missing from release manifest: $required"}}
 if([string]$release.upstream.repository -ne [string]$accepted.upstream.repository -or [string]$release.upstream.tag -ne [string]$accepted.upstream.tag -or [string]$release.upstream.commit -ne [string]$accepted.upstream.commit){throw 'Release upstream identity does not match accepted runtime provenance.'}
 if([string]$release.windows_patchset.implementation_commit -ne [string]$accepted.accepted_delta.implementation_commit -or [string]$release.windows_patchset.tree -ne [string]$accepted.accepted_delta.tree -or [string]$release.windows_patchset.patch_sha256 -ne [string]$accepted.accepted_delta.patch_sha256){throw 'Release Windows patchset identity does not match accepted runtime provenance.'}
 if([string]$release.wheel.filename -ne [string]$runtime.project_wheel.filename -or [string]$release.wheel.version -ne [string]$runtime.project_wheel.version -or [int64]$release.wheel.size_bytes -ne [int64]$runtime.project_wheel.size_bytes -or [string]$release.wheel.sha256 -ne [string]$runtime.project_wheel.sha256){throw 'Release wheel identity does not match managed runtime contract.'}

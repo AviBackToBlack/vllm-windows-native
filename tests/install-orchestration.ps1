@@ -35,10 +35,11 @@ function Invoke-MiniReleaseFixtureCreation{
     $copied=@(
         'install.ps1','update.ps1','uninstall.ps1','start.ps1',
         'bootstrap-python.ps1','bootstrap-uv.ps1','bootstrap-venv.ps1','bootstrap-dependencies.ps1','bootstrap-vllm.ps1',
-        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
+        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
         'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json','manifests/bootstrap/uv-0.12.13-windows-x86_64.json','manifests/bootstrap/venv-v0.27.1-windows-x86_64.json'
     )
     foreach($rel in $copied){Copy-RepoFile -SourceRelative $rel -SourceRoot $SourceRoot}
+    $venvPath=Join-Path $SourceRoot 'manifests\bootstrap\venv-v0.27.1-windows-x86_64.json';$venv=Get-Content $venvPath -Raw|ConvertFrom-Json;$venv.milestone='test-v0.27.1';Write-Utf8Json -Path $venvPath -Value $venv
     $runtimeIn=Join-Path $SourceRoot 'requirements\runtime-v0.27.1.in';$runtimeLock=Join-Path $SourceRoot 'requirements\runtime-v0.27.1.lock.txt'
     $finalIn=Join-Path $SourceRoot 'requirements\vllm-runtime-v0.27.1.in';$finalLock=Join-Path $SourceRoot 'requirements\vllm-runtime-v0.27.1.lock.txt'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $runtimeIn))
@@ -47,12 +48,13 @@ function Invoke-MiniReleaseFixtureCreation{
     $packageMap=Join-Path $SourceRoot 'manifests\runtime\vllm-runtime-packages-v0.27.1-windows-x86_64.json'
     Write-Utf8Json -Path $packageMap -Value ([ordered]@{colorama='0.4.6'})
     $depPath=Join-Path $SourceRoot 'manifests\runtime\dependencies-v0.27.1-windows-x86_64.json'
-    $dep=Get-Content $canonicalDependencyManifest -Raw|ConvertFrom-Json
+    $dep=Get-Content $canonicalDependencyManifest -Raw|ConvertFrom-Json;$dep.milestone='test-v0.27.1'
+    $di=Get-Item $runtimeIn;$dep.input.path='requirements/runtime-v0.27.1.in';$dep.input.size_bytes=$di.Length;$dep.input.sha256=(Get-FileHash $runtimeIn -Algorithm SHA256).Hash
     $dep.accepted_packages=[pscustomobject][ordered]@{colorama='0.4.6'};$dep.allowed_extra_distributions=@('vllm');$dep.accepted_binary_artifacts=[pscustomobject]@{}
     $li=Get-Item $runtimeLock;$dep.lock.path='requirements/runtime-v0.27.1.lock.txt';$dep.lock.size_bytes=$li.Length;$dep.lock.sha256=(Get-FileHash $runtimeLock -Algorithm SHA256).Hash;$dep.lock.package_count=1
     Write-Utf8Json -Path $depPath -Value $dep
     $finalPath=Join-Path $SourceRoot 'manifests\runtime\vllm-runtime-v0.27.1-windows-x86_64.json'
-    $final=Get-Content $canonicalFinalManifest -Raw|ConvertFrom-Json
+    $final=Get-Content $canonicalFinalManifest -Raw|ConvertFrom-Json;$final.milestone='test-v0.27.1'
     $final.predecessor.manifest='manifests/runtime/dependencies-v0.27.1-windows-x86_64.json';$final.predecessor.required_package_count=1
     $fi=Get-Item $finalIn;$final.input.path='requirements/vllm-runtime-v0.27.1.in';$final.input.size_bytes=$fi.Length;$final.input.sha256=(Get-FileHash $finalIn -Algorithm SHA256).Hash
     $fl=Get-Item $finalLock;$final.lock.path='requirements/vllm-runtime-v0.27.1.lock.txt';$final.lock.size_bytes=$fl.Length;$final.lock.sha256=(Get-FileHash $finalLock -Algorithm SHA256).Hash;$final.lock.package_count=1
@@ -81,6 +83,18 @@ function Invoke-MiniReleaseFixtureCreation{
     $releasePath=Join-Path $SourceRoot 'manifests\release\v0.27.1-windows-x86_64.json';Write-Utf8Json -Path $releasePath -Value $release
     return $releasePath
 }
+function Convert-MiniReleaseToTransitionTarget{
+    param([string]$SourceRoot,[string]$ReleasePath,[string]$TargetRelease)
+    foreach($rel in @('manifests/bootstrap/venv-v0.27.1-windows-x86_64.json','manifests/runtime/dependencies-v0.27.1-windows-x86_64.json','manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json')){
+        $path=Join-Path $SourceRoot $rel;$manifest=Get-Content $path -Raw|ConvertFrom-Json;$manifest.milestone=$TargetRelease;Write-Utf8Json -Path $path -Value $manifest
+    }
+    [IO.File]::AppendAllText((Join-Path $SourceRoot 'start.ps1'),"# synthetic target delta`n",[Text.UTF8Encoding]::new($false))
+    $added=Join-Path $SourceRoot 'fixture-target-added.txt';[IO.File]::WriteAllText($added,"target-only`n",[Text.UTF8Encoding]::new($false))
+    $release=Get-Content $ReleasePath -Raw|ConvertFrom-Json;$release.release=$TargetRelease
+    foreach($entry in @($release.files)){$f=Get-Item (Join-Path $SourceRoot ([string]$entry.path));$entry.size_bytes=[int64]$f.Length;$entry.sha256=(Get-FileHash $f.FullName -Algorithm SHA256).Hash}
+    $fi=Get-Item $added;$release.files=@($release.files)+[pscustomobject][ordered]@{path='fixture-target-added.txt';size_bytes=[int64]$fi.Length;sha256=(Get-FileHash $fi.FullName -Algorithm SHA256).Hash}
+    Write-Utf8Json -Path $ReleasePath -Value $release
+}
 function Assert-FinalReady{param([string]$Root);$py=Join-Path $Root 'runtime\venv\Scripts\python.exe';$rows=@(& $py -I -c "import importlib.metadata as m; print('\n'.join(sorted((d.metadata['Name'].lower().replace('_','-')+'=='+d.version) for d in m.distributions() if d.metadata.get('Name'))))");if($LASTEXITCODE-ne0-or$rows.Count-ne2-or$rows[0]-ne'colorama==0.4.6'-or$rows[1]-ne'vllm==0.0.1'){throw "Unexpected installed distributions: $($rows -join ', ')"}}
 $outer=@{};foreach($e in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()){$outer[[string]$e.Key]=[string]$e.Value}
 if([string]::IsNullOrWhiteSpace($ScratchRoot)){$scratch=[IO.Path]::GetTempPath()}else{$scratch=[IO.Path]::GetFullPath($ScratchRoot);[void][IO.Directory]::CreateDirectory($scratch)}
@@ -89,6 +103,7 @@ try{
     [void][IO.Directory]::CreateDirectory($base)
     $source=Join-Path $base 'source';$root=Join-Path $base 'installed';$wheelDir=Join-Path $base 'wheel';[void][IO.Directory]::CreateDirectory($wheelDir)
     $wheel=Join-Path $wheelDir 'vllm-0.0.1-py3-none-any.whl';Write-TestWheel $wheel;[void](Invoke-MiniReleaseFixtureCreation -SourceRoot $source -WheelPath $wheel)
+    $targetSource=Join-Path $base 'target-source';$targetReleasePath=Invoke-MiniReleaseFixtureCreation -SourceRoot $targetSource -WheelPath $wheel;Convert-MiniReleaseToTransitionTarget -SourceRoot $targetSource -ReleasePath $targetReleasePath -TargetRelease 'test-v0.27.2'
     $installer=Join-Path $source 'install.ps1'
     $before=@{};foreach($e in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()){$before[[string]$e.Key]=[string]$e.Value}
     $r=(& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json)|ConvertFrom-Json
@@ -101,6 +116,26 @@ try{
     Assert-FinalReady -Root $root
     foreach($receipt in 'python-bootstrap-3.13.15.json','uv-bootstrap-0.12.13.json','venv-bootstrap-v0.27.1.json','runtime-dependencies-v0.27.1.json','runtime-vllm-v0.27.1.json'){$rp=Join-Path $root ('forensic\'+$receipt);$j=Get-Content $rp -Raw|ConvertFrom-Json;if(-not([string]$j.manifest).StartsWith((Get-VllmNormalizedPath $root),[StringComparison]::OrdinalIgnoreCase)){throw "Receipt points outside installed distribution: $receipt -> $($j.manifest)"}}
     Write-Host 'INSTALL_FRESH_SELF_CONTAINED_OK'
+    $fakeVllm=Join-Path $root 'runtime\venv\Scripts\vllm.exe';Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $fakeVllm -Force
+    $updater=Join-Path $root 'update.ps1'
+    $noop=(& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json)|ConvertFrom-Json
+    if(-not$noop.ready-or-not$noop.planning_only-or-not$noop.idempotent-or[string]$noop.source.generation_id-ne[string]$state.generation_id){throw 'Same-release updater no-op result mismatch.'}
+    if((Get-Content $statePath -Raw)-ne$stateRaw){throw 'Same-release updater no-op mutated install state.'}
+    Write-Host 'UPDATE_SAME_RELEASE_NOOP_OK'
+    $rogue=Start-Process -FilePath $fakeVllm -ArgumentList '/c','ping 127.0.0.1 -n 30 > nul' -WindowStyle Hidden -PassThru
+    try{
+        if($rogue.HasExited){throw 'Synthetic managed runtime process exited before update process-scan test.'}
+        Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-managed-process-scan' -ExpectedMessage 'Managed runtime process is still running'
+    }finally{if(-not$rogue.HasExited){& taskkill.exe /PID $rogue.Id /T /F | Out-Null};$rogue.Dispose()}
+    Write-Host 'UPDATE_MANAGED_PROCESS_SCAN_OK'
+    $transitionStateRaw=Get-Content $statePath -Raw
+    $transitionPlan=(& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -WhatIf -Json)|ConvertFrom-Json
+    if(-not$transitionPlan.ready-or-not$transitionPlan.planning_only-or$transitionPlan.idempotent-or$transitionPlan.counts.distribution_replace-lt1-or$transitionPlan.counts.distribution_add-lt1-or$transitionPlan.counts.managed_replace-lt1){throw 'Mutating update WhatIf plan did not classify the synthetic target as expected.'}
+    if((Get-Content $statePath -Raw)-ne$transitionStateRaw-or(Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Mutating update WhatIf changed live transaction/install state.'}
+    Write-Host 'UPDATE_MUTATING_WHATIF_PLAN_OK'
+    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Json|Out-Null} -Name 'updater-live-activation-deferred' -ExpectedMessage 'planning only'
+    if((Get-Content $statePath -Raw)-ne$transitionStateRaw){throw 'Deferred live update attempt mutated install state.'}
+    Write-Host 'UPDATE_LIVE_ACTIVATION_DEFERRED_OK'
     $marker=Join-Path $root 'runtime\venv\installer-idempotence.marker';[IO.File]::WriteAllText($marker,'KEEP',[Text.Encoding]::ASCII);$finalReceipt=Join-Path $root 'forensic\runtime-vllm-v0.27.1.json';$finalRaw=Get-Content $finalReceipt -Raw
     $idem=(& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json)|ConvertFrom-Json
     if(-not$idem.idempotent-or(Get-Content $marker -Raw).Trim()-ne'KEEP'-or(Get-Content $statePath -Raw)-ne$stateRaw-or(Get-Content $finalReceipt -Raw)-ne$finalRaw){throw 'Installer idempotence changed committed state/runtime.'}
@@ -113,6 +148,7 @@ try{
     [IO.File]::WriteAllText($guardSentinel,'KEEP',[Text.Encoding]::ASCII)
     $updateJournal=Join-Path $root 'state\update-transaction.json'
     [IO.File]::WriteAllText($updateJournal,'{ malformed',[Text.Encoding]::ASCII)
+    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-pending-update-journal' -ExpectedMessage 'Pending update transaction evidence exists'
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-pending-update-journal' -ExpectedMessage 'Pending update maintenance state exists'
     $bootstrapGuardCases=@(
         @{Name='python';Script='bootstrap-python.ps1';Parameters=@{InstallationRoot=$root;Json=$true}},
@@ -133,6 +169,7 @@ try{
     Write-Host 'INSTALL_PENDING_UPDATE_JOURNAL_GUARD_OK'
     $updateWorkspace=Join-Path $root 'work\update-transaction'
     [void][IO.Directory]::CreateDirectory($updateWorkspace)
+    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-pending-update-workspace' -ExpectedMessage 'Pending update transaction evidence exists'
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-pending-update-workspace' -ExpectedMessage 'Pending update maintenance state exists'
     if((Get-Content $statePath -Raw)-ne$guardStateRaw-or(Get-Content $marker -Raw)-ne$guardMarkerRaw-or-not(Test-Path $guardSentinel -PathType Leaf)){throw 'Installer pending-update workspace refusal mutated committed/staging state.'}
     Remove-Item $updateWorkspace -Recurse -Force
@@ -145,8 +182,11 @@ try{
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'distribution-drift' -ExpectedMessage 'malformed or contradictory'
     [IO.File]::WriteAllText($installedStart,$startRaw,[Text.UTF8Encoding]::new($false));Write-Host 'INSTALL_DISTRIBUTION_DRIFT_REJECTED'
     $lockPath=Join-Path $root 'state\install-orchestrator.lock';$held=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None')
-    try{Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-lock-contention' -ExpectedMessage 'Another top-level install operation'}finally{$held.Dispose()}
-    Write-Host 'INSTALL_LOCK_CONTENTION_OK'
+    try{Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-lock-contention' -ExpectedMessage 'Another top-level install operation';Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-orchestrator-lock-contention' -ExpectedMessage 'Another top-level install/update/uninstall operation'}finally{$held.Dispose()}
+    Write-Host 'INSTALL_UPDATE_LOCK_CONTENTION_OK'
+    $operationHeld=[IO.File]::Open((Join-Path $root '.vllm-operation.lock'),'OpenOrCreate','ReadWrite','None')
+    try{Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-operation-lock-contention' -ExpectedMessage 'Another vLLM Windows Native lifecycle operation is active'}finally{$operationHeld.Dispose()}
+    Write-Host 'UPDATE_OPERATION_LOCK_CONTENTION_OK'
     $oldGeneration=[string]$state.generation_id;Remove-Item $statePath -Force
     $pythonReceiptPath=Join-Path $root 'forensic\python-bootstrap-3.13.15.json';$pythonReceiptRaw=Get-Content $pythonReceiptPath -Raw;$pythonReceipt=$pythonReceiptRaw|ConvertFrom-Json;$pythonReceipt.archive_sha256='BAD';Write-Utf8Json -Path $pythonReceiptPath -Value $pythonReceipt
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'downstream-python-provenance-drift' -ExpectedMessage 'archive digest mismatch'
