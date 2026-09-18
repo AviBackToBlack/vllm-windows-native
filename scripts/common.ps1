@@ -325,6 +325,28 @@ namespace VllmWindowsNative {
 }
 
 
+function Invoke-VllmAtomicJsonPartialCleanup {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $destination=Get-VllmNormalizedPath $Path
+    $parent=Split-Path -Parent $destination
+    if(-not(Test-Path -LiteralPath $parent -PathType Container)){
+        throw "Atomic JSON parent directory is missing: $parent"
+    }
+
+    $prefix='.'+[IO.Path]::GetFileName($destination)+'.partial.'
+    $pattern='^'+[regex]::Escape($prefix)+'[0-9A-Fa-f]{32}$'
+    foreach($candidate in @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop)){
+        if(-not$candidate.Name -or$candidate.Name-notmatch$pattern){continue}
+        $entry=Get-VllmPathEntryInfo -Path $candidate.FullName
+        if(-not$entry.Exists){continue}
+        if($entry.IsDirectory-or$entry.IsReparsePoint){
+            throw "Atomic JSON stale partial path is unsafe: $($candidate.FullName)"
+        }
+        [IO.File]::Delete($candidate.FullName)
+    }
+}
+
 function Write-VllmAtomicJsonFile {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -344,6 +366,7 @@ function Write-VllmAtomicJsonFile {
         throw "Atomic JSON destination is not a safe regular file path: $destination"
     }
 
+    Invoke-VllmAtomicJsonPartialCleanup -Path $destination
     $temporary = Join-Path $parent ('.' + [IO.Path]::GetFileName($destination) + '.partial.' + [guid]::NewGuid().ToString('N'))
     if ((Get-VllmPathEntryInfo -Path $temporary).Exists) {
         throw "Atomic JSON temporary path unexpectedly exists: $temporary"

@@ -66,6 +66,16 @@ function Exit-VllmUpdateOrchestratorLock {
     if ($null -ne $Lock.Stream) { $Lock.Stream.Dispose() }
 }
 
+function Assert-VllmUpdateWhatIfRecoveryAbsent {
+    param([Parameter(Mandatory)][string]$Root)
+    foreach($relative in @('state\update-transaction.json','work\update-transaction')){
+        $path=Join-Path $Root $relative
+        if((Get-VllmPathEntryInfo -Path $path).Exists){
+            throw "Pending update transaction requires recovery at '$path'; -WhatIf preserves recovery evidence and refuses to mutate it."
+        }
+    }
+}
+
 function Assert-VllmRecoveredGeneration {
     param(
         [Parameter(Mandatory)][ValidateSet('source','target')][string]$Mode,
@@ -95,9 +105,13 @@ try {
     $orchestratorLock = Enter-VllmUpdateOrchestratorLock -Root $InstallationRoot
     $operationLock = Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'update-plan'
 
-    $recoveryValidator = (Get-Item Function:\Assert-VllmRecoveredGeneration).ScriptBlock
-    $recovery = Invoke-VllmUpdateTransactionRecovery -InstallationRoot $InstallationRoot -ValidateGeneration $recoveryValidator
-    if ($recovery.recovered) { Write-Verbose "Recovered pending update transaction to '$($recovery.generation)' generation before planning." }
+    if ($WhatIfPreference) {
+        Assert-VllmUpdateWhatIfRecoveryAbsent -Root $InstallationRoot
+    } else {
+        $recoveryValidator = (Get-Item Function:\Assert-VllmRecoveredGeneration).ScriptBlock
+        $recovery = Invoke-VllmUpdateTransactionRecovery -InstallationRoot $InstallationRoot -ValidateGeneration $recoveryValidator
+        if ($recovery.recovered) { Write-Verbose "Recovered pending update transaction to '$($recovery.generation)' generation before planning." }
+    }
     $source = Get-VllmUpdateSourceContext -InstallationRoot $InstallationRoot
     $target = Get-VllmUpdateReleaseContext -ReleaseManifestPath $targetManifestPath -InstallationRoot $InstallationRoot -ModelsRoot $source.ModelsRoot -WheelPath $targetWheelPath -RequireUpdaterPlanner
     $plan = Get-VllmUpdateTransitionPlan -SourceContext $source -TargetContext $target

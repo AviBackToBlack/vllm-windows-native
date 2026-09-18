@@ -57,8 +57,8 @@
     },
     {
       "path": "update.ps1",
-      "size_bytes": 6880,
-      "sha256": "EA331C444C8B720A4863F6E543B97B08D3FA924FB01022340240E565EE54E310"
+      "size_bytes": 7448,
+      "sha256": "992A86BCA7A11D51E455E112FC7F5E35992E4967778D40F0EF2881EB9BEEBAB5"
     },
     {
       "path": "uninstall.ps1",
@@ -97,8 +97,8 @@
     },
     {
       "path": "scripts/common.ps1",
-      "size_bytes": 36077,
-      "sha256": "4A7D3640B57C7CABEE3D72BF03EC148BF7834F368807B3052BE3BA59E7C0B9EF"
+      "size_bytes": 37064,
+      "sha256": "40447AEBF3EA297DC1F7B6CE915CB4347C2159943915675D88F4577B69F0ACDB"
     },
     {
       "path": "scripts/lifecycle.ps1",

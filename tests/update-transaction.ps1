@@ -431,13 +431,31 @@ function Test-AtomicJsonPublication {
         }
 
         [void](Write-VllmAtomicJsonFile -Path $path -Value ([ordered]@{schema_version=1;marker='one'}) -Validate $validator)
+
+        $stalePartial=Join-Path $base ('.state.json.partial.'+[guid]::NewGuid().ToString('N'))
+        $unrelatedPartial=Join-Path $base '.state.json.partial.not-a-guid'
+        [IO.File]::WriteAllText($stalePartial,'crash-residue',[Text.Encoding]::ASCII)
+        [IO.File]::WriteAllText($unrelatedPartial,'keep',[Text.Encoding]::ASCII)
+        [void](Write-VllmAtomicJsonFile -Path $path -Value ([ordered]@{schema_version=1;marker='swept'}) -Validate $validator)
+        if(Test-Path -LiteralPath $stalePartial){throw 'Exact stale atomic partial was not swept before the next write.'}
+        if(-not(Test-Path -LiteralPath $unrelatedPartial -PathType Leaf)){throw 'Atomic partial cleanup removed an unrelated sibling.'}
+        Write-Host 'ATOMIC_JSON_STALE_PARTIAL_SWEEP_OK'
+
+        $unsafePartial=Join-Path $base ('.state.json.partial.'+[guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($unsafePartial)
+        Test-ExpectedFailure -Action {
+            [void](Write-VllmAtomicJsonFile -Path $path -Value ([ordered]@{schema_version=1;marker='unsafe'}) -Validate $validator)
+        } -Name 'atomic-partial-directory-refused' -Expected 'stale partial path is unsafe'
+        Remove-Item -LiteralPath $unsafePartial -Force
+        Write-Host 'ATOMIC_JSON_UNSAFE_PARTIAL_REFUSED_OK'
+
         try{
             [void](Write-VllmAtomicJsonFile -Path $path -Value ([ordered]@{schema_version=1;marker='two'}) -Validate $validator -FaultPoint BeforePublish)
             throw 'Expected BeforePublish fault did not occur.'
         }catch{
             if($_.Exception.Message-ne'FAULT_INJECTED:BeforePublish'){throw}
         }
-        if([string](Get-Content $path -Raw|ConvertFrom-Json).marker-ne'one'){throw 'BeforePublish changed the committed destination.'}
+        if([string](Get-Content $path -Raw|ConvertFrom-Json).marker-ne'swept'){throw 'BeforePublish changed the committed destination.'}
 
         try{
             [void](Write-VllmAtomicJsonFile -Path $path -Value ([ordered]@{schema_version=1;marker='three'}) -Validate $validator -FaultPoint AfterPublish)

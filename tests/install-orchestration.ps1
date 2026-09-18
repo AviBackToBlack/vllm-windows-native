@@ -166,6 +166,35 @@ try{
     if((Get-Content $recoveryStart -Raw)-eq$recoveryStartRaw){throw 'Synthetic crash did not activate the staged target before recovery.'}
     if((Get-Content $statePath -Raw)-ne$recoverySourceStateRaw){throw 'Synthetic pre-commit crash changed the authoritative install state.'}
 
+    $recoveryJournalPath=Join-Path $root 'state\update-transaction.json'
+    $recoveryWorkspace=Join-Path $root 'work\update-transaction'
+    $recoveryBackup=Join-Path $root ([string]$recoveryActivation[0].backup_relative)
+    $whatIfJournalRaw=Get-Content $recoveryJournalPath -Raw
+    $whatIfStateRaw=Get-Content $statePath -Raw
+    $whatIfLiveRaw=Get-Content $recoveryStart -Raw
+    $whatIfBackupRaw=Get-Content $recoveryBackup -Raw
+    $whatIfWorkspaceEntries=@(
+        Get-ChildItem -LiteralPath $recoveryWorkspace -Recurse -Force |
+            ForEach-Object {$_.FullName.Substring($recoveryWorkspace.Length).TrimStart('\')} |
+            Sort-Object
+    )
+    Test-ExpectedFailure -Action {
+        & $updater -InstallationRoot $root -ReleaseManifestPath ([string]$recoverySourceState.release_manifest) -WheelPath $wheel -WhatIf -Json|Out-Null
+    } -Name 'updater-whatif-pending-recovery' -ExpectedMessage '-WhatIf preserves recovery evidence'
+    $whatIfWorkspaceEntriesAfter=@(
+        Get-ChildItem -LiteralPath $recoveryWorkspace -Recurse -Force |
+            ForEach-Object {$_.FullName.Substring($recoveryWorkspace.Length).TrimStart('\')} |
+            Sort-Object
+    )
+    if((Get-Content $recoveryJournalPath -Raw)-ne$whatIfJournalRaw-or
+       (Get-Content $statePath -Raw)-ne$whatIfStateRaw-or
+       (Get-Content $recoveryStart -Raw)-ne$whatIfLiveRaw-or
+       (Get-Content $recoveryBackup -Raw)-ne$whatIfBackupRaw-or
+       (Compare-Object $whatIfWorkspaceEntries $whatIfWorkspaceEntriesAfter)){
+        throw 'Updater -WhatIf mutated pending recovery evidence.'
+    }
+    Write-Host 'UPDATE_WHATIF_PENDING_RECOVERY_PRESERVED_OK'
+
     $recoveredNoop=(& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$recoverySourceState.release_manifest) -WheelPath $wheel -Json)|ConvertFrom-Json
     if(-not$recoveredNoop.ready-or-not$recoveredNoop.idempotent-or[string]$recoveredNoop.source.generation_id-ne[string]$recoverySourceState.generation_id){throw 'Top-level updater did not continue planning on the recovered source generation.'}
     if((Get-Content $recoveryStart -Raw)-ne$recoveryStartRaw){throw 'Top-level updater did not restore the source distribution file.'}
