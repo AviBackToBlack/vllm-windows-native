@@ -14,6 +14,7 @@ $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'scripts\lifecycle.ps1')
 . (Join-Path $PSScriptRoot 'scripts\update-planner.ps1')
 . (Join-Path $PSScriptRoot 'scripts\update-staging.ps1')
+. (Join-Path $PSScriptRoot 'scripts\update-transaction.ps1')
 
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'update.ps1 supports native Windows x64 only.'
@@ -65,14 +66,36 @@ function Exit-VllmUpdateOrchestratorLock {
     if ($null -ne $Lock.Stream) { $Lock.Stream.Dispose() }
 }
 
-function Assert-VllmUpdateRecoveryStateAbsent {
+function Assert-VllmUpdateWhatIfRecoveryAbsent {
     param([Parameter(Mandatory)][string]$Root)
-    foreach ($relative in @('state\update-transaction.json','work\update-transaction')) {
-        $path = Join-Path $Root $relative
-        $entry = Get-VllmPathEntryInfo -Path $path
-        if ($entry.Exists) {
-            throw "Pending update transaction evidence exists at '$path'. SM-18C does not implement transaction recovery yet; preserve the evidence for the recovery slice."
+    foreach($relative in @('state\update-transaction.json','work\update-transaction')){
+        $path=Join-Path $Root $relative
+        if((Get-VllmPathEntryInfo -Path $path).Exists){
+            throw "Pending update transaction requires recovery at '$path'; -WhatIf preserves recovery evidence and refuses to mutate it."
         }
+    }
+}
+
+function Assert-VllmRecoveredGeneration {
+    param(
+        [Parameter(Mandatory)][ValidateSet('source','target')][string]$Mode,
+        [Parameter(Mandatory)][string]$ExpectedGenerationId,
+        [Parameter(Mandatory)]$Journal
+    )
+    $context = Get-VllmUpdateSourceContext -InstallationRoot $InstallationRoot
+    $identity = if ($Mode -eq 'source') { $Journal.source } else { $Journal.target }
+
+    if (-not ([string]$context.Committed.State.generation_id).Equals($ExpectedGenerationId,[StringComparison]::OrdinalIgnoreCase)) {
+        throw "Recovered $Mode generation_id does not match the transaction identity."
+    }
+    if ([string]$context.Committed.State.release -ne [string]$identity.release) {
+        throw "Recovered $Mode release does not match the transaction identity."
+    }
+    if (-not ([string]$context.Committed.State.release_manifest_sha256).Equals(([string]$identity.manifest_sha256),[StringComparison]::OrdinalIgnoreCase)) {
+        throw "Recovered $Mode release manifest digest does not match the transaction identity."
+    }
+    if (-not (Test-VllmUpdatePathEqual -A ([string]$context.ModelsRoot) -B ([string]$Journal.models_root))) {
+        throw "Recovered $Mode models root does not match the transaction identity."
     }
 }
 
@@ -82,14 +105,20 @@ try {
     $orchestratorLock = Enter-VllmUpdateOrchestratorLock -Root $InstallationRoot
     $operationLock = Enter-VllmOperationLock -InstallationRoot $InstallationRoot -Operation 'update-plan'
 
-    Assert-VllmUpdateRecoveryStateAbsent -Root $InstallationRoot
+    if ($WhatIfPreference) {
+        Assert-VllmUpdateWhatIfRecoveryAbsent -Root $InstallationRoot
+    } else {
+        $recoveryValidator = (Get-Item Function:\Assert-VllmRecoveredGeneration).ScriptBlock
+        $recovery = Invoke-VllmUpdateTransactionRecovery -InstallationRoot $InstallationRoot -ValidateGeneration $recoveryValidator
+        if ($recovery.recovered) { Write-Verbose "Recovered pending update transaction to '$($recovery.generation)' generation before planning." }
+    }
     $source = Get-VllmUpdateSourceContext -InstallationRoot $InstallationRoot
     $target = Get-VllmUpdateReleaseContext -ReleaseManifestPath $targetManifestPath -InstallationRoot $InstallationRoot -ModelsRoot $source.ModelsRoot -WheelPath $targetWheelPath -RequireUpdaterPlanner
     $plan = Get-VllmUpdateTransitionPlan -SourceContext $source -TargetContext $target
     [void](Get-VllmUpdateManagedStagingPlan -Plan $plan)
 
     if (-not $plan.idempotent -and -not $WhatIfPreference) {
-        throw 'Update target requires activation. SM-18C implements validation/planning and staging-proof primitives only; live staging/activation is not enabled until the transaction journal exists. Use -WhatIf to inspect the exact plan.'
+        throw 'Update target requires activation. SM-18D implements durable transaction recovery and synthetic activation only; production target activation remains deferred to SM-18E. Use -WhatIf to inspect the exact plan.'
     }
     if (-not $plan.idempotent -and $WhatIfPreference) {
         [void]$PSCmdlet.ShouldProcess($InstallationRoot, "Activate release '$($plan.target.release)' from '$($plan.source.release)'")

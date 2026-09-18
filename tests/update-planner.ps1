@@ -34,8 +34,22 @@ try{
     [void][IO.Directory]::CreateDirectory($base)
     $models=Join-Path $base 'models';[void][IO.Directory]::CreateDirectory($models)
     $canonical=Get-VllmUpdateReleaseContext -ReleaseManifestPath (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner
-    if($canonical.DistributionMap.Count-ne28-or$canonical.ManagedMap.Count-ne12-or$canonical.ManagedContractsMap.Count-ne9){throw 'Canonical target release context shape mismatch.'}
+    if($canonical.DistributionMap.Count-ne29-or$canonical.ManagedMap.Count-ne14-or$canonical.ManagedContractsMap.Count-ne9){throw 'Canonical target release context shape mismatch.'}
     Write-Host 'UPDATE_TARGET_REFERENCE_GRAPH_OK'
+
+    $legacyRoot=Join-Path $base 'legacy-source-without-update-reservations'
+    $legacyRelease=Get-Content (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json
+    $legacyRelease.managed_paths=@($legacyRelease.managed_paths|Where-Object{
+        ([string]$_).Replace('\','/') -notin @('state/update-transaction.json','work/update-transaction')
+    })
+    Copy-TestReleaseFiles -Release $legacyRelease -Root $legacyRoot
+    $legacyManifest=Write-TestReleaseManifest -Release $legacyRelease -Root $legacyRoot
+    $legacyContext=Get-VllmUpdateReleaseContext -ReleaseManifestPath $legacyManifest -InstallationRoot $base -ModelsRoot $models
+    if($legacyContext.ManagedMap.Count-ne12){throw 'Legacy source compatibility fixture unexpectedly changed managed ownership shape.'}
+    Test-ExpectedFailure -Action {
+        Get-VllmUpdateReleaseContext -ReleaseManifestPath $legacyManifest -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner|Out-Null
+    } -Name 'legacy-source-not-valid-as-updater-target' -Expected 'missing required lifecycle-owned path'
+    Write-Host 'UPDATE_LEGACY_SOURCE_COMPATIBILITY_OK'
     function Test-ReservedDistributionRejection {
         param([string]$RelativePath,[string]$Name)
         $fixtureRoot=Join-Path $base ('reserved-'+$Name)

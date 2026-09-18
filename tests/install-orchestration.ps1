@@ -9,6 +9,10 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 $repoRoot=Split-Path -Parent $PSScriptRoot
 . (Join-Path $repoRoot 'scripts\common.ps1')
+. (Join-Path $repoRoot 'scripts\lifecycle.ps1')
+. (Join-Path $repoRoot 'scripts\update-planner.ps1')
+. (Join-Path $repoRoot 'scripts\update-staging.ps1')
+. (Join-Path $repoRoot 'scripts\update-transaction.ps1')
 $goodLock=Join-Path $PSScriptRoot 'fixtures\runtime-dependencies-colorama.lock.txt'
 $canonicalDependencyManifest=Join-Path $repoRoot 'manifests\runtime\dependencies-v0.27.1-windows-x86_64.json'
 $canonicalFinalManifest=Join-Path $repoRoot 'manifests\runtime\vllm-runtime-v0.27.1-windows-x86_64.json'
@@ -36,7 +40,7 @@ function Invoke-MiniReleaseFixtureCreation{
     $copied=@(
         'install.ps1','update.ps1','uninstall.ps1','start.ps1',
         'bootstrap-python.ps1','bootstrap-uv.ps1','bootstrap-venv.ps1','bootstrap-dependencies.ps1','bootstrap-vllm.ps1',
-        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
+        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/update-transaction.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
         'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json','manifests/bootstrap/uv-0.12.13-windows-x86_64.json','manifests/bootstrap/venv-v0.27.1-windows-x86_64.json'
     )
     foreach($rel in $copied){Copy-RepoFile -SourceRelative $rel -SourceRoot $SourceRoot}
@@ -78,7 +82,7 @@ function Invoke-MiniReleaseFixtureCreation{
             dependency_manifest='manifests/runtime/dependencies-v0.27.1-windows-x86_64.json';runtime_manifest='manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json'
             python_receipt='forensic/python-bootstrap-3.13.15.json';uv_receipt='forensic/uv-bootstrap-0.12.13.json';venv_receipt='forensic/venv-bootstrap-v0.27.1.json';dependency_receipt='forensic/runtime-dependencies-v0.27.1.json';runtime_receipt='forensic/runtime-vllm-v0.27.1.json';runtime_root='runtime/venv'
         }
-        managed_paths=@('python/managed/cpython-3.13.15-windows-x86_64-none','tools/uv/0.12.13','runtime/venv','cache/uv','forensic/python-bootstrap-3.13.15.json','forensic/uv-bootstrap-0.12.13.json','forensic/venv-bootstrap-v0.27.1.json','forensic/runtime-dependencies-v0.27.1.json','forensic/runtime-vllm-v0.27.1.json','state/install-state.json','state/install-orchestrator.lock','.vllm-operation.lock')
+        managed_paths=@('python/managed/cpython-3.13.15-windows-x86_64-none','tools/uv/0.12.13','runtime/venv','cache/uv','forensic/python-bootstrap-3.13.15.json','forensic/uv-bootstrap-0.12.13.json','forensic/venv-bootstrap-v0.27.1.json','forensic/runtime-dependencies-v0.27.1.json','forensic/runtime-vllm-v0.27.1.json','state/install-state.json','state/install-orchestrator.lock','.vllm-operation.lock','state/update-transaction.json','work/update-transaction')
         files=$files.ToArray()
     }
     $releasePath=Join-Path $SourceRoot 'manifests\release\v0.27.1-windows-x86_64.json';Write-Utf8Json -Path $releasePath -Value $release
@@ -124,6 +128,79 @@ try{
     if(-not$noop.ready-or-not$noop.planning_only-or-not$noop.idempotent-or[string]$noop.source.generation_id-ne[string]$state.generation_id){throw 'Same-release updater no-op result mismatch.'}
     if((Get-Content $statePath -Raw)-ne$stateRaw){throw 'Same-release updater no-op mutated install state.'}
     Write-Host 'UPDATE_SAME_RELEASE_NOOP_OK'
+
+    $recoverySourceStateRaw=Get-Content $statePath -Raw
+    $recoverySourceState=$recoverySourceStateRaw|ConvertFrom-Json
+    $recoveryStart=Join-Path $root 'start.ps1'
+    $recoveryStartRaw=Get-Content $recoveryStart -Raw
+    $pendingTarget=Join-Path $base 'pending-target-start.ps1'
+    [IO.File]::WriteAllText($pendingTarget,($recoveryStartRaw+'# synthetic crashed target'+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+    $sourceStartItem=Get-Item $recoveryStart
+    $targetStartItem=Get-Item $pendingTarget
+    $sourceStartIdentity=[pscustomobject]@{Size=[int64]$sourceStartItem.Length;Sha256=(Get-FileHash $recoveryStart -Algorithm SHA256).Hash}
+    $targetStartIdentity=[pscustomobject]@{Size=[int64]$targetStartItem.Length;Sha256=(Get-FileHash $pendingTarget -Algorithm SHA256).Hash}
+    $recoveryDistribution=@(
+        [pscustomobject]@{Class='replace';RelativePath='start.ps1';Source=$sourceStartIdentity;Target=$targetStartIdentity}
+    )
+    $recoveryTransactionId=[guid]::NewGuid().ToString('D')
+    $recoveryActivation=Get-VllmUpdateActivationPlan -InstallationRoot $root -ModelsRoot ([string]$recoverySourceState.models_root) -TransactionId $recoveryTransactionId -DistributionPlan $recoveryDistribution
+    $recoverySourceIdentity=[pscustomobject]@{
+        release=[string]$recoverySourceState.release
+        manifest_sha256=[string]$recoverySourceState.release_manifest_sha256
+        generation_id=[string]$recoverySourceState.generation_id
+    }
+    $recoveryTargetGeneration=[guid]::NewGuid().ToString('D')
+    $recoveryTargetIdentity=[pscustomobject]@{
+        release='synthetic-crash-target'
+        manifest_sha256=('C'*64)
+        generation_id=$recoveryTargetGeneration
+    }
+    [void](Open-VllmUpdateTransaction -InstallationRoot $root -ModelsRoot ([string]$recoverySourceState.models_root) -SourceIdentity $recoverySourceIdentity -TargetIdentity $recoveryTargetIdentity -ActivationPlan $recoveryActivation -TransactionId $recoveryTransactionId)
+    $recoveryStage=Join-Path $root ([string]$recoveryActivation[0].stage_relative)
+    Copy-Item -LiteralPath $pendingTarget -Destination $recoveryStage
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $root)
+    $syntheticTargetState=[pscustomobject]@{generation_id=$recoveryTargetGeneration}
+    Test-ExpectedFailure -Action {
+        Invoke-VllmUpdateTransactionActivation -InstallationRoot $root -TargetInstallState $syntheticTargetState -FaultPoint AfterTargetActivation|Out-Null
+    } -Name 'synthetic-production-recovery-crash' -ExpectedMessage 'FAULT_INJECTED:AfterTargetActivation'
+    if((Get-Content $recoveryStart -Raw)-eq$recoveryStartRaw){throw 'Synthetic crash did not activate the staged target before recovery.'}
+    if((Get-Content $statePath -Raw)-ne$recoverySourceStateRaw){throw 'Synthetic pre-commit crash changed the authoritative install state.'}
+
+    $recoveryJournalPath=Join-Path $root 'state\update-transaction.json'
+    $recoveryWorkspace=Join-Path $root 'work\update-transaction'
+    $recoveryBackup=Join-Path $root ([string]$recoveryActivation[0].backup_relative)
+    $whatIfJournalRaw=Get-Content $recoveryJournalPath -Raw
+    $whatIfStateRaw=Get-Content $statePath -Raw
+    $whatIfLiveRaw=Get-Content $recoveryStart -Raw
+    $whatIfBackupRaw=Get-Content $recoveryBackup -Raw
+    $whatIfWorkspaceEntries=@(
+        Get-ChildItem -LiteralPath $recoveryWorkspace -Recurse -Force |
+            ForEach-Object {$_.FullName.Substring($recoveryWorkspace.Length).TrimStart('\')} |
+            Sort-Object
+    )
+    Test-ExpectedFailure -Action {
+        & $updater -InstallationRoot $root -ReleaseManifestPath ([string]$recoverySourceState.release_manifest) -WheelPath $wheel -WhatIf -Json|Out-Null
+    } -Name 'updater-whatif-pending-recovery' -ExpectedMessage '-WhatIf preserves recovery evidence'
+    $whatIfWorkspaceEntriesAfter=@(
+        Get-ChildItem -LiteralPath $recoveryWorkspace -Recurse -Force |
+            ForEach-Object {$_.FullName.Substring($recoveryWorkspace.Length).TrimStart('\')} |
+            Sort-Object
+    )
+    if((Get-Content $recoveryJournalPath -Raw)-ne$whatIfJournalRaw-or
+       (Get-Content $statePath -Raw)-ne$whatIfStateRaw-or
+       (Get-Content $recoveryStart -Raw)-ne$whatIfLiveRaw-or
+       (Get-Content $recoveryBackup -Raw)-ne$whatIfBackupRaw-or
+       (Compare-Object $whatIfWorkspaceEntries $whatIfWorkspaceEntriesAfter)){
+        throw 'Updater -WhatIf mutated pending recovery evidence.'
+    }
+    Write-Host 'UPDATE_WHATIF_PENDING_RECOVERY_PRESERVED_OK'
+
+    $recoveredNoop=(& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$recoverySourceState.release_manifest) -WheelPath $wheel -Json)|ConvertFrom-Json
+    if(-not$recoveredNoop.ready-or-not$recoveredNoop.idempotent-or[string]$recoveredNoop.source.generation_id-ne[string]$recoverySourceState.generation_id){throw 'Top-level updater did not continue planning on the recovered source generation.'}
+    if((Get-Content $recoveryStart -Raw)-ne$recoveryStartRaw){throw 'Top-level updater did not restore the source distribution file.'}
+    if((Get-Content $statePath -Raw)-ne$recoverySourceStateRaw){throw 'Top-level source recovery rewrote the committed install state.'}
+    if((Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Top-level source recovery left transaction evidence behind.'}
+    Write-Host 'UPDATE_PRODUCTION_SOURCE_RECOVERY_OK'
     $rogue=Start-Process -FilePath $fakeVllm -ArgumentList '/c','ping 127.0.0.1 -n 30 > nul' -WindowStyle Hidden -PassThru
     try{
         if($rogue.HasExited){throw 'Synthetic managed runtime process exited before update process-scan test.'}
@@ -135,7 +212,7 @@ try{
     if(-not$transitionPlan.ready-or-not$transitionPlan.planning_only-or$transitionPlan.idempotent-or$transitionPlan.counts.distribution_replace-lt1-or$transitionPlan.counts.distribution_add-lt1-or$transitionPlan.counts.managed_replace-lt1){throw 'Mutating update WhatIf plan did not classify the synthetic target as expected.'}
     if((Get-Content $statePath -Raw)-ne$transitionStateRaw-or(Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Mutating update WhatIf changed live transaction/install state.'}
     Write-Host 'UPDATE_MUTATING_WHATIF_PLAN_OK'
-    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Json|Out-Null} -Name 'updater-live-activation-deferred' -ExpectedMessage 'live staging/activation is not enabled'
+    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Json|Out-Null} -Name 'updater-live-activation-deferred' -ExpectedMessage 'production target activation remains deferred to SM-18E'
     if((Get-Content $statePath -Raw)-ne$transitionStateRaw){throw 'Deferred live update attempt mutated install state.'}
     Write-Host 'UPDATE_LIVE_ACTIVATION_DEFERRED_OK'
     $marker=Join-Path $root 'runtime\venv\installer-idempotence.marker';[IO.File]::WriteAllText($marker,'KEEP',[Text.Encoding]::ASCII);$finalReceipt=Join-Path $root 'forensic\runtime-vllm-v0.27.1.json';$finalRaw=Get-Content $finalReceipt -Raw
@@ -150,7 +227,7 @@ try{
     [IO.File]::WriteAllText($guardSentinel,'KEEP',[Text.Encoding]::ASCII)
     $updateJournal=Join-Path $root 'state\update-transaction.json'
     [IO.File]::WriteAllText($updateJournal,'{ malformed',[Text.Encoding]::ASCII)
-    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-pending-update-journal' -ExpectedMessage 'Pending update transaction evidence exists'
+    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-pending-update-journal' -ExpectedMessage 'journal is malformed'
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-pending-update-journal' -ExpectedMessage 'Pending update maintenance state exists'
     $bootstrapGuardCases=@(
         @{Name='python';Script='bootstrap-python.ps1';Parameters=@{InstallationRoot=$root;Json=$true}},
@@ -171,7 +248,7 @@ try{
     Write-Host 'INSTALL_PENDING_UPDATE_JOURNAL_GUARD_OK'
     $updateWorkspace=Join-Path $root 'work\update-transaction'
     [void][IO.Directory]::CreateDirectory($updateWorkspace)
-    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-pending-update-workspace' -ExpectedMessage 'Pending update transaction evidence exists'
+    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-pending-update-workspace' -ExpectedMessage 'without a transaction journal'
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-pending-update-workspace' -ExpectedMessage 'Pending update maintenance state exists'
     if((Get-Content $statePath -Raw)-ne$guardStateRaw-or(Get-Content $marker -Raw)-ne$guardMarkerRaw-or-not(Test-Path $guardSentinel -PathType Leaf)){throw 'Installer pending-update workspace refusal mutated committed/staging state.'}
     Remove-Item $updateWorkspace -Recurse -Force

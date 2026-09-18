@@ -253,7 +253,7 @@ function Get-VllmUpdateReleaseContext {
     }
 
     $requiredLifecycleFiles = @('install.ps1','start.ps1','update.ps1','uninstall.ps1','scripts/common.ps1','scripts/lifecycle.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md')
-    if ($RequireUpdaterPlanner) { $requiredLifecycleFiles += @('scripts/update-planner.ps1','scripts/update-staging.ps1') }
+    if ($RequireUpdaterPlanner) { $requiredLifecycleFiles += @('scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/update-transaction.ps1') }
     foreach ($required in $requiredLifecycleFiles) {
         [void](Get-VllmUpdateDistributionEntry -Map $distribution -RelativePath $required -Label 'Required lifecycle distribution file')
     }
@@ -373,7 +373,11 @@ function Get-VllmUpdateReleaseContext {
         if ($managed.ContainsKey($key)) { throw "Release manifest contains duplicate managed path: $relative" }
         $managed[$key] = $relative
     }
-    foreach ($required in @('state\install-state.json','state\install-orchestrator.lock','.vllm-operation.lock')) {
+    $requiredLifecycleManaged = @('state\install-state.json','state\install-orchestrator.lock','.vllm-operation.lock')
+    if ($RequireUpdaterPlanner) {
+        $requiredLifecycleManaged += @('state\update-transaction.json','work\update-transaction')
+    }
+    foreach ($required in $requiredLifecycleManaged) {
         if (-not $managed.ContainsKey((Get-VllmUpdateRelativeKey $required))) { throw "Release manifest is missing required lifecycle-owned path: $required" }
     }
     foreach ($key in $contracts.Keys) {
