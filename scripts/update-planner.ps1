@@ -253,7 +253,7 @@ function Get-VllmUpdateReleaseContext {
     }
 
     $requiredLifecycleFiles = @('install.ps1','start.ps1','update.ps1','uninstall.ps1','scripts/common.ps1','scripts/lifecycle.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md')
-    if ($RequireUpdaterPlanner) { $requiredLifecycleFiles += 'scripts/update-planner.ps1' }
+    if ($RequireUpdaterPlanner) { $requiredLifecycleFiles += @('scripts/update-planner.ps1','scripts/update-staging.ps1') }
     foreach ($required in $requiredLifecycleFiles) {
         [void](Get-VllmUpdateDistributionEntry -Map $distribution -RelativePath $required -Label 'Required lifecycle distribution file')
     }

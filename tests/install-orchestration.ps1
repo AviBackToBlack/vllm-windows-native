@@ -22,10 +22,11 @@ function Write-TestWheel{
     if(Test-Path $Path){Remove-Item $Path -Force}
     $z=[IO.Compression.ZipFile]::Open($Path,[IO.Compression.ZipArchiveMode]::Create)
     try{
-        Add-ZipText $z 'vllm/__init__.py' "__version__ = '0.0.1'`n"
+        Add-ZipText $z 'vllm/__init__.py' "__version__ = '0.0.1'`ndef main():`n    import sys`n    print(sys.prefix)`n"
         Add-ZipText $z 'vllm-0.0.1.dist-info/METADATA' "Metadata-Version: 2.1`nName: vllm`nVersion: 0.0.1`n"
         Add-ZipText $z 'vllm-0.0.1.dist-info/WHEEL' "Wheel-Version: 1.0`nGenerator: installer-test`nRoot-Is-Purelib: true`nTag: py3-none-any`n"
-        Add-ZipText $z 'vllm-0.0.1.dist-info/RECORD' "vllm/__init__.py,,`nvllm-0.0.1.dist-info/METADATA,,`nvllm-0.0.1.dist-info/WHEEL,,`nvllm-0.0.1.dist-info/RECORD,,`n"
+        Add-ZipText $z 'vllm-0.0.1.dist-info/entry_points.txt' "[console_scripts]`nvllm-relocation-probe = vllm:main`n"
+        Add-ZipText $z 'vllm-0.0.1.dist-info/RECORD' "vllm/__init__.py,,`nvllm-0.0.1.dist-info/METADATA,,`nvllm-0.0.1.dist-info/WHEEL,,`nvllm-0.0.1.dist-info/entry_points.txt,,`nvllm-0.0.1.dist-info/RECORD,,`n"
     }finally{$z.Dispose()}
 }
 function Write-Utf8Json{param([string]$Path,$Value);[void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path));[IO.File]::WriteAllText($Path,($Value|ConvertTo-Json -Depth 14),[Text.UTF8Encoding]::new($false))}
@@ -35,7 +36,7 @@ function Invoke-MiniReleaseFixtureCreation{
     $copied=@(
         'install.ps1','update.ps1','uninstall.ps1','start.ps1',
         'bootstrap-python.ps1','bootstrap-uv.ps1','bootstrap-venv.ps1','bootstrap-dependencies.ps1','bootstrap-vllm.ps1',
-        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
+        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
         'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json','manifests/bootstrap/uv-0.12.13-windows-x86_64.json','manifests/bootstrap/venv-v0.27.1-windows-x86_64.json'
     )
     foreach($rel in $copied){Copy-RepoFile -SourceRelative $rel -SourceRoot $SourceRoot}
@@ -116,6 +117,7 @@ try{
     Assert-FinalReady -Root $root
     foreach($receipt in 'python-bootstrap-3.13.15.json','uv-bootstrap-0.12.13.json','venv-bootstrap-v0.27.1.json','runtime-dependencies-v0.27.1.json','runtime-vllm-v0.27.1.json'){$rp=Join-Path $root ('forensic\'+$receipt);$j=Get-Content $rp -Raw|ConvertFrom-Json;if(-not([string]$j.manifest).StartsWith((Get-VllmNormalizedPath $root),[StringComparison]::OrdinalIgnoreCase)){throw "Receipt points outside installed distribution: $receipt -> $($j.manifest)"}}
     Write-Host 'INSTALL_FRESH_SELF_CONTAINED_OK'
+    & (Join-Path $PSScriptRoot 'update-staging-real.ps1') -InstallationRoot $root
     $fakeVllm=Join-Path $root 'runtime\venv\Scripts\vllm.exe';Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $fakeVllm -Force
     $updater=Join-Path $root 'update.ps1'
     $noop=(& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json)|ConvertFrom-Json
@@ -133,7 +135,7 @@ try{
     if(-not$transitionPlan.ready-or-not$transitionPlan.planning_only-or$transitionPlan.idempotent-or$transitionPlan.counts.distribution_replace-lt1-or$transitionPlan.counts.distribution_add-lt1-or$transitionPlan.counts.managed_replace-lt1){throw 'Mutating update WhatIf plan did not classify the synthetic target as expected.'}
     if((Get-Content $statePath -Raw)-ne$transitionStateRaw-or(Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Mutating update WhatIf changed live transaction/install state.'}
     Write-Host 'UPDATE_MUTATING_WHATIF_PLAN_OK'
-    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Json|Out-Null} -Name 'updater-live-activation-deferred' -ExpectedMessage 'planning only'
+    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Json|Out-Null} -Name 'updater-live-activation-deferred' -ExpectedMessage 'live staging/activation is not enabled'
     if((Get-Content $statePath -Raw)-ne$transitionStateRaw){throw 'Deferred live update attempt mutated install state.'}
     Write-Host 'UPDATE_LIVE_ACTIVATION_DEFERRED_OK'
     $marker=Join-Path $root 'runtime\venv\installer-idempotence.marker';[IO.File]::WriteAllText($marker,'KEEP',[Text.Encoding]::ASCII);$finalReceipt=Join-Path $root 'forensic\runtime-vllm-v0.27.1.json';$finalRaw=Get-Content $finalReceipt -Raw
