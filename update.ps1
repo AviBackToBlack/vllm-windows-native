@@ -13,6 +13,7 @@ $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
 . (Join-Path $PSScriptRoot 'scripts\lifecycle.ps1')
 . (Join-Path $PSScriptRoot 'scripts\update-planner.ps1')
+. (Join-Path $PSScriptRoot 'scripts\update-staging.ps1')
 
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'update.ps1 supports native Windows x64 only.'
@@ -70,7 +71,7 @@ function Assert-VllmUpdateRecoveryStateAbsent {
         $path = Join-Path $Root $relative
         $entry = Get-VllmPathEntryInfo -Path $path
         if ($entry.Exists) {
-            throw "Pending update transaction evidence exists at '$path'. SM-18B is planning-only and cannot recover or clean it; preserve the evidence for update recovery."
+            throw "Pending update transaction evidence exists at '$path'. SM-18C does not implement transaction recovery yet; preserve the evidence for the recovery slice."
         }
     }
 }
@@ -85,9 +86,10 @@ try {
     $source = Get-VllmUpdateSourceContext -InstallationRoot $InstallationRoot
     $target = Get-VllmUpdateReleaseContext -ReleaseManifestPath $targetManifestPath -InstallationRoot $InstallationRoot -ModelsRoot $source.ModelsRoot -WheelPath $targetWheelPath -RequireUpdaterPlanner
     $plan = Get-VllmUpdateTransitionPlan -SourceContext $source -TargetContext $target
+    [void](Get-VllmUpdateManagedStagingPlan -Plan $plan)
 
     if (-not $plan.idempotent -and -not $WhatIfPreference) {
-        throw 'Update target requires activation. SM-18B intentionally implements read-only validation/planning only; use -WhatIf to inspect the exact plan. Live activation begins in later SM-18 slices.'
+        throw 'Update target requires activation. SM-18C implements validation/planning and staging-proof primitives only; live staging/activation is not enabled until the transaction journal exists. Use -WhatIf to inspect the exact plan.'
     }
     if (-not $plan.idempotent -and $WhatIfPreference) {
         [void]$PSCmdlet.ShouldProcess($InstallationRoot, "Activate release '$($plan.target.release)' from '$($plan.source.release)'")

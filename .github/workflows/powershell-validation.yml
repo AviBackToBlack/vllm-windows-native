@@ -61,6 +61,14 @@ jobs:
           & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/update-planner.ps1
           if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 update planner regression failed with exit $LASTEXITCODE." }
 
+      - name: Run update staging regression in PowerShell 7 and Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/update-staging.ps1
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 update staging regression failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/update-staging.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 update staging regression failed with exit $LASTEXITCODE." }
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
