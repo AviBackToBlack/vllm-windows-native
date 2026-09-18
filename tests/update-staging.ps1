@@ -110,6 +110,24 @@ try{
         [pscustomobject]@{Class='replace';RelativePath='runtime\venv';Role='runtime';SourceContract='runtime-v1';TargetContract='runtime-v2'}
     )}
     Test-ExpectedFailure -Action {Get-VllmUpdateManagedStagingPlan -Plan $combinedPlan|Out-Null} -Name 'combined-python-runtime-change' -Expected 'Simultaneous Python/runtime'
+
+    $relocatedPythonWithReusedRuntime=[pscustomobject]@{managed=@(
+        [pscustomobject]@{Class='retire';RelativePath='python\managed\old';Role='python';SourceContract='python-v1';TargetContract=$null},
+        [pscustomobject]@{Class='add';RelativePath='python\managed\new';Role='python';SourceContract=$null;TargetContract='python-v1'},
+        [pscustomobject]@{Class='reuse';RelativePath='runtime\venv';Role='runtime';SourceContract='runtime-v1';TargetContract='runtime-v1'}
+    )}
+    Test-ExpectedFailure -Action {Get-VllmUpdateManagedStagingPlan -Plan $relocatedPythonWithReusedRuntime|Out-Null} -Name 'reused-runtime-retired-python-base' -Expected 'reused runtime'
+
+    $samePathPythonReplaceWithReusedRuntime=[pscustomobject]@{managed=@(
+        [pscustomobject]@{Class='replace';RelativePath='python\managed\current';Role='python';SourceContract='python-v1';TargetContract='python-v1-repacked'},
+        [pscustomobject]@{Class='reuse';RelativePath='runtime\venv';Role='runtime';SourceContract='runtime-v1';TargetContract='runtime-v1'}
+    )}
+    $samePathPolicy=@(Get-VllmUpdateManagedStagingPlan -Plan $samePathPythonReplaceWithReusedRuntime)
+    $samePathMode=@{};foreach($entry in $samePathPolicy){$samePathMode[$entry.RelativePath]=[string]$entry.Mode}
+    if($samePathPolicy.Count-ne2-or$samePathMode['python\managed\current']-ne'relocate-tree'-or$samePathMode['runtime\venv']-ne'reuse-live'){
+        throw 'Same-path Python replacement with reused runtime should remain classifiable without retiring the runtime base path.'
+    }
+
     if($mode['forensic\runtime-vllm.json']-ne'regenerate-final'-or$mode['forensic\runtime-dependencies.json']-ne'regenerate-final'){throw 'Receipt regeneration policy mismatch.'}
     if($mode['tools\uv\1']-ne'reuse-live'-or$mode['cache\uv']-ne'reuse-live'){throw 'Reuse managed policy mismatch.'}
     if($mode['forensic\old-venv.json']-ne'retire-post-commit'){throw 'Retire managed policy mismatch.'}

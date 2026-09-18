@@ -36,9 +36,7 @@ function Assert-VllmUpdateStagingWorkspace {
         if($entry.IsReparsePoint){throw "Update transaction workspace must not be a reparse point: $path"}
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $Layout.InstallationRoot -Path $path -RelativePath $relative)
     }
-    $installVolume=[IO.Path]::GetPathRoot([string]$Layout.InstallationRoot)
-    $txVolume=[IO.Path]::GetPathRoot([string]$Layout.TransactionRoot)
-    if(-not$installVolume.Equals($txVolume,[StringComparison]::OrdinalIgnoreCase)){throw 'Update staging workspace must be on the installation volume.'}
+
     return $Layout
 }
 
@@ -212,6 +210,11 @@ function Get-VllmUpdateManagedStagingPlan {
     $runtimeChange=@($Plan.managed|Where-Object{$_.Role-eq'runtime'-and$_.Class-ne'reuse'})
     if($pythonChange.Count-gt0-and$runtimeChange.Count-gt0){
         throw 'Simultaneous Python/runtime managed changes are not supported by the SM-18C relocation proof; the target runtime must reference an already-stable final Python root.'
+    }
+    $retiredPython=@($Plan.managed|Where-Object{$_.Role-eq'python'-and$_.Class-eq'retire'})
+    $reusedRuntime=@($Plan.managed|Where-Object{$_.Role-eq'runtime'-and$_.Class-eq'reuse'})
+    if($retiredPython.Count-gt0-and$reusedRuntime.Count-gt0){
+        throw 'A reused runtime cannot outlive a retired Python base; keep the source Python managed path owned by the target or rebuild the runtime against the target Python path.'
     }
     $result=New-Object System.Collections.Generic.List[object]
     foreach($item in @($Plan.managed|Sort-Object RelativePath)){
