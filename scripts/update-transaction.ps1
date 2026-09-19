@@ -29,10 +29,14 @@ function Get-VllmUpdateTransactionPaths {
         DistributionRoot=[string]$layout.DistributionRoot
         ManagedRelative=[string]$layout.ManagedRelative
         ManagedRoot=[string]$layout.ManagedRoot
+        MaterializationRelative=([string]$layout.StagingRelative+'\m')
+        MaterializationRoot=(Join-Path $root ([string]$layout.StagingRelative+'\m'))
         BackupRelative=$backupRelative
         BackupRoot=(Join-Path $root $backupRelative)
         BackupDistributionRelative=$backupDistributionRelative
         BackupDistributionRoot=(Join-Path $root $backupDistributionRelative)
+        BackupManagedRelative=($backupRelative+'\managed')
+        BackupManagedRoot=(Join-Path $root ($backupRelative+'\managed'))
     }
 }
 
@@ -54,6 +58,42 @@ function Assert-VllmUpdateTransactionFileIdentity {
     if(([string]$Identity.sha256)-notmatch'^[0-9A-Fa-f]{64}$'){throw "$Label sha256 is invalid."}
 }
 
+function Assert-VllmUpdateTransactionTreeIdentity {
+    param([Parameter(Mandatory)]$Identity,[Parameter(Mandatory)][string]$Label)
+    Assert-VllmLifecycleExactProperties -Value $Identity -Expected @('entry_count','file_count','tree_sha256') -Label $Label
+    if([int]$Identity.entry_count-lt0-or[int]$Identity.file_count-lt0-or[int]$Identity.file_count-gt[int]$Identity.entry_count){
+        throw "$Label tree counts are invalid."
+    }
+    if(([string]$Identity.tree_sha256)-notmatch'^[0-9A-Fa-f]{64}$'){throw "$Label tree_sha256 is invalid."}
+}
+
+function Get-VllmUpdateActivationEntryKind {
+    param([Parameter(Mandatory)]$Entry)
+    if($Entry.PSObject.Properties.Name -contains 'kind'){return [string]$Entry.kind}
+    return 'file'
+}
+
+function Get-VllmUpdateActivationEntryRole {
+    param([Parameter(Mandatory)]$Entry)
+    if($Entry.PSObject.Properties.Name -contains 'role'){return [string]$Entry.role}
+    return 'distribution'
+}
+
+function Assert-VllmUpdateTransactionObjectIdentity {
+    param(
+        [Parameter(Mandatory)][ValidateSet('file','tree')][string]$Kind,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$Label
+    )
+    if($Kind-eq'file'){
+        Assert-VllmUpdateTransactionFileIdentity -Identity $Identity -Label $Label
+        if([string]$Identity.sha256-ne([string]$Identity.sha256).ToUpperInvariant()){throw "$Label SHA-256 is not canonical uppercase."}
+    }else{
+        Assert-VllmUpdateTransactionTreeIdentity -Identity $Identity -Label $Label
+        if([string]$Identity.tree_sha256-ne([string]$Identity.tree_sha256).ToUpperInvariant()){throw "$Label tree SHA-256 is not canonical uppercase."}
+    }
+}
+
 function Get-VllmUpdateActivationPlan {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -65,8 +105,9 @@ function Get-VllmUpdateActivationPlan {
     $models=Assert-VllmSafeModelsRoot -InstallationRoot $paths.InstallationRoot -ModelsRoot $ModelsRoot
     $result=New-Object System.Collections.Generic.List[object]
     $seen=@{}
-    foreach($item in @($DistributionPlan|Where-Object{$_.Class-in@('replace','add')}|Sort-Object RelativePath)){
+    foreach($item in @($DistributionPlan|Where-Object{$_.Class-ne'reuse'}|Sort-Object RelativePath)){
         $class=[string]$item.Class
+        if($class-notin@('replace','add','retire')){throw "Unsupported distribution activation class: $class"}
         $relative=Assert-VllmSafeRelativePath -RelativePath ([string]$item.RelativePath) -Label 'Update activation path'
         Assert-VllmUpdateOrdinaryPathNotLifecycleOwned -InstallationRoot $paths.InstallationRoot -RelativePath $relative -Label 'Update activation path'
         Assert-VllmUpdateNoProtectedOverlap -InstallationRoot $paths.InstallationRoot -ModelsRoot $models -RelativePath $relative -Label 'Update activation path'
@@ -74,53 +115,73 @@ function Get-VllmUpdateActivationPlan {
         if($seen.ContainsKey($key)){throw "Duplicate update activation path: $relative"}
         $seen[$key]=$true
 
-        if($null-eq$item.Target){throw "Activation target identity is missing: $relative"}
-        $target=[pscustomobject][ordered]@{
-            size_bytes=[int64]$item.Target.Size
-            sha256=([string]$item.Target.Sha256).ToUpperInvariant()
-        }
-        Assert-VllmUpdateTransactionFileIdentity -Identity $target -Label "Activation target '$relative'"
-
         $source=$null
-        $backupRelative=$null
-        if($class-eq'replace'){
-            if($null-eq$item.Source){throw "Activation source identity is missing: $relative"}
+        if($null-ne$item.Source){
             $source=[pscustomobject][ordered]@{
                 size_bytes=[int64]$item.Source.Size
                 sha256=([string]$item.Source.Sha256).ToUpperInvariant()
             }
             Assert-VllmUpdateTransactionFileIdentity -Identity $source -Label "Activation source '$relative'"
-            $backupRelative=[string]$paths.BackupDistributionRelative+'\'+$relative
-        }elseif($null-ne$item.Source){
-            throw "Activation add unexpectedly has a source identity: $relative"
         }
 
+        $target=$null
+        if($null-ne$item.Target){
+            $target=[pscustomobject][ordered]@{
+                size_bytes=[int64]$item.Target.Size
+                sha256=([string]$item.Target.Sha256).ToUpperInvariant()
+            }
+            Assert-VllmUpdateTransactionFileIdentity -Identity $target -Label "Activation target '$relative'"
+        }
+
+        if($class-eq'replace' -and ($null-eq$source-or$null-eq$target)){throw "Replace activation identities are incomplete: $relative"}
+        if($class-eq'add' -and ($null-ne$source-or$null-eq$target)){throw "Add activation identities are invalid: $relative"}
+        if($class-eq'retire' -and ($null-eq$source-or$null-ne$target)){throw "Retire activation identities are invalid: $relative"}
+
+        $stageRelative=if($class-in@('replace','add')){[string]$paths.DistributionRelative+'\'+$relative}else{$null}
+        $backupRelative=if($class-eq'replace'){[string]$paths.BackupDistributionRelative+'\'+$relative}else{$null}
         $result.Add([pscustomobject][ordered]@{
             class=$class
+            kind='file'
+            role='distribution'
             relative_path=$relative
             source=$source
             target=$target
-            stage_relative=([string]$paths.DistributionRelative+'\'+$relative)
+            stage_relative=$stageRelative
             backup_relative=$backupRelative
         })
     }
     $result.ToArray()
 }
-
 function Assert-VllmUpdateTransactionActivationPlan {
     param(
         [Parameter(Mandatory)][object[]]$Plan,
         [Parameter(Mandatory)]$Paths,
-        [Parameter(Mandatory)][string]$ModelsRoot
+        [Parameter(Mandatory)][string]$ModelsRoot,
+        [ValidateSet('materializing','prepared','activating','committed','cleanup')][string]$Phase='prepared'
     )
-    if(@($Plan).Count-eq0){throw 'Update transaction activation_plan is empty.'}
     $seen=@{}
     foreach($item in @($Plan)){
-        Assert-VllmLifecycleExactProperties -Value $item -Expected @(
-            'class','relative_path','source','target','stage_relative','backup_relative'
-        ) -Label 'Update transaction activation entry'
+        $names=@($item.PSObject.Properties.Name)
+        $legacy=@('class','relative_path','source','target','stage_relative','backup_relative')
+        $extended=@('class','kind','role','relative_path','source','target','stage_relative','backup_relative')
+        $provisional=@('class','kind','role','relative_path','source','target','target_contract','stage_relative','backup_relative')
+        $isLegacy=-not[bool](Compare-Object ($names|Sort-Object) ($legacy|Sort-Object))
+        $isExtended=-not[bool](Compare-Object ($names|Sort-Object) ($extended|Sort-Object))
+        $isProvisional=-not[bool](Compare-Object ($names|Sort-Object) ($provisional|Sort-Object))
+        if(-not$isLegacy-and-not$isExtended-and-not$isProvisional){
+            throw 'Update transaction activation entry has unexpected properties.'
+        }
+        if($isProvisional-and[string]::IsNullOrWhiteSpace([string]$item.target_contract)){
+            throw 'Provisional update activation entry target_contract is empty.'
+        }
+
         $class=[string]$item.class
-        if($class-notin@('replace','add')){throw "Unsupported activation class: $class"}
+        if($class-notin@('replace','add','retire')){throw "Unsupported activation class: $class"}
+        $kind=Get-VllmUpdateActivationEntryKind -Entry $item
+        if($kind-notin@('file','tree')){throw "Unsupported activation object kind: $kind"}
+        $role=Get-VllmUpdateActivationEntryRole -Entry $item
+        if([string]::IsNullOrWhiteSpace($role)){throw 'Activation role is empty.'}
+
         $relative=Assert-VllmSafeRelativePath -RelativePath ([string]$item.relative_path) -Label 'Update transaction activation path'
         Assert-VllmUpdateOrdinaryPathNotLifecycleOwned -InstallationRoot $Paths.InstallationRoot -RelativePath $relative -Label 'Update transaction activation path'
         Assert-VllmUpdateNoProtectedOverlap -InstallationRoot $Paths.InstallationRoot -ModelsRoot $ModelsRoot -RelativePath $relative -Label 'Update transaction activation path'
@@ -128,32 +189,39 @@ function Assert-VllmUpdateTransactionActivationPlan {
         if($seen.ContainsKey($key)){throw "Duplicate update transaction activation path: $relative"}
         $seen[$key]=$true
 
-        Assert-VllmUpdateTransactionFileIdentity -Identity $item.target -Label "Activation target '$relative'"
-        if([string]$item.target.sha256-ne([string]$item.target.sha256).ToUpperInvariant()){
-            throw "Activation target SHA-256 is not canonical uppercase: $relative"
+        $targetMayBePending=$isProvisional-and$Phase-eq'materializing'-and$class-in@('replace','add')
+        if($class-eq'replace'){
+            if($null-eq$item.source-or($null-eq$item.target-and-not$targetMayBePending)){throw "Replace activation identities are incomplete: $relative"}
+        }elseif($class-eq'add'){
+            if($null-ne$item.source-or($null-eq$item.target-and-not$targetMayBePending)){throw "Add activation identities are invalid: $relative"}
+        }else{
+            if($isProvisional){throw "Retire activation must not use provisional target-contract form: $relative"}
+            if($null-eq$item.source-or$null-ne$item.target){throw "Retire activation identities are invalid: $relative"}
         }
-        $expectedStage=[string]$Paths.DistributionRelative+'\'+$relative
-        if(-not(Test-VllmUpdateRelativePathEqual -A ([string]$item.stage_relative) -B $expectedStage)){
-            throw "Activation stage path is inconsistent with transaction layout: $relative"
+        if($null-ne$item.source){Assert-VllmUpdateTransactionObjectIdentity -Kind $kind -Identity $item.source -Label "Activation source '$relative'"}
+        if($null-ne$item.target){Assert-VllmUpdateTransactionObjectIdentity -Kind $kind -Identity $item.target -Label "Activation target '$relative'"}
+
+        if($class-in@('replace','add')){
+            $stageBase=if($role-eq'distribution'){$Paths.DistributionRelative}else{$Paths.ManagedRelative}
+            $expectedStage=[string]$stageBase+'\'+$relative
+            if(-not(Test-VllmUpdateRelativePathEqual -A ([string]$item.stage_relative) -B $expectedStage)){
+                throw "Activation stage path is inconsistent with transaction layout: $relative"
+            }
+        }elseif($null-ne$item.stage_relative){
+            throw "Retire activation unexpectedly records a stage path: $relative"
         }
 
         if($class-eq'replace'){
-            if($null-eq$item.source){throw "Replace activation source identity is missing: $relative"}
-            Assert-VllmUpdateTransactionFileIdentity -Identity $item.source -Label "Activation source '$relative'"
-            if([string]$item.source.sha256-ne([string]$item.source.sha256).ToUpperInvariant()){
-                throw "Activation source SHA-256 is not canonical uppercase: $relative"
-            }
-            $expectedBackup=[string]$Paths.BackupDistributionRelative+'\'+$relative
+            $backupBase=if($role-eq'distribution'){$Paths.BackupDistributionRelative}else{$Paths.BackupManagedRelative}
+            $expectedBackup=[string]$backupBase+'\'+$relative
             if(-not(Test-VllmUpdateRelativePathEqual -A ([string]$item.backup_relative) -B $expectedBackup)){
                 throw "Activation backup path is inconsistent with transaction layout: $relative"
             }
-        }else{
-            if($null-ne$item.source){throw "Add activation unexpectedly records a source identity: $relative"}
-            if($null-ne$item.backup_relative){throw "Add activation unexpectedly records a backup path: $relative"}
+        }elseif($null-ne$item.backup_relative){
+            throw "$class activation unexpectedly records a backup path: $relative"
         }
     }
 }
-
 function Assert-VllmUpdateTransactionJournal {
     param(
         [Parameter(Mandatory)]$Journal,
@@ -219,7 +287,7 @@ function Assert-VllmUpdateTransactionJournal {
     [void][DateTimeOffset]::TryParse([string]$Journal.updated_at,[ref]$updated)
     if($updated-lt$created){throw 'Update transaction updated_at precedes created_at.'}
 
-    Assert-VllmUpdateTransactionActivationPlan -Plan @($Journal.activation_plan) -Paths $paths -ModelsRoot $models
+    Assert-VllmUpdateTransactionActivationPlan -Plan @($Journal.activation_plan) -Paths $paths -ModelsRoot $models -Phase ([string]$Journal.phase)
     return $Journal
 }
 
@@ -278,7 +346,7 @@ function Open-VllmUpdateTransaction {
 
     Assert-VllmUpdateTransactionGenerationIdentity -Identity $SourceIdentity -Label 'New transaction source'
     Assert-VllmUpdateTransactionGenerationIdentity -Identity $TargetIdentity -Label 'New transaction target'
-    Assert-VllmUpdateTransactionActivationPlan -Plan $ActivationPlan -Paths $paths -ModelsRoot $models
+    Assert-VllmUpdateTransactionActivationPlan -Plan $ActivationPlan -Paths $paths -ModelsRoot $models -Phase materializing
 
     $now=(Get-Date).ToUniversalTime().ToString('o')
     $journal=[pscustomobject][ordered]@{
@@ -336,6 +404,67 @@ function Open-VllmUpdateTransaction {
     [pscustomobject][ordered]@{Journal=$journal;Paths=$paths}
 }
 
+function Complete-VllmUpdateTransactionMaterializedTargets {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][object[]]$MaterializedTargets,
+        [ValidateSet('None','BeforePublish','AfterPublish')][string]$FaultPoint='None'
+    )
+    $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $root
+    if($null-eq$journal-or[string]$journal.phase-ne'materializing'){
+        throw 'Materialized target identities may only be finalized during the materializing phase.'
+    }
+
+    $provided=@{}
+    foreach($value in @($MaterializedTargets)){
+        Assert-VllmLifecycleExactProperties -Value $value -Expected @('relative_path','target_contract','identity') -Label 'Materialized target identity'
+        $relative=Assert-VllmSafeRelativePath -RelativePath ([string]$value.relative_path) -Label 'Materialized target path'
+        if([string]::IsNullOrWhiteSpace([string]$value.target_contract)){throw "Materialized target contract is empty: $relative"}
+        $key=Get-VllmUpdateRelativeKey $relative
+        if($provided.ContainsKey($key)){throw "Duplicate materialized target identity: $relative"}
+        $provided[$key]=$value
+    }
+
+    $pending=0
+    foreach($item in @($journal.activation_plan)){
+        $names=@($item.PSObject.Properties.Name)
+        if($names -notcontains 'target_contract'){continue}
+        if([string]$item.class-notin@('replace','add')){throw "Only replace/add entries may carry target_contract: $($item.relative_path)"}
+        if($null-ne$item.target){continue}
+        $pending++
+        $relative=[string]$item.relative_path
+        $key=Get-VllmUpdateRelativeKey $relative
+        if(-not$provided.ContainsKey($key)){throw "Materialized target identity is missing for: $relative"}
+        $value=$provided[$key]
+        if(-not([string]$value.target_contract).Equals([string]$item.target_contract,[StringComparison]::Ordinal)){
+            throw "Materialized target contract does not match the journal: $relative"
+        }
+        $kind=Get-VllmUpdateActivationEntryKind -Entry $item
+        Assert-VllmUpdateTransactionObjectIdentity -Kind $kind -Identity $value.identity -Label "Materialized target '$relative'"
+        $item.target=$value.identity
+        $provided.Remove($key)
+    }
+
+    if($pending-eq0){throw 'Update transaction has no pending materialized target identities to finalize.'}
+    if($provided.Count-ne0){
+        $extra=@($provided.Values|ForEach-Object{[string]$_.relative_path}|Sort-Object)
+        throw "Unexpected materialized target identities were supplied: $($extra -join ', ')"
+    }
+
+    $journal.updated_at=(Get-Date).ToUniversalTime().ToString('o')
+    [void](Write-VllmUpdateTransactionJournal -InstallationRoot $root -Journal $journal -FaultPoint $FaultPoint)
+    $verified=Read-VllmUpdateTransactionJournal -InstallationRoot $root
+    foreach($item in @($verified.activation_plan)){
+        if($item.PSObject.Properties.Name -contains 'target_contract'){
+            if([string]$item.class-in@('replace','add')-and$null-eq$item.target){
+                throw "Materialized target finalization re-read found an unresolved target: $($item.relative_path)"
+            }
+        }
+    }
+    return $verified
+}
+
 function Invoke-VllmUpdateTransactionPhaseTransition {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -383,6 +512,75 @@ function Get-VllmUpdateTransactionFileState {
     return 'unknown'
 }
 
+function Get-VllmUpdateTransactionObjectState {
+    param(
+        [Parameter(Mandatory)][ValidateSet('file','tree')][string]$Kind,
+        [Parameter(Mandatory)][string]$Path,
+        $SourceIdentity,
+        $TargetIdentity
+    )
+    if($Kind-eq'file'){
+        return Get-VllmUpdateTransactionFileState -Path $Path -SourceIdentity $SourceIdentity -TargetIdentity $TargetIdentity
+    }
+    $entry=Get-VllmPathEntryInfo -Path $Path
+    if(-not$entry.Exists){return 'missing'}
+    if(-not$entry.IsDirectory-or$entry.IsReparsePoint){return 'unknown'}
+    try{$identity=Get-VllmUpdateTreeIdentity -Root $Path}catch{return 'unknown'}
+    if($null-ne$SourceIdentity-and
+       [int]$identity.EntryCount-eq[int]$SourceIdentity.entry_count-and
+       [int]$identity.FileCount-eq[int]$SourceIdentity.file_count-and
+       [string]$identity.TreeSha256-eq[string]$SourceIdentity.tree_sha256){
+        return 'source'
+    }
+    if($null-ne$TargetIdentity-and
+       [int]$identity.EntryCount-eq[int]$TargetIdentity.entry_count-and
+       [int]$identity.FileCount-eq[int]$TargetIdentity.file_count-and
+       [string]$identity.TreeSha256-eq[string]$TargetIdentity.tree_sha256){
+        return 'target'
+    }
+    return 'unknown'
+}
+
+function Assert-VllmUpdateTransactionExactObject {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][ValidateSet('file','tree')][string]$Kind,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$RelativePath,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$Label
+    )
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $Path -RelativePath $RelativePath)
+    $state=Get-VllmUpdateTransactionObjectState -Kind $Kind -Path $Path -TargetIdentity $Identity
+    if($state-ne'target'){throw "$Label identity mismatch: $Path"}
+}
+
+function Move-VllmUpdateTransactionObject {
+    param(
+        [Parameter(Mandatory)][ValidateSet('file','tree')][string]$Kind,
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+    if($Kind-eq'file'){[IO.File]::Move($Source,$Destination)}
+    else{[IO.Directory]::Move($Source,$Destination)}
+}
+
+function Invoke-VllmUpdateKnownObjectRemoval {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][ValidateSet('file','tree')][string]$Kind,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$RelativePath,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $entry=Get-VllmPathEntryInfo -Path $Path
+    if(-not$entry.Exists){return}
+    Assert-VllmUpdateTransactionExactObject -InstallationRoot $InstallationRoot -Kind $Kind -Path $Path -RelativePath $RelativePath -Identity $Identity -Label $Label
+    if($Kind-eq'file'){[IO.File]::Delete($Path)}
+    else{[IO.Directory]::Delete($Path,$true)}
+}
+
 function Assert-VllmUpdateTransactionExactFile {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -404,16 +602,23 @@ function Complete-VllmUpdateTransactionPreparation {
         throw 'Update transaction must be in materializing phase before preparation can complete.'
     }
     foreach($item in @($journal.activation_plan)){
-        $stage=Join-Path $root ([string]$item.stage_relative)
-        Assert-VllmUpdateTransactionExactFile -InstallationRoot $root -Path $stage -RelativePath ([string]$item.stage_relative) -Identity $item.target -Label "Staged target '$($item.relative_path)'"
-        if([string]$item.class-eq'replace'){
+        $class=[string]$item.class
+        $kind=Get-VllmUpdateActivationEntryKind -Entry $item
+        if($class-in@('replace','add')){
+            $stage=Join-Path $root ([string]$item.stage_relative)
+            Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $stage -RelativePath ([string]$item.stage_relative) -Identity $item.target -Label "Staged target '$($item.relative_path)'"
+        }
+        if($class-eq'replace'){
             $backup=Join-Path $root ([string]$item.backup_relative)
             if((Get-VllmPathEntryInfo -Path $backup).Exists){throw "Backup path exists before activation: $backup"}
+        }
+        if($class-eq'retire'){
+            $live=Join-Path $root ([string]$item.relative_path)
+            Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $live -RelativePath ([string]$item.relative_path) -Identity $item.source -Label "Retire source '$($item.relative_path)'"
         }
     }
     Invoke-VllmUpdateTransactionPhaseTransition -InstallationRoot $root -Phase prepared
 }
-
 function Read-VllmUpdateInstallStateForRecovery {
     param([Parameter(Mandatory)][string]$InstallationRoot)
     $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
@@ -489,6 +694,20 @@ function Invoke-VllmUpdateEmptyDirectoryRemoval {
     [IO.Directory]::Delete($Path,$false)
 }
 
+function Invoke-VllmUpdateMaterializationCleanup {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)]$Paths
+    )
+    $path=[string]$Paths.MaterializationRoot
+    $entry=Get-VllmPathEntryInfo -Path $path
+    if(-not$entry.Exists){return}
+    if(-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "Update materialization root is unsafe: $path"}
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $path -RelativePath ([string]$Paths.MaterializationRelative))
+    Assert-VllmUpdateManagedTreeNoReparsePoints -Path $path -Label 'Update materialization root'
+    [IO.Directory]::Delete($path,$true)
+}
+
 function Get-VllmUpdateCleanupDirectorySet {
     param(
         [Parameter(Mandatory)]$Journal,
@@ -507,15 +726,20 @@ function Get-VllmUpdateCleanupDirectorySet {
         }
     }
     foreach($item in @($Journal.activation_plan)){
-        & $addParents ([string]$item.stage_relative) ([string]$Paths.StagingRelative)
+        if($null-ne$item.stage_relative){
+            $stageStop=if((Get-VllmUpdateActivationEntryRole -Entry $item)-eq'distribution'){$Paths.DistributionRelative}else{$Paths.ManagedRelative}
+            & $addParents ([string]$item.stage_relative) ([string]$stageStop)
+        }
         if($null-ne$item.backup_relative){
-            & $addParents ([string]$item.backup_relative) ([string]$Paths.BackupRelative)
+            $backupStop=if((Get-VllmUpdateActivationEntryRole -Entry $item)-eq'distribution'){$Paths.BackupDistributionRelative}else{$Paths.BackupManagedRelative}
+            & $addParents ([string]$item.backup_relative) ([string]$backupStop)
         }
     }
     foreach($relative in @(
         $Paths.ManagedRelative,
         $Paths.DistributionRelative,
         $Paths.StagingRelative,
+        $Paths.BackupManagedRelative,
         $Paths.BackupDistributionRelative,
         $Paths.BackupRelative,
         $Paths.TransactionRelative,
@@ -525,7 +749,6 @@ function Get-VllmUpdateCleanupDirectorySet {
     }
     @($set.Values|Sort-Object {($_ -split '[\\/]').Count} -Descending)
 }
-
 function Invoke-VllmUpdateTransactionEvidenceCleanup {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -537,18 +760,31 @@ function Invoke-VllmUpdateTransactionEvidenceCleanup {
     $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $root -TransactionId ([string]$Journal.transaction_id)
 
     foreach($item in @($Journal.activation_plan)){
-        $stage=Join-Path $root ([string]$item.stage_relative)
-        Invoke-VllmUpdateKnownFileRemoval -InstallationRoot $root -Path $stage -RelativePath ([string]$item.stage_relative) -Identity $item.target -Label "Staged target '$($item.relative_path)'"
+        $class=[string]$item.class
+        $kind=Get-VllmUpdateActivationEntryKind -Entry $item
+        $relative=[string]$item.relative_path
 
-        if([string]$item.class-eq'replace'){
+        if($null-ne$item.stage_relative){
+            $stage=Join-Path $root ([string]$item.stage_relative)
+            Invoke-VllmUpdateKnownObjectRemoval -InstallationRoot $root -Kind $kind -Path $stage -RelativePath ([string]$item.stage_relative) -Identity $item.target -Label "Staged target '$relative'"
+        }
+
+        if($class-eq'replace'){
             $backup=Join-Path $root ([string]$item.backup_relative)
             if($CommittedGeneration-eq'target'){
-                Invoke-VllmUpdateKnownFileRemoval -InstallationRoot $root -Path $backup -RelativePath ([string]$item.backup_relative) -Identity $item.source -Label "Committed source backup '$($item.relative_path)'"
+                Invoke-VllmUpdateKnownObjectRemoval -InstallationRoot $root -Kind $kind -Path $backup -RelativePath ([string]$item.backup_relative) -Identity $item.source -Label "Committed source backup '$relative'"
             }elseif((Get-VllmPathEntryInfo -Path $backup).Exists){
                 throw "Source rollback cleanup found an unexpected remaining backup: $backup"
             }
         }
+
+        if($class-eq'retire' -and $CommittedGeneration-eq'target'){
+            $live=Join-Path $root $relative
+            Invoke-VllmUpdateKnownObjectRemoval -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.source -Label "Committed retire '$relative'"
+        }
     }
+
+    Invoke-VllmUpdateMaterializationCleanup -InstallationRoot $root -Paths $paths
 
     foreach($relative in @(Get-VllmUpdateCleanupDirectorySet -Journal $Journal -Paths $paths)){
         $path=Join-Path $root $relative
@@ -560,10 +796,9 @@ function Invoke-VllmUpdateTransactionEvidenceCleanup {
     if($entry.Exists){
         if($entry.IsDirectory-or$entry.IsReparsePoint){throw "Update journal became unsafe during cleanup: $journalPath"}
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $journalPath -RelativePath $paths.JournalRelative)
-        Remove-Item -LiteralPath $journalPath -Force
+        [IO.File]::Delete($journalPath)
     }
 }
-
 function Restore-VllmUpdateSourceGeneration {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -574,14 +809,21 @@ function Restore-VllmUpdateSourceGeneration {
     $plan=@($Journal.activation_plan)
     [array]::Reverse($plan)
     foreach($item in $plan){
+        $class=[string]$item.class
+        $kind=Get-VllmUpdateActivationEntryKind -Entry $item
         $relative=[string]$item.relative_path
         $live=Join-Path $root $relative
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $live -RelativePath $relative)
 
-        if([string]$item.class-eq'add'){
-            $liveState=Get-VllmUpdateTransactionFileState -Path $live -TargetIdentity $item.target
+        if($class-eq'retire'){
+            Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.source -Label "Source retire remains live '$relative'"
+            continue
+        }
+
+        if($class-eq'add'){
+            $liveState=Get-VllmUpdateTransactionObjectState -Kind $kind -Path $live -TargetIdentity $item.target
             if($liveState-eq'target'){
-                Invoke-VllmUpdateKnownFileRemoval -InstallationRoot $root -Path $live -RelativePath $relative -Identity $item.target -Label "Rollback add '$relative'"
+                Invoke-VllmUpdateKnownObjectRemoval -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.target -Label "Rollback add '$relative'"
             }elseif($liveState-ne'missing'){
                 throw "Cannot roll back add '$relative': live state is $liveState."
             }
@@ -591,16 +833,16 @@ function Restore-VllmUpdateSourceGeneration {
         $backupRelative=[string]$item.backup_relative
         $backup=Join-Path $root $backupRelative
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $backup -RelativePath $backupRelative)
-        $liveState=Get-VllmUpdateTransactionFileState -Path $live -SourceIdentity $item.source -TargetIdentity $item.target
-        $backupState=Get-VllmUpdateTransactionFileState -Path $backup -SourceIdentity $item.source
+        $liveState=Get-VllmUpdateTransactionObjectState -Kind $kind -Path $live -SourceIdentity $item.source -TargetIdentity $item.target
+        $backupState=Get-VllmUpdateTransactionObjectState -Kind $kind -Path $backup -SourceIdentity $item.source
 
         if($backupState-eq'source'){
             if($liveState-eq'target'){
-                Invoke-VllmUpdateKnownFileRemoval -InstallationRoot $root -Path $live -RelativePath $relative -Identity $item.target -Label "Rollback activated target '$relative'"
+                Invoke-VllmUpdateKnownObjectRemoval -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.target -Label "Rollback activated target '$relative'"
             }elseif($liveState-ne'missing'){
                 throw "Cannot restore replace '$relative': live=$liveState backup=source."
             }
-            [IO.File]::Move($backup,$live)
+            Move-VllmUpdateTransactionObject -Kind $kind -Source $backup -Destination $live
         }elseif($backupState-eq'missing'){
             if($liveState-ne'source'){
                 throw "Cannot restore replace '$relative': live=$liveState and source backup is missing."
@@ -609,15 +851,15 @@ function Restore-VllmUpdateSourceGeneration {
             throw "Cannot restore replace '$relative': backup state is $backupState."
         }
 
-        Assert-VllmUpdateTransactionExactFile -InstallationRoot $root -Path $live -RelativePath $relative -Identity $item.source -Label "Restored source '$relative'"
+        Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.source -Label "Restored source '$relative'"
     }
 }
-
 function Invoke-VllmUpdateTransactionRecovery {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
         [scriptblock]$ValidateGeneration
     )
+    if($WhatIfPreference){throw 'Update transaction recovery refuses to mutate under -WhatIf.'}
     $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
     $journalPath=Join-Path $root 'state\update-transaction.json'
     $workspaceRoot=Join-Path $root 'work\update-transaction'
@@ -683,19 +925,22 @@ function Invoke-VllmUpdateActivationRenames {
     if($FaultPoint-eq'BeforeFirstRename'){throw 'FAULT_INJECTED:BeforeFirstRename'}
 
     foreach($item in @($Journal.activation_plan)){
+        $class=[string]$item.class
+        if($class-eq'retire'){continue}
+        $kind=Get-VllmUpdateActivationEntryKind -Entry $item
         $relative=[string]$item.relative_path
         $live=Join-Path $root $relative
         $stage=Join-Path $root ([string]$item.stage_relative)
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $live -RelativePath $relative)
-        Assert-VllmUpdateTransactionExactFile -InstallationRoot $root -Path $stage -RelativePath ([string]$item.stage_relative) -Identity $item.target -Label "Activation staged target '$relative'"
+        Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $stage -RelativePath ([string]$item.stage_relative) -Identity $item.target -Label "Activation staged target '$relative'"
 
         $liveParent=Split-Path -Parent $live
         if(-not(Test-Path -LiteralPath $liveParent -PathType Container)){
-            throw "Activation live parent directory is missing; SM-18D does not create unrecorded live directories: $liveParent"
+            throw "Activation live parent directory is missing; update does not create unrecorded live directories: $liveParent"
         }
 
-        if([string]$item.class-eq'replace'){
-            $liveState=Get-VllmUpdateTransactionFileState -Path $live -SourceIdentity $item.source -TargetIdentity $item.target
+        if($class-eq'replace'){
+            $liveState=Get-VllmUpdateTransactionObjectState -Kind $kind -Path $live -SourceIdentity $item.source -TargetIdentity $item.target
             if($liveState-ne'source'){throw "Replace source drifted immediately before activation: $relative ($liveState)"}
 
             $backupRelative=[string]$item.backup_relative
@@ -707,21 +952,20 @@ function Invoke-VllmUpdateActivationRenames {
             [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $backupParent -RelativePath $backupParentRelative)
             [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $backup -RelativePath $backupRelative)
 
-            [IO.File]::Move($live,$backup)
-            Assert-VllmUpdateTransactionExactFile -InstallationRoot $root -Path $backup -RelativePath $backupRelative -Identity $item.source -Label "Activation source backup '$relative'"
+            Move-VllmUpdateTransactionObject -Kind $kind -Source $live -Destination $backup
+            Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $backup -RelativePath $backupRelative -Identity $item.source -Label "Activation source backup '$relative'"
             if($FaultPoint-eq'AfterSourceBackup'){throw 'FAULT_INJECTED:AfterSourceBackup'}
         }else{
-            $liveState=Get-VllmUpdateTransactionFileState -Path $live -TargetIdentity $item.target
+            $liveState=Get-VllmUpdateTransactionObjectState -Kind $kind -Path $live -TargetIdentity $item.target
             if($liveState-ne'missing'){throw "Add target is no longer absent immediately before activation: $relative ($liveState)"}
         }
 
         if((Get-VllmPathEntryInfo -Path $live).Exists){throw "Activation live target unexpectedly exists before staged rename: $relative"}
-        [IO.File]::Move($stage,$live)
-        Assert-VllmUpdateTransactionExactFile -InstallationRoot $root -Path $live -RelativePath $relative -Identity $item.target -Label "Activated target '$relative'"
+        Move-VllmUpdateTransactionObject -Kind $kind -Source $stage -Destination $live
+        Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.target -Label "Activated target '$relative'"
         if($FaultPoint-eq'AfterTargetActivation'){throw 'FAULT_INJECTED:AfterTargetActivation'}
     }
 }
-
 function Invoke-VllmUpdateTransactionActivation {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -734,6 +978,7 @@ function Invoke-VllmUpdateTransactionActivation {
             'BeforeStateCommit','AfterStateCommit','DuringCleanup'
         )][string]$FaultPoint='None'
     )
+    if($WhatIfPreference){throw 'Update transaction activation refuses to mutate under -WhatIf.'}
     $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
     $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $root
     if($null-eq$journal-or[string]$journal.phase-ne'prepared'){

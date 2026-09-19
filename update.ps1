@@ -15,6 +15,7 @@ $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'scripts\update-planner.ps1')
 . (Join-Path $PSScriptRoot 'scripts\update-staging.ps1')
 . (Join-Path $PSScriptRoot 'scripts\update-transaction.ps1')
+. (Join-Path $PSScriptRoot 'scripts\update-integration.ps1')
 
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'update.ps1 supports native Windows x64 only.'
@@ -115,23 +116,48 @@ try {
     $source = Get-VllmUpdateSourceContext -InstallationRoot $InstallationRoot
     $target = Get-VllmUpdateReleaseContext -ReleaseManifestPath $targetManifestPath -InstallationRoot $InstallationRoot -ModelsRoot $source.ModelsRoot -WheelPath $targetWheelPath -RequireUpdaterPlanner
     $plan = Get-VllmUpdateTransitionPlan -SourceContext $source -TargetContext $target
-    [void](Get-VllmUpdateManagedStagingPlan -Plan $plan)
+    $managedPlan = @(Get-VllmUpdateIntegrationManagedPlan -Plan $plan)
 
-    if (-not $plan.idempotent -and -not $WhatIfPreference) {
-        throw 'Update target requires activation. SM-18D implements durable transaction recovery and synthetic activation only; production target activation remains deferred to SM-18E. Use -WhatIf to inspect the exact plan.'
-    }
-    if (-not $plan.idempotent -and $WhatIfPreference) {
-        [void]$PSCmdlet.ShouldProcess($InstallationRoot, "Activate release '$($plan.target.release)' from '$($plan.source.release)'")
+    if ($plan.idempotent) {
+        if ($Json) {
+            $plan | ConvertTo-Json -Depth 12
+        } else {
+            Write-Host "Source: $($plan.source.release) [$($plan.source.generation_id)]"
+            Write-Host "Target: $($plan.target.release)"
+            Write-Host 'UPDATE_NOOP'
+        }
+        return
     }
 
-    if ($Json) {
-        $plan | ConvertTo-Json -Depth 12
-    } else {
-        Write-Host "Source: $($plan.source.release) [$($plan.source.generation_id)]"
-        Write-Host "Target: $($plan.target.release)"
-        Write-Host "Plan:   distribution reuse=$($plan.counts.distribution_reuse) replace=$($plan.counts.distribution_replace) add=$($plan.counts.distribution_add) retire=$($plan.counts.distribution_retire)"
-        Write-Host "        managed      reuse=$($plan.counts.managed_reuse) replace=$($plan.counts.managed_replace) add=$($plan.counts.managed_add) retire=$($plan.counts.managed_retire)"
-        if ($plan.idempotent) { Write-Host 'UPDATE_NOOP' } else { Write-Host 'UPDATE_PLAN_READY' }
+    $action = "Activate release '$($plan.target.release)' from '$($plan.source.release)'"
+    if ($WhatIfPreference) {
+        [void]$PSCmdlet.ShouldProcess($InstallationRoot,$action)
+        if ($Json) {
+            $plan | ConvertTo-Json -Depth 12
+        } else {
+            Write-Host "Source: $($plan.source.release) [$($plan.source.generation_id)]"
+            Write-Host "Target: $($plan.target.release)"
+            Write-Host "Plan:   distribution reuse=$($plan.counts.distribution_reuse) replace=$($plan.counts.distribution_replace) add=$($plan.counts.distribution_add) retire=$($plan.counts.distribution_retire)"
+            Write-Host "        managed      reuse=$($plan.counts.managed_reuse) replace=$($plan.counts.managed_replace) add=$($plan.counts.managed_add) retire=$($plan.counts.managed_retire)"
+            Write-Host 'UPDATE_PLAN_READY'
+        }
+        return
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($InstallationRoot,$action)) {
+        if (-not $Json) { Write-Host 'UPDATE_CANCELLED' }
+        return
+    }
+
+    $prepared=Invoke-VllmUpdateProductionTransactionPreparation -InstallationRoot $InstallationRoot -SourceContext $source -TargetContext $target -Plan $plan -ManagedPlan $managedPlan -WheelPath $targetWheelPath
+    $recoveryValidator=(Get-Item Function:\Assert-VllmRecoveredGeneration).ScriptBlock
+    $result=Complete-VllmUpdateProductionTransaction -InstallationRoot $InstallationRoot -SourceContext $source -TargetContext $target -Prepared $prepared -ValidateGeneration $recoveryValidator
+    if($Json){
+        $result|ConvertTo-Json -Depth 8
+    }else{
+        Write-Host "Updated: $($plan.source.release) -> $($plan.target.release)"
+        Write-Host "Generation: $($result.generation_id)"
+        Write-Host 'UPDATE_READY'
     }
 } finally {
     if ($null -ne $operationLock) { Exit-VllmOperationLock -Lock $operationLock; $operationLock=$null }

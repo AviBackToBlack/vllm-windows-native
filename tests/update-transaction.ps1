@@ -496,3 +496,139 @@ function Test-AtomicJsonPublication {
 
 Test-AtomicJsonPublication
 Write-Host 'UPDATE_ATOMIC_PUBLICATION_NO_GAP_OK'
+
+function Convert-TestTreeIdentity {
+    param([Parameter(Mandatory)]$Identity)
+    [pscustomobject][ordered]@{
+        entry_count=[int]$Identity.EntryCount
+        file_count=[int]$Identity.FileCount
+        tree_sha256=([string]$Identity.TreeSha256).ToUpperInvariant()
+    }
+}
+
+Invoke-TestScenario -Name 'managed-tree-replace-retire' -Body {
+    param($scenario)
+    $managedRelative='runtime\managed-tree'
+    $retireRelative='obsolete.txt'
+    $managedLive=Join-Path $scenario.Root $managedRelative
+    [void][IO.Directory]::CreateDirectory($managedLive)
+    [IO.File]::WriteAllText((Join-Path $managedLive 'payload.txt'),'managed-source',[Text.UTF8Encoding]::new($false))
+    $retireLive=Join-Path $scenario.Root $retireRelative
+    [IO.File]::WriteAllText($retireLive,'obsolete-source',[Text.UTF8Encoding]::new($false))
+
+    $sourceTree=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $managedLive)
+    $retireFile=Get-TestIdentity -Path $retireLive
+    $retireIdentity=[pscustomobject][ordered]@{size_bytes=[int64]$retireFile.Size;sha256=([string]$retireFile.Sha256).ToUpperInvariant()}
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $scenario.Root -TransactionId $txid
+    $stageRelative=[string]$paths.ManagedRelative+'\'+$managedRelative
+    $backupRelative=[string]$paths.BackupManagedRelative+'\'+$managedRelative
+
+    $targetSource=Join-Path $scenario.Base 'managed-target-source'
+    [void][IO.Directory]::CreateDirectory($targetSource)
+    [IO.File]::WriteAllText((Join-Path $targetSource 'payload.txt'),'managed-target',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $targetSource 'added.txt'),'new-content',[Text.UTF8Encoding]::new($false))
+    $targetTree=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $targetSource)
+
+    $activation=@(
+        [pscustomobject][ordered]@{
+            class='replace';kind='tree';role='runtime';relative_path=$managedRelative
+            source=$sourceTree;target=$targetTree;stage_relative=$stageRelative;backup_relative=$backupRelative
+        },
+        [pscustomobject][ordered]@{
+            class='retire';kind='file';role='distribution';relative_path=$retireRelative
+            source=$retireIdentity;target=$null;stage_relative=$null;backup_relative=$null
+        }
+    )
+
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    $stagePath=Join-Path $scenario.Root $stageRelative
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $stagePath))
+    Copy-Item -LiteralPath $targetSource -Destination $stagePath -Recurse
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+
+    $targetState=[pscustomobject][ordered]@{generation_id=$scenario.TargetGeneration;marker='target'}
+    $validateState={param($state,$path);if([string]$state.marker-ne'target'){throw "tree target state mismatch: $path"}}
+    $result=Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $targetState -ValidateTargetState $validateState
+    if(-not$result.committed){throw 'Managed-tree transaction did not commit.'}
+    if((Get-VllmUpdateTransactionObjectState -Kind tree -Path $managedLive -TargetIdentity $targetTree)-ne'target'){throw 'Managed tree did not activate.'}
+    if(Test-Path -LiteralPath $retireLive){throw 'Post-commit retire path remains live.'}
+    if(Test-Path -LiteralPath (Join-Path $scenario.Root 'state\update-transaction.json')){throw 'Managed-tree transaction journal residue remains.'}
+    if(Test-Path -LiteralPath (Join-Path $scenario.Root 'work\update-transaction')){throw 'Managed-tree transaction workspace residue remains.'}
+}
+Write-Host 'UPDATE_MANAGED_TREE_RETIRE_OK'
+
+Invoke-TestScenario -Name 'engine-whatif-defense' -Body {
+    param($scenario)
+    [void](Open-TestScenario -Scenario $scenario)
+    Stage-TestScenario -Scenario $scenario
+    $oldWhatIf=$WhatIfPreference
+    try{
+        $WhatIfPreference=$true
+        Test-ExpectedFailure -Action {
+            Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root|Out-Null
+        } -Name 'engine-recovery-whatif-defense' -Expected 'refuses to mutate under -WhatIf'
+        Test-ExpectedFailure -Action {
+            Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $scenario.TargetState|Out-Null
+        } -Name 'engine-activation-whatif-defense' -Expected 'refuses to mutate under -WhatIf'
+    }finally{
+        $WhatIfPreference=$oldWhatIf
+    }
+    $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $scenario.Root
+    if([string]$journal.phase-ne'prepared'){throw 'Internal WhatIf defense changed transaction phase.'}
+}
+Write-Host 'UPDATE_TRANSACTION_INTERNAL_WHATIF_DEFENSE_OK'
+
+Invoke-TestScenario -Name 'provisional-materialization-finalization' -Body {
+    param($scenario)
+    $relative='runtime\provisional-tree'
+    $live=Join-Path $scenario.Root $relative
+    [void][IO.Directory]::CreateDirectory($live)
+    [IO.File]::WriteAllText((Join-Path $live 'payload.txt'),'source',[Text.UTF8Encoding]::new($false))
+    $sourceIdentity=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $live)
+
+    $targetSource=Join-Path $scenario.Base 'provisional-target'
+    [void][IO.Directory]::CreateDirectory($targetSource)
+    [IO.File]::WriteAllText((Join-Path $targetSource 'payload.txt'),'target',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $targetSource 'new.txt'),'new',[Text.UTF8Encoding]::new($false))
+    $targetIdentity=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $targetSource)
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $scenario.Root -TransactionId $txid
+    $contract='runtime-contract-v2'
+    $entry=[pscustomobject][ordered]@{
+        class='replace';kind='tree';role='runtime';relative_path=$relative
+        source=$sourceIdentity;target=$null;target_contract=$contract
+        stage_relative=([string]$paths.ManagedRelative+'\'+$relative)
+        backup_relative=([string]$paths.BackupManagedRelative+'\'+$relative)
+    }
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan @($entry) -TransactionId $txid)
+
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionPhaseTransition -InstallationRoot $scenario.Root -Phase prepared)
+    } -Name 'provisional-prepared-refused' -Expected 'Replace activation identities are incomplete'
+
+    Test-ExpectedFailure -Action {
+        [void](Complete-VllmUpdateTransactionMaterializedTargets -InstallationRoot $scenario.Root -MaterializedTargets @(
+            [pscustomobject][ordered]@{relative_path=$relative;target_contract='wrong-contract';identity=$targetIdentity}
+        ))
+    } -Name 'provisional-contract-mismatch-refused' -Expected 'does not match the journal'
+
+    $journal=Complete-VllmUpdateTransactionMaterializedTargets -InstallationRoot $scenario.Root -MaterializedTargets @(
+        [pscustomobject][ordered]@{relative_path=$relative;target_contract=$contract;identity=$targetIdentity}
+    )
+    if($null-eq$journal.activation_plan[0].target){throw 'Materialized target identity was not persisted.'}
+
+    $stage=Join-Path $scenario.Root ([string]$entry.stage_relative)
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $stage))
+    Copy-Item -LiteralPath $targetSource -Destination $stage -Recurse
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+
+    $targetState=[pscustomobject][ordered]@{generation_id=$scenario.TargetGeneration;marker='target'}
+    [void](Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $targetState)
+    if((Get-VllmUpdateTransactionObjectState -Kind tree -Path $live -TargetIdentity $targetIdentity)-ne'target'){
+        throw 'Finalized provisional target did not activate.'
+    }
+}
+Write-Host 'UPDATE_PROVISIONAL_MATERIALIZATION_FINALIZATION_OK'

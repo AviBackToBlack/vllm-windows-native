@@ -29,7 +29,7 @@ function Write-TestWheel{
         Add-ZipText $z 'vllm/__init__.py' "__version__ = '0.0.1'`ndef main():`n    import sys`n    print(sys.prefix)`n"
         Add-ZipText $z 'vllm-0.0.1.dist-info/METADATA' "Metadata-Version: 2.1`nName: vllm`nVersion: 0.0.1`n"
         Add-ZipText $z 'vllm-0.0.1.dist-info/WHEEL' "Wheel-Version: 1.0`nGenerator: installer-test`nRoot-Is-Purelib: true`nTag: py3-none-any`n"
-        Add-ZipText $z 'vllm-0.0.1.dist-info/entry_points.txt' "[console_scripts]`nvllm-relocation-probe = vllm:main`n"
+        Add-ZipText $z 'vllm-0.0.1.dist-info/entry_points.txt' "[console_scripts]`nvllm = vllm:main`nvllm-relocation-probe = vllm:main`n"
         Add-ZipText $z 'vllm-0.0.1.dist-info/RECORD' "vllm/__init__.py,,`nvllm-0.0.1.dist-info/METADATA,,`nvllm-0.0.1.dist-info/WHEEL,,`nvllm-0.0.1.dist-info/entry_points.txt,,`nvllm-0.0.1.dist-info/RECORD,,`n"
     }finally{$z.Dispose()}
 }
@@ -40,7 +40,7 @@ function Invoke-MiniReleaseFixtureCreation{
     $copied=@(
         'install.ps1','update.ps1','uninstall.ps1','start.ps1',
         'bootstrap-python.ps1','bootstrap-uv.ps1','bootstrap-venv.ps1','bootstrap-dependencies.ps1','bootstrap-vllm.ps1',
-        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/update-transaction.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
+        'scripts/common.ps1','scripts/lifecycle.ps1','scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/update-transaction.ps1','scripts/update-integration.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md',
         'manifests/bootstrap/cpython-3.13.15-windows-x86_64.json','manifests/bootstrap/uv-0.12.13-windows-x86_64.json','manifests/bootstrap/venv-v0.27.1-windows-x86_64.json'
     )
     foreach($rel in $copied){Copy-RepoFile -SourceRelative $rel -SourceRoot $SourceRoot}
@@ -120,9 +120,18 @@ try{
     if(Test-Path -LiteralPath (Join-Path $root 'work\install-distribution-staging')){throw 'Distribution staging survived successful install.'}
     Assert-FinalReady -Root $root
     foreach($receipt in 'python-bootstrap-3.13.15.json','uv-bootstrap-0.12.13.json','venv-bootstrap-v0.27.1.json','runtime-dependencies-v0.27.1.json','runtime-vllm-v0.27.1.json'){$rp=Join-Path $root ('forensic\'+$receipt);$j=Get-Content $rp -Raw|ConvertFrom-Json;if(-not([string]$j.manifest).StartsWith((Get-VllmNormalizedPath $root),[StringComparison]::OrdinalIgnoreCase)){throw "Receipt points outside installed distribution: $receipt -> $($j.manifest)"}}
+    $timestampProbe=[pscustomobject][ordered]@{updated_at='2026-09-19T00:00:47.1234500Z';marker='canonical'}
+    $timestampCanonicalA=(($timestampProbe|ConvertTo-Json -Depth 4|ConvertFrom-Json)|ConvertTo-Json -Depth 4 -Compress)
+    $timestampCanonicalB=(((($timestampProbe|ConvertTo-Json -Depth 4)|ConvertFrom-Json)|ConvertTo-Json -Depth 4|ConvertFrom-Json)|ConvertTo-Json -Depth 4 -Compress)
+    if($timestampCanonicalA-ne$timestampCanonicalB){throw 'Update canonical JSON is unstable across timestamp round-trip.'}
+    Write-Host 'UPDATE_CANONICAL_JSON_TIMESTAMP_OK'
+
     Write-Host 'INSTALL_FRESH_SELF_CONTAINED_OK'
     & (Join-Path $PSScriptRoot 'update-staging-real.ps1') -InstallationRoot $root
-    $fakeVllm=Join-Path $root 'runtime\venv\Scripts\vllm.exe';Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $fakeVllm -Force
+    $contractVllm=Join-Path $root 'runtime\venv\Scripts\vllm.exe'
+    if(-not(Test-Path -LiteralPath $contractVllm -PathType Leaf)){throw 'Synthetic wheel did not materialize the contract vllm.exe launcher.'}
+    $managedSleeper=Join-Path $root 'runtime\venv\Scripts\managed-runtime-sleeper.exe'
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $managedSleeper
     $updater=Join-Path $root 'update.ps1'
     $noop=(& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json)|ConvertFrom-Json
     if(-not$noop.ready-or-not$noop.planning_only-or-not$noop.idempotent-or[string]$noop.source.generation_id-ne[string]$state.generation_id){throw 'Same-release updater no-op result mismatch.'}
@@ -201,24 +210,44 @@ try{
     if((Get-Content $statePath -Raw)-ne$recoverySourceStateRaw){throw 'Top-level source recovery rewrote the committed install state.'}
     if((Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Top-level source recovery left transaction evidence behind.'}
     Write-Host 'UPDATE_PRODUCTION_SOURCE_RECOVERY_OK'
-    $rogue=Start-Process -FilePath $fakeVllm -ArgumentList '/c','ping 127.0.0.1 -n 30 > nul' -WindowStyle Hidden -PassThru
+    $rogue=Start-Process -FilePath $managedSleeper -ArgumentList '/c','ping 127.0.0.1 -n 30 > nul' -WindowStyle Hidden -PassThru
     try{
         if($rogue.HasExited){throw 'Synthetic managed runtime process exited before update process-scan test.'}
         Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-managed-process-scan' -ExpectedMessage 'Managed runtime process is still running'
-    }finally{if(-not$rogue.HasExited){& taskkill.exe /PID $rogue.Id /T /F | Out-Null};$rogue.Dispose()}
+    }finally{
+        if(-not$rogue.HasExited){& taskkill.exe /PID $rogue.Id /T /F | Out-Null}
+        $rogue.Dispose()
+        Remove-Item -LiteralPath $managedSleeper -Force -ErrorAction Stop
+    }
     Write-Host 'UPDATE_MANAGED_PROCESS_SCAN_OK'
     $transitionStateRaw=Get-Content $statePath -Raw
     $transitionPlan=(& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -WhatIf -Json)|ConvertFrom-Json
     if(-not$transitionPlan.ready-or-not$transitionPlan.planning_only-or$transitionPlan.idempotent-or$transitionPlan.counts.distribution_replace-lt1-or$transitionPlan.counts.distribution_add-lt1-or$transitionPlan.counts.managed_replace-lt1){throw 'Mutating update WhatIf plan did not classify the synthetic target as expected.'}
     if((Get-Content $statePath -Raw)-ne$transitionStateRaw-or(Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Mutating update WhatIf changed live transaction/install state.'}
     Write-Host 'UPDATE_MUTATING_WHATIF_PLAN_OK'
-    Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Json|Out-Null} -Name 'updater-live-activation-deferred' -ExpectedMessage 'production target activation remains deferred to SM-18E'
-    if((Get-Content $statePath -Raw)-ne$transitionStateRaw){throw 'Deferred live update attempt mutated install state.'}
-    Write-Host 'UPDATE_LIVE_ACTIVATION_DEFERRED_OK'
+    $sourceGeneration=[string](Get-Content $statePath -Raw|ConvertFrom-Json).generation_id
+    $updated=(& $updater -InstallationRoot $root -ReleaseManifestPath $targetReleasePath -WheelPath $wheel -Confirm:$false -Json)|ConvertFrom-Json
+    if(-not$updated.ready-or-not$updated.committed-or[string]$updated.release-ne'test-v0.27.2'-or[string]$updated.generation_id-eq$sourceGeneration){throw 'Production update commit result mismatch.'}
+    $stateRaw=Get-Content $statePath -Raw
+    $state=$stateRaw|ConvertFrom-Json
+    if([string]$state.release-ne'test-v0.27.2'-or[string]$state.generation_id-ne[string]$updated.generation_id){throw 'Committed target install state mismatch.'}
+    if(-not(Test-Path -LiteralPath (Join-Path $root 'fixture-target-added.txt') -PathType Leaf)){throw 'Target-only distribution add was not activated.'}
+    if((Get-Content (Join-Path $root 'start.ps1') -Raw).IndexOf('# synthetic target delta',[StringComparison]::Ordinal)-lt0){throw 'Target distribution replacement was not activated.'}
+    if((Test-Path (Join-Path $root 'state\update-transaction.json'))-or(Test-Path (Join-Path $root 'work\update-transaction'))){throw 'Successful production update left transaction evidence behind.'}
+    Assert-FinalReady -Root $root
+    $targetRuntimeReceipt=Get-Content (Join-Path $root 'forensic\runtime-vllm-v0.27.1.json') -Raw|ConvertFrom-Json
+    if([string]$targetRuntimeReceipt.milestone-ne'test-v0.27.2'){throw 'Target runtime receipt was not regenerated from target semantics.'}
+    Write-Host 'UPDATE_PRODUCTION_RUNTIME_COMMIT_OK'
+
+    $updater=Join-Path $root 'update.ps1'
+    $postUpdateNoop=(& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json)|ConvertFrom-Json
+    if(-not$postUpdateNoop.ready-or-not$postUpdateNoop.idempotent-or[string]$postUpdateNoop.source.generation_id-ne[string]$state.generation_id){throw 'Post-update self-contained noop result mismatch.'}
+    Write-Host 'UPDATE_POST_COMMIT_NOOP_OK'
     $marker=Join-Path $root 'runtime\venv\installer-idempotence.marker';[IO.File]::WriteAllText($marker,'KEEP',[Text.Encoding]::ASCII);$finalReceipt=Join-Path $root 'forensic\runtime-vllm-v0.27.1.json';$finalRaw=Get-Content $finalReceipt -Raw
-    $idem=(& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json)|ConvertFrom-Json
+    $installedInstaller=Join-Path $root 'install.ps1';$idem=(& $installedInstaller -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json)|ConvertFrom-Json
     if(-not$idem.idempotent-or(Get-Content $marker -Raw).Trim()-ne'KEEP'-or(Get-Content $statePath -Raw)-ne$stateRaw-or(Get-Content $finalReceipt -Raw)-ne$finalRaw){throw 'Installer idempotence changed committed state/runtime.'}
     Write-Host 'INSTALL_IDEMPOTENCE_OK'
+    $installer=$installedInstaller
     $guardStateRaw=Get-Content $statePath -Raw
     $guardMarkerRaw=Get-Content $marker -Raw
     $guardStaging=Join-Path $root 'work\install-distribution-staging'
@@ -258,7 +287,8 @@ try{
     Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'install-state-tamper' -ExpectedMessage 'malformed or contradictory'
     [IO.File]::WriteAllText($statePath,$stateRaw,[Text.UTF8Encoding]::new($false));Write-Host 'INSTALL_STATE_TAMPER_REJECTED'
     $installedStart=Join-Path $root 'start.ps1';$startRaw=Get-Content $installedStart -Raw;[IO.File]::AppendAllText($installedStart,"# drift`n",[Text.UTF8Encoding]::new($false))
-    Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'distribution-drift' -ExpectedMessage 'malformed or contradictory'
+    $targetInstaller=Join-Path $targetSource 'install.ps1'
+    Test-ExpectedFailure -Action {& $targetInstaller -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'distribution-drift' -ExpectedMessage 'malformed or contradictory'
     [IO.File]::WriteAllText($installedStart,$startRaw,[Text.UTF8Encoding]::new($false));Write-Host 'INSTALL_DISTRIBUTION_DRIFT_REJECTED'
     $lockPath=Join-Path $root 'state\install-orchestrator.lock';$held=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None')
     try{Test-ExpectedFailure -Action {& $installer -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null} -Name 'installer-lock-contention' -ExpectedMessage 'Another top-level install operation';Test-ExpectedFailure -Action {& $updater -InstallationRoot $root -ReleaseManifestPath ([string]$state.release_manifest) -WheelPath $wheel -Json|Out-Null} -Name 'updater-orchestrator-lock-contention' -ExpectedMessage 'Another top-level install/update/uninstall operation'}finally{$held.Dispose()}

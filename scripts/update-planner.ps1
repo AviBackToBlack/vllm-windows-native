@@ -350,16 +350,29 @@ function Get-VllmUpdateReleaseContext {
         if ($contracts.ContainsKey($key)) { throw "Managed contract paths overlap by identity: $safe" }
         $contracts[$key] = [pscustomobject][ordered]@{ RelativePath=$safe; Role=$Role; Contract=$Contract }
     }
-    & $addContract ([string]$pythonManifest.install.managed_relative_path) 'python' $pythonOwned.Entry.Sha256
-    & $addContract ([string]$uvManifest.install.managed_relative_path) 'uv' $uvOwned.Entry.Sha256
-    $runtimeContract = ((@($venvOwned.Entry.Sha256,$dependencyOwned.Entry.Sha256,$runtimeOwned.Entry.Sha256,([string]$release.wheel.sha256).ToUpperInvariant())) -join ':')
+    $pythonContract=([string]$pythonOwned.Entry.Sha256).ToUpperInvariant()
+    $uvContract=([string]$uvOwned.Entry.Sha256).ToUpperInvariant()
+    $venvContract=([string]$venvOwned.Entry.Sha256).ToUpperInvariant()
+    $dependencyContract=([string]$dependencyOwned.Entry.Sha256).ToUpperInvariant()
+    $runtimeManifestContract=([string]$runtimeOwned.Entry.Sha256).ToUpperInvariant()
+    $wheelContract=([string]$release.wheel.sha256).ToUpperInvariant()
+
+    & $addContract ([string]$pythonManifest.install.managed_relative_path) 'python' $pythonContract
+    & $addContract ([string]$uvManifest.install.managed_relative_path) 'uv' $uvContract
+    $runtimeContract=((@($venvContract,$dependencyContract,$runtimeManifestContract,$wheelContract))-join':')
     & $addContract $runtimeRelative 'runtime' $runtimeContract
     & $addContract ([string]$dependencyManifest.materialization.cache_relative_path) 'cache' 'cache-v1'
-    & $addContract ([string]$release.orchestration.python_receipt) 'python-receipt' $pythonOwned.Entry.Sha256
-    & $addContract ([string]$release.orchestration.uv_receipt) 'uv-receipt' $uvOwned.Entry.Sha256
-    & $addContract ([string]$release.orchestration.venv_receipt) 'venv-receipt' $venvOwned.Entry.Sha256
-    & $addContract ([string]$release.orchestration.dependency_receipt) 'dependency-receipt' $dependencyOwned.Entry.Sha256
-    & $addContract ([string]$release.orchestration.runtime_receipt) 'runtime-receipt' $runtimeOwned.Entry.Sha256
+
+    $pythonReceiptContract=$pythonContract
+    $uvReceiptContract=$uvContract
+    $venvReceiptContract=((@($venvContract,$pythonReceiptContract,$uvReceiptContract))-join':')
+    $dependencyReceiptContract=((@($dependencyContract,$venvReceiptContract))-join':')
+    $runtimeReceiptContract=((@($runtimeManifestContract,$dependencyReceiptContract,$wheelContract))-join':')
+    & $addContract ([string]$release.orchestration.python_receipt) 'python-receipt' $pythonReceiptContract
+    & $addContract ([string]$release.orchestration.uv_receipt) 'uv-receipt' $uvReceiptContract
+    & $addContract ([string]$release.orchestration.venv_receipt) 'venv-receipt' $venvReceiptContract
+    & $addContract ([string]$release.orchestration.dependency_receipt) 'dependency-receipt' $dependencyReceiptContract
+    & $addContract ([string]$release.orchestration.runtime_receipt) 'runtime-receipt' $runtimeReceiptContract
 
     $lifecycle = @{}
     foreach ($relative in @('state\install-state.json','state\install-orchestrator.lock','.vllm-operation.lock','state\update-transaction.json','work\update-transaction')) {
