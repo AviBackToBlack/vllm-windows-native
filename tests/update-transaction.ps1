@@ -736,3 +736,38 @@ try{
     if(Test-Path -LiteralPath $budgetBase){Remove-Item -LiteralPath $budgetBase -Recurse -Force}
 }
 Write-Host 'UPDATE_DEEP_TREE_PATH_BUDGET_OK'
+
+Invoke-TestScenario -Name 'empty-activation-plan-refusal' -Body {
+    param($scenario)
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $scenario.Root -TransactionId $txid
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateTransactionActivationPlan -Plan @() -Paths $paths -ModelsRoot $scenario.ModelsRoot -Phase materializing
+    } -Name 'empty-activation-plan' -Expected 'must not be empty'
+}
+Write-Host 'UPDATE_EMPTY_ACTIVATION_PLAN_REFUSAL_OK'
+
+$copyGuardBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-copy-guard-'+[guid]::NewGuid().ToString('N'))
+try{
+    $installRoot=Join-Path $copyGuardBase 'install'
+    $sourceRoot=Join-Path $copyGuardBase 'source'
+    $outside=Join-Path $copyGuardBase 'outside'
+    [void][IO.Directory]::CreateDirectory($installRoot)
+    [void][IO.Directory]::CreateDirectory($sourceRoot)
+    [void][IO.Directory]::CreateDirectory($outside)
+    [IO.File]::WriteAllText((Join-Path $sourceRoot 'payload.txt'),'source',[Text.UTF8Encoding]::new($false))
+    $sentinel=Join-Path $outside 'KEEP.txt'
+    [IO.File]::WriteAllText($sentinel,'DO-NOT-TOUCH',[Text.UTF8Encoding]::new($false))
+    $managed=Join-Path $installRoot 'work'
+    [void][IO.Directory]::CreateDirectory($managed)
+    $pivot=Join-Path $managed 'pivot'
+    New-Item -ItemType Junction -Path $pivot -Target $outside | Out-Null
+    Test-ExpectedFailure -Action {
+        Copy-VllmUpdateIntegrationTree -InstallationRoot $installRoot -Source $sourceRoot -Destination (Join-Path $pivot 'copied')
+    } -Name 'integration-destination-junction' -Expected 'filesystem alias outside expected location'
+    if((Get-Content -LiteralPath $sentinel -Raw).Trim()-ne'DO-NOT-TOUCH'){throw 'Integration destination junction modified outside sentinel.'}
+    if(Test-Path -LiteralPath (Join-Path $outside 'copied')){throw 'Integration destination junction copied content outside installation root.'}
+}finally{
+    if(Test-Path -LiteralPath $copyGuardBase){Remove-Item -LiteralPath $copyGuardBase -Recurse -Force}
+}
+Write-Host 'UPDATE_INTEGRATION_DESTINATION_REPARSE_REFUSAL_OK'

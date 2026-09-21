@@ -117,13 +117,13 @@
     },
     {
       "path": "scripts/update-transaction.ps1",
-      "size_bytes": 55390,
-      "sha256": "3F03C70736AB1872D930E0E03B1A36043149248C9F4F37889CDB5FFF5A06DD05"
+      "size_bytes": 55504,
+      "sha256": "889D09C81E5555203D14B402A5F92F73189DE4CDC34232A8580B6068F9E7DFE7"
     },
     {
       "path": "scripts/update-integration.ps1",
-      "size_bytes": 50119,
-      "sha256": "D09F6688058D09E60915F85D6E708D566A060A7F22874D2AEE66DF531488B358"
+      "size_bytes": 54020,
+      "sha256": "124C2C9B7C49299F8CF567129DA51DA5F56E2A87D6FD88D108BCF3A6C7E7B2AF"
     },
     {
       "path": "scripts/env.ps1",

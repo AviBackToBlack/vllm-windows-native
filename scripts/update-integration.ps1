@@ -77,31 +77,59 @@ function Get-VllmUpdatePersistedFileIdentity {
     }
 }
 
+function Assert-VllmUpdateIntegrationDestinationPath {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    $actual=Get-VllmNormalizedPath $Path
+    if(-not(Test-VllmPathInsideOrEqual -Path $actual -Parent $root)-or$actual.Equals($root,[StringComparison]::OrdinalIgnoreCase)){
+        throw "$Label must be strictly inside the installation root: $actual"
+    }
+    $prefix=if($root.EndsWith('\')){$root}else{$root+'\'}
+    $relative=$actual.Substring($prefix.Length)
+    $relative=Assert-VllmSafeRelativePath -RelativePath $relative -Label $Label
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $actual -RelativePath $relative)
+    return $actual
+}
+
 function Copy-VllmUpdateIntegrationTree {
     param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
         [Parameter(Mandatory)][string]$Source,
         [Parameter(Mandatory)][string]$Destination
     )
     $sourceIdentity=Get-VllmUpdateTreeIdentity -Root $Source
     if(Test-Path -LiteralPath $Destination){throw "Integration destination already exists: $Destination"}
-    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Destination))
+    $parent=Split-Path -Parent $Destination
+    [void][IO.Directory]::CreateDirectory($parent)
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $parent -Label 'Integration tree destination parent')
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $Destination -Label 'Integration tree destination')
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $Destination -Label 'Copied integration tree destination')
     $targetIdentity=Get-VllmUpdateTreeIdentity -Root $Destination
     if(-not(Test-VllmUpdateTreeIdentityEqual -A $sourceIdentity -B $targetIdentity)){
         throw "Integration tree copy identity mismatch: $Destination"
     }
 }
-
 function Copy-VllmUpdateIntegrationPayload {
     param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
         [Parameter(Mandatory)]$TargetContext,
         [Parameter(Mandatory)][string]$DestinationRoot
     )
     [void][IO.Directory]::CreateDirectory($DestinationRoot)
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $DestinationRoot -Label 'Integration payload root')
     foreach($entry in @($TargetContext.DistributionMap.Values|Sort-Object RelativePath)){
         $destination=Join-Path $DestinationRoot ([string]$entry.RelativePath)
-        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
+        $parent=Split-Path -Parent $destination
+        [void][IO.Directory]::CreateDirectory($parent)
+        [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $parent -Label "Integration payload parent '$($entry.RelativePath)'")
+        [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $destination -Label "Integration payload destination '$($entry.RelativePath)'")
         Copy-Item -LiteralPath ([string]$entry.Path) -Destination $destination
+        [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $destination -Label "Copied integration payload '$($entry.RelativePath)'")
         $item=Get-Item -LiteralPath $destination
         $sha=(Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
         if([int64]$item.Length-ne[int64]$entry.Size-or$sha-ne[string]$entry.Sha256){
@@ -109,7 +137,6 @@ function Copy-VllmUpdateIntegrationPayload {
         }
     }
 }
-
 function Invoke-VllmUpdateIntegrationScript {
     param(
         [Parameter(Mandatory)][string]$Script,
@@ -156,19 +183,22 @@ function Invoke-VllmUpdateIntegrationVenvRebase {
 
 function Write-VllmUpdateIntegrationJson {
     param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)]$Value
     )
     $parent=Split-Path -Parent $Path
     [void][IO.Directory]::CreateDirectory($parent)
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $parent -Label 'Integration JSON parent')
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $Path -Label 'Integration JSON destination')
     $json=$Value|ConvertTo-Json -Depth 24
     $json=$json.Replace([Environment]::NewLine,[string][char]10)+[string][char]10
     [IO.File]::WriteAllText($Path,$json,[Text.UTF8Encoding]::new($false))
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $InstallationRoot -Path $Path -Label 'Written integration JSON destination')
     try{$parsed=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json}catch{throw "Staged update JSON failed semantic re-read: $Path"}
     if($null-eq$parsed){throw "Staged update JSON parsed to null: $Path"}
     return Get-VllmUpdatePersistedFileIdentity -Path $Path
 }
-
 function Get-VllmUpdateIntegrationFinalPaths {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -217,7 +247,7 @@ function Initialize-VllmUpdateRuntimeMaterialization {
     $payloadRoot=Join-Path $paths.MaterializationRoot 'p'
     $isolatedRoot=Join-Path $paths.MaterializationRoot 'r'
     [void][IO.Directory]::CreateDirectory($isolatedRoot)
-    Copy-VllmUpdateIntegrationPayload -TargetContext $TargetContext -DestinationRoot $payloadRoot
+    Copy-VllmUpdateIntegrationPayload -InstallationRoot $paths.InstallationRoot -TargetContext $TargetContext -DestinationRoot $payloadRoot
 
     $pythonRelative=[string]$TargetContext.PythonManifest.install.managed_relative_path
     $uvRelative=[string]$TargetContext.UvManifest.install.managed_relative_path
@@ -226,13 +256,17 @@ function Initialize-VllmUpdateRuntimeMaterialization {
     $sourceUv=[string]$SourceContext.Committed.State.uv.root
     $sourceCache=Join-Path $paths.InstallationRoot $cacheRelative
 
-    Copy-VllmUpdateIntegrationTree -Source $sourcePython -Destination (Join-Path $isolatedRoot $pythonRelative)
-    Copy-VllmUpdateIntegrationTree -Source $sourceUv -Destination (Join-Path $isolatedRoot $uvRelative)
+    Copy-VllmUpdateIntegrationTree -InstallationRoot $paths.InstallationRoot -Source $sourcePython -Destination (Join-Path $isolatedRoot $pythonRelative)
+    Copy-VllmUpdateIntegrationTree -InstallationRoot $paths.InstallationRoot -Source $sourceUv -Destination (Join-Path $isolatedRoot $uvRelative)
     if(-not(Test-Path -LiteralPath $sourceCache -PathType Container)){throw "Reused uv cache is missing: $sourceCache"}
     Assert-VllmUpdateManagedTreeNoReparsePoints -Path $sourceCache -Label 'Reused uv cache'
     $isolatedCache=Join-Path $isolatedRoot $cacheRelative
-    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $isolatedCache))
+    $cacheParent=Split-Path -Parent $isolatedCache
+    [void][IO.Directory]::CreateDirectory($cacheParent)
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $paths.InstallationRoot -Path $cacheParent -Label 'Isolated uv cache parent')
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $paths.InstallationRoot -Path $isolatedCache -Label 'Isolated uv cache destination')
     Copy-Item -LiteralPath $sourceCache -Destination $isolatedCache -Recurse
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $paths.InstallationRoot -Path $isolatedCache -Label 'Copied isolated uv cache')
 
     [pscustomobject][ordered]@{
         Paths=$paths
@@ -463,6 +497,7 @@ function Get-VllmUpdateIntegrationManagedTargetEntry {
 
 function Write-VllmUpdateIntegrationMaterializedReceipt {
     param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
         [Parameter(Mandatory)][string]$OutputRoot,
         [Parameter(Mandatory)][string]$RelativePath,
         [Parameter(Mandatory)]$Value
@@ -470,7 +505,7 @@ function Write-VllmUpdateIntegrationMaterializedReceipt {
     $relative=Assert-VllmSafeRelativePath -RelativePath $RelativePath -Label 'Materialized receipt path'
     $path=Join-Path $OutputRoot $relative
     if(Test-Path -LiteralPath $path){throw "Materialized receipt output already exists: $path"}
-    $identity=Write-VllmUpdateIntegrationJson -Path $path -Value $Value
+    $identity=Write-VllmUpdateIntegrationJson -InstallationRoot $InstallationRoot -Path $path -Value $Value
     [pscustomobject][ordered]@{
         Mode='regenerate-final';RelativePath=$relative;MaterializedPath=$path
         Identity=$identity;Value=$Value
@@ -516,7 +551,7 @@ function Get-VllmUpdateIntegrationVenvReceiptTarget {
     $value.python_bootstrap_manifest=$FinalPaths.PythonManifest
     $value.uv_bootstrap_manifest=$FinalPaths.UvManifest
     $value.manifest=$FinalPaths.VenvManifest
-    return Write-VllmUpdateIntegrationMaterializedReceipt -OutputRoot $OutputRoot -RelativePath ([string]$entry.RelativePath) -Value $value
+    return Write-VllmUpdateIntegrationMaterializedReceipt -InstallationRoot $InstallationRoot -OutputRoot $OutputRoot -RelativePath ([string]$entry.RelativePath) -Value $value
 }
 
 function Get-VllmUpdateIntegrationDependencyReceiptTarget {
@@ -550,11 +585,12 @@ function Get-VllmUpdateIntegrationDependencyReceiptTarget {
     $value.base_venv_receipt=$FinalPaths.VenvReceipt
     $value.base_venv_receipt_sha256=[string]$VenvReceipt.Identity.sha256
     $value.manifest=$FinalPaths.DependencyManifest
-    return Write-VllmUpdateIntegrationMaterializedReceipt -OutputRoot $OutputRoot -RelativePath ([string]$entry.RelativePath) -Value $value
+    return Write-VllmUpdateIntegrationMaterializedReceipt -InstallationRoot $InstallationRoot -OutputRoot $OutputRoot -RelativePath ([string]$entry.RelativePath) -Value $value
 }
 
 function Get-VllmUpdateIntegrationRuntimeReceiptTarget {
     param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
         [Parameter(Mandatory)][string]$OutputRoot,
         [Parameter(Mandatory)]$TargetContext,
         [Parameter(Mandatory)][object[]]$ManagedPlan,
@@ -578,7 +614,7 @@ function Get-VllmUpdateIntegrationRuntimeReceiptTarget {
     $value.predecessor_receipt_sha256=[string]$DependencyReceipt.Identity.sha256
     $value.manifest=$FinalPaths.RuntimeManifest
     $value.cache=$FinalPaths.Cache
-    return Write-VllmUpdateIntegrationMaterializedReceipt -OutputRoot $OutputRoot -RelativePath ([string]$entry.RelativePath) -Value $value
+    return Write-VllmUpdateIntegrationMaterializedReceipt -InstallationRoot $InstallationRoot -OutputRoot $OutputRoot -RelativePath ([string]$entry.RelativePath) -Value $value
 }
 
 function Write-VllmUpdateIntegrationRuntimeReceipts {
@@ -593,7 +629,7 @@ function Write-VllmUpdateIntegrationRuntimeReceipts {
     [void][IO.Directory]::CreateDirectory($OutputRoot)
     $venv=Get-VllmUpdateIntegrationVenvReceiptTarget -InstallationRoot $InstallationRoot -OutputRoot $OutputRoot -TargetContext $TargetContext -ManagedPlan $ManagedPlan -MaterializedRoot $MaterializedRoot -FinalPaths $final
     $dependency=Get-VllmUpdateIntegrationDependencyReceiptTarget -InstallationRoot $InstallationRoot -OutputRoot $OutputRoot -TargetContext $TargetContext -ManagedPlan $ManagedPlan -MaterializedRoot $MaterializedRoot -FinalPaths $final -VenvReceipt $venv
-    $runtime=Get-VllmUpdateIntegrationRuntimeReceiptTarget -OutputRoot $OutputRoot -TargetContext $TargetContext -ManagedPlan $ManagedPlan -MaterializedRoot $MaterializedRoot -FinalPaths $final -DependencyReceipt $dependency
+    $runtime=Get-VllmUpdateIntegrationRuntimeReceiptTarget -InstallationRoot $InstallationRoot -OutputRoot $OutputRoot -TargetContext $TargetContext -ManagedPlan $ManagedPlan -MaterializedRoot $MaterializedRoot -FinalPaths $final -DependencyReceipt $dependency
     [pscustomobject][ordered]@{Venv=$venv;Dependency=$dependency;Runtime=$runtime}
 }
 
@@ -647,7 +683,10 @@ function Copy-VllmUpdateManagedFileStage {
 
     $stage=Get-VllmUpdateManagedStagePath -Layout $Layout -FinalRelativePath $FinalRelativePath
     if((Get-VllmPathEntryInfo -Path $stage.StagePath).Exists){throw "Managed staged destination already exists: $($stage.StagePath)"}
-    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $stage.StagePath))
+    $stageParent=Split-Path -Parent $stage.StagePath
+    [void][IO.Directory]::CreateDirectory($stageParent)
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $Layout.InstallationRoot -Path $stageParent -Label 'Managed file stage parent')
+    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $Layout.InstallationRoot -Path $stage.StagePath -Label 'Managed file stage destination')
     Copy-Item -LiteralPath $source -Destination $stage.StagePath
     [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $Layout.InstallationRoot -Path $stage.StagePath -RelativePath $stage.StageRelative)
     $staged=Get-VllmUpdatePersistedFileIdentity -Path $stage.StagePath

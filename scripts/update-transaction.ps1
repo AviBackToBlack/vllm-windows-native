@@ -154,11 +154,12 @@ function Get-VllmUpdateActivationPlan {
 }
 function Assert-VllmUpdateTransactionActivationPlan {
     param(
-        [Parameter(Mandatory)][object[]]$Plan,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Plan,
         [Parameter(Mandatory)]$Paths,
         [Parameter(Mandatory)][string]$ModelsRoot,
         [ValidateSet('materializing','prepared','activating','committed','cleanup')][string]$Phase='prepared'
     )
+    if(@($Plan).Count-eq0){throw 'Update transaction activation plan must not be empty.'}
     $seen=@{}
     foreach($item in @($Plan)){
         $names=@($item.PSObject.Properties.Name)

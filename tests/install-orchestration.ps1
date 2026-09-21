@@ -104,11 +104,12 @@ function Assert-FinalReady{param([string]$Root);$py=Join-Path $Root 'runtime\ven
 $outer=@{};foreach($e in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()){$outer[[string]$e.Key]=[string]$e.Value}
 if([string]::IsNullOrWhiteSpace($ScratchRoot)){
     $scratch=[IO.Path]::GetTempPath()
-    $base=Join-Path $scratch ('vllm-install-test-'+[guid]::NewGuid().ToString('N'))
 }else{
     $scratch=[IO.Path]::GetFullPath($ScratchRoot)
-    $base=$scratch
+    [void][IO.Directory]::CreateDirectory($scratch)
 }
+$ownedName='i-'+([guid]::NewGuid().ToString('N').Substring(0,8))
+$base=Join-Path $scratch $ownedName
 try{
     [void][IO.Directory]::CreateDirectory($base)
     $source=Join-Path $base 'source';$root=Join-Path $base 'installed';$wheelDir=Join-Path $base 'wheel';[void][IO.Directory]::CreateDirectory($wheelDir)
