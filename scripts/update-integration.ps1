@@ -32,6 +32,32 @@ function Get-VllmUpdateIntegrationManagedPlan {
     }
     return $staging
 }
+function Test-VllmUpdateDependencyLockIdentityEqual {
+    param(
+        [Parameter(Mandatory)]$A,
+        [Parameter(Mandatory)]$B
+    )
+    if(-not(Test-VllmUpdateRelativePathEqual -A ([string]$A.path) -B ([string]$B.path))){return $false}
+    if([int64]$A.size_bytes-ne[int64]$B.size_bytes){return $false}
+    if(-not([string]$A.sha256).Equals([string]$B.sha256,[StringComparison]::OrdinalIgnoreCase)){return $false}
+    if([int]$A.package_count-ne[int]$B.package_count){return $false}
+    if([bool]$A.hashes_required-ne[bool]$B.hashes_required){return $false}
+    if([string]$A.eol-ne[string]$B.eol){return $false}
+    return $true
+}
+
+function Assert-VllmUpdateOfflineDependencyLockCompatible {
+    param(
+        [Parameter(Mandatory)]$SourceContext,
+        [Parameter(Mandatory)]$TargetContext
+    )
+    $sourceLock=$SourceContext.ReleaseContext.DependencyManifest.lock
+    $targetLock=$TargetContext.DependencyManifest.lock
+    if(-not(Test-VllmUpdateDependencyLockIdentityEqual -A $sourceLock -B $targetLock)){
+        throw 'SM-18E v1 cannot materialize a changed dependency lock from the inherited offline cache. Dependency acquisition/cache warming is not supported by this update path.'
+    }
+}
+
 function Get-VllmUpdatePersistedTreeIdentity {
     param([Parameter(Mandatory)][string]$Root)
     $identity=Get-VllmUpdateTreeIdentity -Root $Root
@@ -119,7 +145,7 @@ function Invoke-VllmUpdateIntegrationVenvRebase {
     [IO.File]::WriteAllText($cfg,$text,[Text.UTF8Encoding]::new($false))
 
     $materialized=Get-VllmNormalizedPath $MaterializationRoot
-    foreach($file in @(Get-ChildItem (Join-Path $RuntimeRoot 'Scripts') -File -ErrorAction Stop)){
+    foreach($file in @(Get-ChildItem -LiteralPath (Join-Path $RuntimeRoot 'Scripts') -File -ErrorAction Stop)){
         if($file.Extension-in@('.exe','.dll','.pyd')){continue}
         $content=[IO.File]::ReadAllText($file.FullName)
         if($content.IndexOf($materialized,[StringComparison]::OrdinalIgnoreCase)-ge0){
@@ -687,7 +713,7 @@ function Invoke-VllmUpdateProductionTransactionPreparation {
     $runtimeTarget=@($ManagedPlan|Where-Object{$_.Role-eq'runtime'-and$_.Class-in@('replace','add')})
     if($runtimeTarget.Count-gt1){throw 'Update plan contains multiple changed runtime targets.'}
     if($runtimeTarget.Count-eq1){
-        Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $InstallationRoot -TransactionId $transactionId -TargetContext $TargetContext
+        Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $InstallationRoot -TransactionId $transactionId -SourceContext $SourceContext -TargetContext $TargetContext -WheelPath $WheelPath
     }elseif(@($ManagedPlan|Where-Object{$_.Class-ne'reuse'}).Count-ne0){
         throw 'SM-18E v1 does not support managed mutations without a changed runtime target.'
     }
@@ -745,11 +771,59 @@ function Complete-VllmUpdateProductionTransaction {
     }
 }
 
+function Get-VllmUpdateDeepestRelativePath {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $root=Get-VllmNormalizedPath $Root
+    if(-not(Test-Path -LiteralPath $root -PathType Container)){throw "$Label source tree is missing: $root"}
+    $maxRelative=''
+    foreach($entry in @(Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction Stop)){
+        $relative=$entry.FullName.Substring($root.Length).TrimStart('\')
+        if($relative.Length-gt$maxRelative.Length){$maxRelative=$relative}
+    }
+    return $maxRelative
+}
+
+function Assert-VllmUpdateProjectedTreePathBudget {
+    param(
+        [Parameter(Mandatory)][string]$DestinationRoot,
+        [Parameter(Mandatory)][string]$DeepestRelativePath,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $destination=Get-VllmNormalizedPath $DestinationRoot
+    $projected=if([string]::IsNullOrWhiteSpace($DeepestRelativePath)){$destination}else{Join-Path $destination $DeepestRelativePath}
+    $full=[IO.Path]::GetFullPath($projected)
+    if($full.Length-ge260){
+        throw "SM-18E materialization tree path exceeds the supported Windows PowerShell 5.1 path budget ($($full.Length) >= 260): $Label :: $full. Use a shorter installation root."
+    }
+}
+
+function Get-VllmUpdateWheelDeepestProjectedPath {
+    param([Parameter(Mandatory)][string]$WheelPath)
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $wheel=Get-VllmNormalizedPath $WheelPath
+    $archive=[IO.Compression.ZipFile]::OpenRead($wheel)
+    try{
+        $max=''
+        foreach($entry in $archive.Entries){
+            if([string]::IsNullOrWhiteSpace([string]$entry.Name)){continue}
+            $relative='Lib\site-packages\'+([string]$entry.FullName).Replace('/','\')
+            if($relative.Length-gt$max.Length){$max=$relative}
+        }
+        return $max
+    }finally{$archive.Dispose()}
+}
+
 function Assert-VllmUpdateRuntimeMaterializationPathBudget {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
         [Parameter(Mandatory)][string]$TransactionId,
-        [Parameter(Mandatory)]$TargetContext
+        [Parameter(Mandatory)]$SourceContext,
+        [Parameter(Mandatory)]$TargetContext,
+        [Parameter(Mandatory)][string]$WheelPath
     )
     $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $InstallationRoot -TransactionId $TransactionId
     $layout=Get-VllmUpdateStagingLayout -InstallationRoot $InstallationRoot -TransactionId $TransactionId
@@ -759,6 +833,7 @@ function Assert-VllmUpdateRuntimeMaterializationPathBudget {
     $uvRelative=[string]$TargetContext.UvManifest.install.managed_relative_path
     $uvExeRelative=[string]$TargetContext.UvManifest.install.uv_executable
     $runtimeRelative=[string]$TargetContext.Release.orchestration.runtime_root
+    $cacheRelative=[string]$TargetContext.DependencyManifest.materialization.cache_relative_path
     $dependencyStageRelative=[string]$TargetContext.DependencyManifest.materialization.staging_relative_path
     $runtimeStageRelative=[string]$TargetContext.RuntimeManifest.materialization.staging_relative_path
 
@@ -775,5 +850,25 @@ function Assert-VllmUpdateRuntimeMaterializationPathBudget {
         if($full.Length-ge260){
             throw "SM-18E materialization executable path exceeds the supported Win32 process-launch budget ($($full.Length) >= 260): $($candidate.Label) :: $full. Use a shorter installation root."
         }
+    }
+
+    $pythonDeep=Get-VllmUpdateDeepestRelativePath -Root ([string]$SourceContext.Committed.State.python.root) -Label 'Python'
+    $uvDeep=Get-VllmUpdateDeepestRelativePath -Root ([string]$SourceContext.Committed.State.uv.root) -Label 'uv'
+    $cacheDeep=Get-VllmUpdateDeepestRelativePath -Root (Join-Path $InstallationRoot $cacheRelative) -Label 'uv cache'
+    $runtimeDeep=Get-VllmUpdateDeepestRelativePath -Root ([string]$SourceContext.Committed.State.runtime.root) -Label 'runtime'
+    $wheelDeep=Get-VllmUpdateWheelDeepestProjectedPath -WheelPath $WheelPath
+    if($wheelDeep.Length-gt$runtimeDeep.Length){$runtimeDeep=$wheelDeep}
+
+    Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $pythonRelative) -DeepestRelativePath $pythonDeep -Label 'isolated Python tree'
+    Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $uvRelative) -DeepestRelativePath $uvDeep -Label 'isolated uv tree'
+    Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $cacheRelative) -DeepestRelativePath $cacheDeep -Label 'isolated uv cache tree'
+    foreach($destination in @(
+        [pscustomobject]@{Label='isolated runtime tree';Root=(Join-Path $isolatedRoot $runtimeRelative)},
+        [pscustomobject]@{Label='dependency staging tree';Root=(Join-Path $isolatedRoot $dependencyStageRelative)},
+        [pscustomobject]@{Label='vLLM staging tree';Root=(Join-Path $isolatedRoot $runtimeStageRelative)},
+        [pscustomobject]@{Label='transaction managed-stage tree';Root=(Join-Path $layout.ManagedRoot $runtimeRelative)},
+        [pscustomobject]@{Label='transaction managed-backup tree';Root=(Join-Path $paths.BackupManagedRoot $runtimeRelative)}
+    )){
+        Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot ([string]$destination.Root) -DeepestRelativePath $runtimeDeep -Label ([string]$destination.Label)
     }
 }

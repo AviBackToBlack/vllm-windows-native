@@ -9,6 +9,7 @@ $repoRoot=Split-Path -Parent $PSScriptRoot
 . (Join-Path $repoRoot 'scripts\update-planner.ps1')
 . (Join-Path $repoRoot 'scripts\update-staging.ps1')
 . (Join-Path $repoRoot 'scripts\update-transaction.ps1')
+. (Join-Path $repoRoot 'scripts\update-integration.ps1')
 
 function Get-TestIdentity {
     param([Parameter(Mandatory)][string]$Path)
@@ -632,3 +633,106 @@ Invoke-TestScenario -Name 'provisional-materialization-finalization' -Body {
     }
 }
 Write-Host 'UPDATE_PROVISIONAL_MATERIALIZATION_FINALIZATION_OK'
+
+$lockA=[pscustomobject][ordered]@{
+    path='requirements\runtime.lock.txt';size_bytes=10;sha256=('A'*64);package_count=2;hashes_required=$true;eol='lf'
+}
+$lockB=[pscustomobject][ordered]@{
+    path='requirements\runtime.lock.txt';size_bytes=11;sha256=('B'*64);package_count=3;hashes_required=$true;eol='lf'
+}
+$offlineSource=[pscustomobject]@{
+    ReleaseContext=[pscustomobject]@{DependencyManifest=[pscustomobject]@{lock=$lockA}}
+}
+$offlineTargetSame=[pscustomobject]@{DependencyManifest=[pscustomobject]@{lock=$lockA}}
+$offlineTargetChanged=[pscustomobject]@{DependencyManifest=[pscustomobject]@{lock=$lockB}}
+Assert-VllmUpdateOfflineDependencyLockCompatible -SourceContext $offlineSource -TargetContext $offlineTargetSame
+Test-ExpectedFailure -Action {
+    Assert-VllmUpdateOfflineDependencyLockCompatible -SourceContext $offlineSource -TargetContext $offlineTargetChanged
+} -Name 'offline-dependency-lock-change' -Expected 'changed dependency lock'
+Write-Host 'UPDATE_OFFLINE_DEPENDENCY_LOCK_GUARD_OK'
+
+$literalBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-literal-[root]-'+[guid]::NewGuid().ToString('N'))
+try{
+    $literalRuntime=Join-Path $literalBase 'runtime[tree]'
+    $literalScripts=Join-Path $literalRuntime 'Scripts'
+    $literalFinalPython=Join-Path $literalBase 'python[final]'
+    [void][IO.Directory]::CreateDirectory($literalScripts)
+    [void][IO.Directory]::CreateDirectory($literalFinalPython)
+    $lf=[string][char]10
+    [IO.File]::WriteAllText((Join-Path $literalRuntime 'pyvenv.cfg'),('home = C:\old\python'+$lf+'relocatable = true'+$lf),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $literalScripts 'activate.ps1'),'Write-Host literal',[Text.UTF8Encoding]::new($false))
+    Invoke-VllmUpdateIntegrationVenvRebase -RuntimeRoot $literalRuntime -FinalPythonRoot $literalFinalPython -MaterializationRoot (Join-Path $literalBase 'materialization')
+    $cfg=Get-Content -LiteralPath (Join-Path $literalRuntime 'pyvenv.cfg')
+    if($cfg -notcontains ('home = '+(Get-VllmNormalizedPath $literalFinalPython))){throw 'Literal-path venv rebase did not update pyvenv.cfg.'}
+}finally{
+    if(Test-Path -LiteralPath $literalBase){Remove-Item -LiteralPath $literalBase -Recurse -Force}
+}
+Write-Host 'UPDATE_LITERAL_PATH_REBASE_OK'
+
+$budgetBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-budget-'+[guid]::NewGuid().ToString('N'))
+try{
+    $budgetRoot=Join-Path $budgetBase 'i'
+    $pythonRoot=Join-Path $budgetRoot 'python\managed\python'
+    $uvRoot=Join-Path $budgetRoot 'uv\managed\uv'
+    $cacheRoot=Join-Path $budgetRoot 'cache\uv'
+    $runtimeRoot=Join-Path $budgetRoot 'runtime\venv'
+    foreach($dir in @($pythonRoot,$uvRoot,$cacheRoot,$runtimeRoot)){[void][IO.Directory]::CreateDirectory($dir)}
+    [IO.File]::WriteAllText((Join-Path $pythonRoot 'python.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $uvRoot 'uv.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $cacheRoot 'cache.bin'),'x',[Text.Encoding]::ASCII)
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $layout=Get-VllmUpdateStagingLayout -InstallationRoot $budgetRoot -TransactionId $txid
+    $stageRuntimeRoot=Join-Path $layout.ManagedRoot 'runtime\venv'
+    $wanted=[Math]::Max(35,261-$stageRuntimeRoot.Length)
+    $segments=New-Object System.Collections.Generic.List[string]
+    $relative=''
+    $n=0
+    while($relative.Length-lt$wanted){
+        $segment=('seg{0:D2}abcdefghijkl' -f $n)
+        $segments.Add($segment)
+        $relative=($segments.ToArray()-join'\')+'\payload.bin'
+        $n++
+    }
+    $liveDeep=Join-Path $runtimeRoot $relative
+    if($liveDeep.Length-ge260){throw "Path-budget fixture live path is unexpectedly too long: $($liveDeep.Length)"}
+    if((Join-Path $stageRuntimeRoot $relative).Length-lt260){throw 'Path-budget fixture did not reach the transaction staging limit.'}
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $liveDeep))
+    [IO.File]::WriteAllText($liveDeep,'deep',[Text.Encoding]::ASCII)
+
+    $wheel=Join-Path $budgetBase 'probe.whl'
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $zip=[IO.Compression.ZipFile]::Open($wheel,[IO.Compression.ZipArchiveMode]::Create)
+    try{
+        $entry=$zip.CreateEntry('vllm/__init__.py')
+        $stream=$entry.Open()
+        try{
+            $bytes=[Text.Encoding]::UTF8.GetBytes('x')
+            $stream.Write($bytes,0,$bytes.Length)
+        }finally{$stream.Dispose()}
+    }finally{$zip.Dispose()}
+
+    $sourceContext=[pscustomobject]@{
+        Committed=[pscustomobject]@{
+            State=[pscustomobject]@{
+                python=[pscustomobject]@{root=$pythonRoot}
+                uv=[pscustomobject]@{root=$uvRoot}
+                runtime=[pscustomobject]@{root=$runtimeRoot}
+            }
+        }
+    }
+    $targetContext=[pscustomobject]@{
+        PythonManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='python\managed\python';python_executable='python.exe'}}
+        UvManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='uv\managed\uv';uv_executable='uv.exe'}}
+        Release=[pscustomobject]@{orchestration=[pscustomobject]@{runtime_root='runtime\venv'}}
+        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage'}}
+        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage'}}
+    }
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $budgetRoot -TransactionId $txid -SourceContext $sourceContext -TargetContext $targetContext -WheelPath $wheel
+    } -Name 'deep-transaction-staging-path' -Expected 'materialization tree path exceeds'
+}finally{
+    if(Test-Path -LiteralPath $budgetBase){Remove-Item -LiteralPath $budgetBase -Recurse -Force}
+}
+Write-Host 'UPDATE_DEEP_TREE_PATH_BUDGET_OK'

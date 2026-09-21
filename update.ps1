@@ -116,6 +116,7 @@ try {
     $source = Get-VllmUpdateSourceContext -InstallationRoot $InstallationRoot
     $target = Get-VllmUpdateReleaseContext -ReleaseManifestPath $targetManifestPath -InstallationRoot $InstallationRoot -ModelsRoot $source.ModelsRoot -WheelPath $targetWheelPath -RequireUpdaterPlanner
     $plan = Get-VllmUpdateTransitionPlan -SourceContext $source -TargetContext $target
+    Assert-VllmUpdateOfflineDependencyLockCompatible -SourceContext $source -TargetContext $target
     $managedPlan = @(Get-VllmUpdateIntegrationManagedPlan -Plan $plan)
 
     if ($plan.idempotent) {

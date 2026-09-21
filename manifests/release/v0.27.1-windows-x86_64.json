@@ -52,13 +52,13 @@
   "files": [
     {
       "path": "install.ps1",
-      "size_bytes": 29377,
-      "sha256": "4ABED56095CB3728E0C52FB3038FC90021CEFCC55CA2671A0ECD59FE1C3E1BF6"
+      "size_bytes": 29687,
+      "sha256": "EA0CAADC72A9E622F7790C895740CE292FD318110AF94D518B6E24FE9561F8E3"
     },
     {
       "path": "update.ps1",
-      "size_bytes": 8427,
-      "sha256": "D89246EF3D36E719D0B1FE00A876177A1DAE1BBF28320C55316EDD99440760F5"
+      "size_bytes": 8526,
+      "sha256": "90493DB206C3E6A1B9C3F569EF5B7DB00CAC9B0D4E034AFEDF64D71D2A7F73AF"
     },
     {
       "path": "uninstall.ps1",
@@ -107,8 +107,8 @@
     },
     {
       "path": "scripts/update-planner.ps1",
-      "size_bytes": 42968,
-      "sha256": "AC5EFB21383420FD3AD0DA7E075452B52F2C6E8AE1D6B87253925D0815B14CCE"
+      "size_bytes": 43001,
+      "sha256": "2D254138C498FE23D045E08FB424DCB67E17774A6C17C5FE7063E54FE544DC1E"
     },
     {
       "path": "scripts/update-staging.ps1",
@@ -122,8 +122,8 @@
     },
     {
       "path": "scripts/update-integration.ps1",
-      "size_bytes": 44729,
-      "sha256": "87460B2951185279FE73B8B33A2DC37099C559E5712C15EF6B135F1DC038A2E0"
+      "size_bytes": 50119,
+      "sha256": "D09F6688058D09E60915F85D6E708D566A060A7F22874D2AEE66DF531488B358"
     },
     {
       "path": "scripts/env.ps1",

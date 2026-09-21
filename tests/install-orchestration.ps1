@@ -102,8 +102,13 @@ function Convert-MiniReleaseToTransitionTarget{
 }
 function Assert-FinalReady{param([string]$Root);$py=Join-Path $Root 'runtime\venv\Scripts\python.exe';$rows=@(& $py -I -c "import importlib.metadata as m; print('\n'.join(sorted((d.metadata['Name'].lower().replace('_','-')+'=='+d.version) for d in m.distributions() if d.metadata.get('Name'))))");if($LASTEXITCODE-ne0-or$rows.Count-ne2-or$rows[0]-ne'colorama==0.4.6'-or$rows[1]-ne'vllm==0.0.1'){throw "Unexpected installed distributions: $($rows -join ', ')"}}
 $outer=@{};foreach($e in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()){$outer[[string]$e.Key]=[string]$e.Value}
-if([string]::IsNullOrWhiteSpace($ScratchRoot)){$scratch=[IO.Path]::GetTempPath()}else{$scratch=[IO.Path]::GetFullPath($ScratchRoot);[void][IO.Directory]::CreateDirectory($scratch)}
-$base=Join-Path $scratch ('vllm-install-test-'+[guid]::NewGuid().ToString('N'))
+if([string]::IsNullOrWhiteSpace($ScratchRoot)){
+    $scratch=[IO.Path]::GetTempPath()
+    $base=Join-Path $scratch ('vllm-install-test-'+[guid]::NewGuid().ToString('N'))
+}else{
+    $scratch=[IO.Path]::GetFullPath($ScratchRoot)
+    $base=$scratch
+}
 try{
     [void][IO.Directory]::CreateDirectory($base)
     $source=Join-Path $base 'source';$root=Join-Path $base 'installed';$wheelDir=Join-Path $base 'wheel';[void][IO.Directory]::CreateDirectory($wheelDir)
@@ -247,6 +252,21 @@ try{
     $installedInstaller=Join-Path $root 'install.ps1';$idem=(& $installedInstaller -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json)|ConvertFrom-Json
     if(-not$idem.idempotent-or(Get-Content $marker -Raw).Trim()-ne'KEEP'-or(Get-Content $statePath -Raw)-ne$stateRaw-or(Get-Content $finalReceipt -Raw)-ne$finalRaw){throw 'Installer idempotence changed committed state/runtime.'}
     Write-Host 'INSTALL_IDEMPOTENCE_OK'
+
+    $mismatchSource=Join-Path $base 'same-runtime-different-release-source'
+    Copy-Item -LiteralPath $targetSource -Destination $mismatchSource -Recurse
+    $targetManifestRelative=$targetReleasePath.Substring($targetSource.Length).TrimStart('\')
+    $mismatchReleasePath=Join-Path $mismatchSource $targetManifestRelative
+    $mismatchRelease=Get-Content -LiteralPath $mismatchReleasePath -Raw|ConvertFrom-Json
+    $mismatchRelease.release='test-v0.27.2-recut'
+    $mismatchJson=$mismatchRelease|ConvertTo-Json -Depth 20
+    $mismatchJson=$mismatchJson.Replace([Environment]::NewLine,[string][char]10)+[string][char]10
+    [IO.File]::WriteAllText($mismatchReleasePath,$mismatchJson,[Text.UTF8Encoding]::new($false))
+    $mismatchInstaller=Join-Path $mismatchSource 'install.ps1'
+    Test-ExpectedFailure -Action {
+        & $mismatchInstaller -ReleaseManifestPath $targetManifestRelative -InstallationRoot $root -WheelPath $wheel -PythonArchivePath $PythonArchivePath -UvArchivePath $UvArchivePath -Json|Out-Null
+    } -Name 'installer-same-runtime-different-release' -ExpectedMessage 'does not match the requested installer release manifest'
+    Write-Host 'INSTALL_REQUESTED_RELEASE_IDENTITY_GUARD_OK'
     $installer=$installedInstaller
     $guardStateRaw=Get-Content $statePath -Raw
     $guardMarkerRaw=Get-Content $marker -Raw
