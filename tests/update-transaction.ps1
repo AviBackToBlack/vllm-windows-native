@@ -560,6 +560,39 @@ Invoke-TestScenario -Name 'managed-tree-replace-retire' -Body {
 }
 Write-Host 'UPDATE_MANAGED_TREE_RETIRE_OK'
 
+Invoke-TestScenario -Name 'retire-precommit-drift-refusal' -Body {
+    param($scenario)
+    $relative='obsolete-drift.txt'
+    $live=Join-Path $scenario.Root $relative
+    [IO.File]::WriteAllText($live,'source-retire',[Text.UTF8Encoding]::new($false))
+    $sourceFile=Get-TestIdentity -Path $live
+    $sourceIdentity=[pscustomobject][ordered]@{
+        size_bytes=[int64]$sourceFile.Size
+        sha256=([string]$sourceFile.Sha256).ToUpperInvariant()
+    }
+    $txid=[guid]::NewGuid().ToString('D')
+    $activation=@(
+        [pscustomobject][ordered]@{
+            class='retire';kind='file';role='distribution';relative_path=$relative
+            source=$sourceIdentity;target=$null;stage_relative=$null;backup_relative=$null
+        }
+    )
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+
+    [IO.File]::WriteAllText($live,'DRIFTED-RETIRE-CONTENT',[Text.UTF8Encoding]::new($false))
+    $targetState=[pscustomobject][ordered]@{generation_id=$scenario.TargetGeneration;marker='target'}
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $targetState)
+    } -Name 'retire-precommit-drift' -Expected 'Retire source drifted immediately before commit'
+
+    $state=Get-Content -LiteralPath (Join-Path $scenario.Root 'state\install-state.json') -Raw|ConvertFrom-Json
+    if([string]$state.generation_id-ne[string]$scenario.SourceGeneration){
+        throw 'Retire drift failure committed the target install-state.'
+    }
+}
+Write-Host 'UPDATE_RETIRE_PRECOMMIT_DRIFT_REFUSAL_OK'
+
 Invoke-TestScenario -Name 'engine-whatif-defense' -Body {
     param($scenario)
     [void](Open-TestScenario -Scenario $scenario)
@@ -855,3 +888,39 @@ try{
     if(Test-Path -LiteralPath $liveGuardBase){Remove-Item -LiteralPath $liveGuardBase -Recurse -Force}
 }
 Write-Host 'UPDATE_TARGET_LIVE_LAUNCHER_PRECOMMIT_GUARD_OK'
+$cancellationPlan=[pscustomobject][ordered]@{
+    source=[pscustomobject][ordered]@{
+        release='cancel-source'
+        manifest_sha256=('A'*64)
+        generation_id='11111111-1111-1111-1111-111111111111'
+    }
+    target=[pscustomobject][ordered]@{
+        release='cancel-target'
+        manifest_sha256=('B'*64)
+        wheel_sha256=('C'*64)
+    }
+    models_root='D:\Models'
+    counts=[pscustomobject][ordered]@{
+        distribution_reuse=1
+        distribution_replace=2
+        distribution_add=3
+        distribution_retire=4
+        managed_reuse=5
+        managed_replace=6
+        managed_add=7
+        managed_retire=8
+    }
+}
+$cancellation=Get-VllmUpdateCancellationResult -Plan $cancellationPlan -InstallationRoot 'D:\AI\vLLM'
+$cancellationRoundTrip=($cancellation|ConvertTo-Json -Depth 12|ConvertFrom-Json)
+if(-not$cancellationRoundTrip.ready-or$cancellationRoundTrip.committed-or-not$cancellationRoundTrip.cancelled-or$cancellationRoundTrip.what_if){
+    throw 'Update cancellation JSON status flags are incorrect.'
+}
+if([string]$cancellationRoundTrip.release-ne'cancel-target'-or
+   [string]$cancellationRoundTrip.generation_id-ne'11111111-1111-1111-1111-111111111111'-or
+   [string]$cancellationRoundTrip.source.release-ne'cancel-source'-or
+   [string]$cancellationRoundTrip.target.release-ne'cancel-target'-or
+   [int]$cancellationRoundTrip.counts.managed_replace-ne6){
+    throw 'Update cancellation JSON plan identity is incorrect.'
+}
+Write-Host 'UPDATE_CANCELLATION_JSON_CONTRACT_OK'

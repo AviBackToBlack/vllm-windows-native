@@ -57,8 +57,8 @@
     },
     {
       "path": "update.ps1",
-      "size_bytes": 8526,
-      "sha256": "90493DB206C3E6A1B9C3F569EF5B7DB00CAC9B0D4E034AFEDF64D71D2A7F73AF"
+      "size_bytes": 8678,
+      "sha256": "EA7BD861C7F3A1DD47D685C7AB62CF9B5075E53AF0741949B56B3BB2AB175BAA"
     },
     {
       "path": "uninstall.ps1",
@@ -117,13 +117,13 @@
     },
     {
       "path": "scripts/update-transaction.ps1",
-      "size_bytes": 55504,
-      "sha256": "889D09C81E5555203D14B402A5F92F73189DE4CDC34232A8580B6068F9E7DFE7"
+      "size_bytes": 56083,
+      "sha256": "49E773C8EA76FDEB3BD6457C3414547281A9CE84B6AD743467D2D64A7F710FD0"
     },
     {
       "path": "scripts/update-integration.ps1",
-      "size_bytes": 56621,
-      "sha256": "88DC2BA63724A9F430FB3E047A2B2386C1141B1A2F0AD4FDD5BEA83719CA7234"
+      "size_bytes": 57231,
+      "sha256": "1A1471FB2BD9FC216136AAF8D33B800D84417D58C54762AF3E05A4BC67987B19"
     },
     {
       "path": "scripts/env.ps1",

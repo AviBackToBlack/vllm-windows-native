@@ -1,5 +1,27 @@
 Set-StrictMode -Version Latest
 
+function Get-VllmUpdateCancellationResult {
+    param(
+        [Parameter(Mandatory)]$Plan,
+        [Parameter(Mandatory)][string]$InstallationRoot
+    )
+    [pscustomobject][ordered]@{
+        schema_version=1
+        component='update'
+        ready=$true
+        committed=$false
+        cancelled=$true
+        what_if=$false
+        release=[string]$Plan.target.release
+        generation_id=[string]$Plan.source.generation_id
+        install_root=$InstallationRoot
+        models_root=[string]$Plan.models_root
+        source=$Plan.source
+        target=$Plan.target
+        counts=$Plan.counts
+    }
+}
+
 function Get-VllmUpdateIntegrationManagedPlan {
     param([Parameter(Mandatory)]$Plan)
     $staging=@(Get-VllmUpdateManagedStagingPlan -Plan $Plan)

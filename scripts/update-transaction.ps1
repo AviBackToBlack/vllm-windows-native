@@ -927,7 +927,17 @@ function Invoke-VllmUpdateActivationRenames {
 
     foreach($item in @($Journal.activation_plan)){
         $class=[string]$item.class
-        if($class-eq'retire'){continue}
+        if($class-eq'retire'){
+            $kind=Get-VllmUpdateActivationEntryKind -Entry $item
+            $relative=[string]$item.relative_path
+            $live=Join-Path $root $relative
+            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $live -RelativePath $relative)
+            $liveState=Get-VllmUpdateTransactionObjectState -Kind $kind -Path $live -SourceIdentity $item.source
+            if($liveState-notin@('source','missing')){
+                throw "Retire source drifted immediately before commit: $relative ($liveState)"
+            }
+            continue
+        }
         $kind=Get-VllmUpdateActivationEntryKind -Entry $item
         $relative=[string]$item.relative_path
         $live=Join-Path $root $relative

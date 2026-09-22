@@ -146,7 +146,11 @@ try {
     }
 
     if (-not $PSCmdlet.ShouldProcess($InstallationRoot,$action)) {
-        if (-not $Json) { Write-Host 'UPDATE_CANCELLED' }
+        if ($Json) {
+            Get-VllmUpdateCancellationResult -Plan $plan -InstallationRoot $InstallationRoot | ConvertTo-Json -Depth 12
+        } else {
+            Write-Host 'UPDATE_CANCELLED'
+        }
         return
     }
 
