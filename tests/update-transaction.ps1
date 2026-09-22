@@ -771,3 +771,87 @@ try{
     if(Test-Path -LiteralPath $copyGuardBase){Remove-Item -LiteralPath $copyGuardBase -Recurse -Force}
 }
 Write-Host 'UPDATE_INTEGRATION_DESTINATION_REPARSE_REFUSAL_OK'
+
+$wheelCacheBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-wheel-cache-'+[guid]::NewGuid().ToString('N'))
+try{
+    $installRoot=Join-Path $wheelCacheBase 'i'
+    $pythonRoot=Join-Path $installRoot 'python\managed\python'
+    $uvRoot=Join-Path $installRoot 'uv\managed\uv'
+    $cacheRoot=Join-Path $installRoot 'cache\uv'
+    $runtimeRoot=Join-Path $installRoot 'runtime\venv'
+    foreach($dir in @($pythonRoot,$uvRoot,$cacheRoot,$runtimeRoot)){[void][IO.Directory]::CreateDirectory($dir)}
+    [IO.File]::WriteAllText((Join-Path $pythonRoot 'python.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $uvRoot 'uv.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $cacheRoot 'cache.bin'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $runtimeRoot 'runtime.bin'),'x',[Text.Encoding]::ASCII)
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $installRoot -TransactionId $txid
+    $isolatedRoot=Join-Path $paths.MaterializationRoot 'r'
+    $runtimePrefix=(Join-Path (Join-Path $isolatedRoot 'runtime\venv') 'Lib\site-packages')
+    $cachePrefix=Join-Path (Join-Path $isolatedRoot 'cache\uv') (Join-Path 'archive-v0' ('x'.PadRight(64,[char]'x')))
+    $minInternal=[Math]::Max(12,260-($cachePrefix.Length+1))
+    if(($runtimePrefix.Length+1+$minInternal)-ge260){throw 'Wheel-cache path-budget fixture cannot isolate cache projection from runtime projection.'}
+    $internal='vllm/'+('d'.PadRight($minInternal-8,[char]'d'))+'.py'
+
+    $wheel=Join-Path $wheelCacheBase 'probe.whl'
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $zip=[IO.Compression.ZipFile]::Open($wheel,[IO.Compression.ZipArchiveMode]::Create)
+    try{
+        $entry=$zip.CreateEntry($internal)
+        $stream=$entry.Open()
+        try{
+            $bytes=[Text.Encoding]::UTF8.GetBytes('x')
+            $stream.Write($bytes,0,$bytes.Length)
+        }finally{$stream.Dispose()}
+    }finally{$zip.Dispose()}
+
+    $sourceContext=[pscustomobject]@{
+        Committed=[pscustomobject]@{
+            State=[pscustomobject]@{
+                python=[pscustomobject]@{root=$pythonRoot}
+                uv=[pscustomobject]@{root=$uvRoot}
+                runtime=[pscustomobject]@{root=$runtimeRoot}
+            }
+        }
+    }
+    $targetContext=[pscustomobject]@{
+        PythonManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='python\managed\python';python_executable='python.exe'}}
+        UvManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='uv\managed\uv';uv_executable='uv.exe'}}
+        Release=[pscustomobject]@{orchestration=[pscustomobject]@{runtime_root='runtime\venv'}}
+        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage'}}
+        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage'}}
+    }
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $installRoot -TransactionId $txid -SourceContext $sourceContext -TargetContext $targetContext -WheelPath $wheel
+    } -Name 'incoming-wheel-cache-path' -Expected 'isolated uv cache tree'
+}finally{
+    if(Test-Path -LiteralPath $wheelCacheBase){Remove-Item -LiteralPath $wheelCacheBase -Recurse -Force}
+}
+Write-Host 'UPDATE_INCOMING_WHEEL_CACHE_PATH_BUDGET_OK'
+$liveGuardBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-live-guard-'+[guid]::NewGuid().ToString('N'))
+try{
+    $installRoot=Join-Path $liveGuardBase 'install'
+    $runtimeRoot=Join-Path $installRoot 'runtime\venv'
+    $scripts=Join-Path $runtimeRoot 'Scripts'
+    [void][IO.Directory]::CreateDirectory($scripts)
+    $targetContext=[pscustomobject]@{
+        Release=[pscustomobject]@{
+            orchestration=[pscustomobject]@{
+                runtime_root='runtime\venv'
+            }
+        }
+    }
+
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateTargetLiveRuntime -InstallationRoot $installRoot -TargetContext $targetContext|Out-Null
+    } -Name 'missing-target-vllm-launcher' -Expected 'launcher is missing before commit'
+
+    [IO.File]::WriteAllText((Join-Path $scripts 'vllm.exe'),'launcher',[Text.Encoding]::ASCII)
+    $proof=Assert-VllmUpdateTargetLiveRuntime -InstallationRoot $installRoot -TargetContext $targetContext
+    if(-not(Test-Path -LiteralPath ([string]$proof.VllmExe) -PathType Leaf)){throw 'Target live launcher proof did not return the validated launcher.'}
+}finally{
+    if(Test-Path -LiteralPath $liveGuardBase){Remove-Item -LiteralPath $liveGuardBase -Recurse -Force}
+}
+Write-Host 'UPDATE_TARGET_LIVE_LAUNCHER_PRECOMMIT_GUARD_OK'

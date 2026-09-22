@@ -122,8 +122,8 @@
     },
     {
       "path": "scripts/update-integration.ps1",
-      "size_bytes": 54020,
-      "sha256": "124C2C9B7C49299F8CF567129DA51DA5F56E2A87D6FD88D108BCF3A6C7E7B2AF"
+      "size_bytes": 56621,
+      "sha256": "88DC2BA63724A9F430FB3E047A2B2386C1141B1A2F0AD4FDD5BEA83719CA7234"
     },
     {
       "path": "scripts/env.ps1",

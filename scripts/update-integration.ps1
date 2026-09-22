@@ -778,6 +778,32 @@ function Invoke-VllmUpdateProductionTransactionPreparation {
     }
 }
 
+function Assert-VllmUpdateTargetLiveRuntime {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)]$TargetContext
+    )
+    $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    $runtimeRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$TargetContext.Release.orchestration.runtime_root) -Label 'Target runtime root'
+    $runtimeRoot=Join-Path $root $runtimeRelative
+    if(-not(Test-Path -LiteralPath $runtimeRoot -PathType Container)){
+        throw "Target managed runtime root is missing before commit: $runtimeRoot"
+    }
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $runtimeRoot -RelativePath $runtimeRelative)
+
+    $launcherRelative=$runtimeRelative.TrimEnd('\')+'\Scripts\vllm.exe'
+    $launcher=Join-Path $root $launcherRelative
+    if(-not(Test-Path -LiteralPath $launcher -PathType Leaf)){
+        throw "Target managed vLLM launcher is missing before commit: $launcher"
+    }
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $launcher -RelativePath $launcherRelative)
+
+    return [pscustomobject][ordered]@{
+        RuntimeRoot=$runtimeRoot
+        VllmExe=$launcher
+    }
+}
+
 function Complete-VllmUpdateProductionTransaction {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -795,7 +821,14 @@ function Complete-VllmUpdateProductionTransaction {
         if($actual-ne$expectedStateJson){throw 'Published target install-state differs from the prevalidated target state.'}
     }.GetNewClosure()
 
-    $activation=Invoke-VllmUpdateTransactionActivation -InstallationRoot $InstallationRoot -TargetInstallState $targetState -ValidateTargetState $validateTargetState -ValidateGeneration $ValidateGeneration
+    $targetLiveValidator=(Get-Item -LiteralPath Function:\Assert-VllmUpdateTargetLiveRuntime).ScriptBlock
+    $validateTargetLive={
+        param($journal)
+        [void]$journal
+        [void](& $targetLiveValidator -InstallationRoot $InstallationRoot -TargetContext $TargetContext)
+    }.GetNewClosure()
+
+    $activation=Invoke-VllmUpdateTransactionActivation -InstallationRoot $InstallationRoot -TargetInstallState $targetState -ValidateTargetState $validateTargetState -ValidateGeneration $ValidateGeneration -ValidateTargetLive $validateTargetLive
     if(-not$activation.committed){throw 'Update transaction did not commit the target generation.'}
     [pscustomobject][ordered]@{
         schema_version=1
@@ -856,6 +889,23 @@ function Get-VllmUpdateWheelDeepestProjectedPath {
     }finally{$archive.Dispose()}
 }
 
+function Get-VllmUpdateWheelDeepestInternalPath {
+    param([Parameter(Mandatory)][string]$WheelPath)
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $wheel=Get-VllmNormalizedPath $WheelPath
+    $archive=[IO.Compression.ZipFile]::OpenRead($wheel)
+    try{
+        $max=''
+        foreach($entry in $archive.Entries){
+            if([string]::IsNullOrWhiteSpace([string]$entry.Name)){continue}
+            $relative=([string]$entry.FullName).Replace('/','\')
+            if($relative.Length-gt$max.Length){$max=$relative}
+        }
+        return $max
+    }finally{$archive.Dispose()}
+}
+
 function Assert-VllmUpdateRuntimeMaterializationPathBudget {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -897,6 +947,10 @@ function Assert-VllmUpdateRuntimeMaterializationPathBudget {
     $runtimeDeep=Get-VllmUpdateDeepestRelativePath -Root ([string]$SourceContext.Committed.State.runtime.root) -Label 'runtime'
     $wheelDeep=Get-VllmUpdateWheelDeepestProjectedPath -WheelPath $WheelPath
     if($wheelDeep.Length-gt$runtimeDeep.Length){$runtimeDeep=$wheelDeep}
+    $wheelInternalDeep=Get-VllmUpdateWheelDeepestInternalPath -WheelPath $WheelPath
+    $uvArchiveKeyBudget='x'.PadRight(64,[char]'x')
+    $wheelCacheDeep=Join-Path (Join-Path 'archive-v0' $uvArchiveKeyBudget) $wheelInternalDeep
+    if($wheelCacheDeep.Length-gt$cacheDeep.Length){$cacheDeep=$wheelCacheDeep}
 
     Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $pythonRelative) -DeepestRelativePath $pythonDeep -Label 'isolated Python tree'
     Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $uvRelative) -DeepestRelativePath $uvDeep -Label 'isolated uv tree'
