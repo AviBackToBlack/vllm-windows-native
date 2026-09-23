@@ -59,7 +59,7 @@ The v1 public asset set is the accepted wheel, `vllm-windows-native-<release>.zi
 
 `release-index.json` is versioned machine-readable root metadata binding project commit, release id/tag, release/runtime manifest digests, upstream and Windows patchset identities, wheel identity, distribution-bundle identity, the checksum-file name/format (not its digest), and optional accepted-build evidence. It must not contain local absolute paths, machine/user names, tokens, or secrets.
 
-`SHA256SUMS` is deterministic LF UTF-8 and covers exactly the wheel, distribution bundle, and `release-index.json`; it never contains a checksum for itself. The release index records only the expected checksum-file name/format, so generation is acyclic. The published immutable GitHub release attestation binds `SHA256SUMS` itself together with the other release assets.
+`SHA256SUMS` is deterministic LF UTF-8 and covers exactly the wheel, distribution bundle, and `release-index.json`; it never contains a checksum for itself. The release index records only the expected checksum-file name/format, so generation is acyclic. The published immutable GitHub release attestation binds `SHA256SUMS` itself together with the other release assets. Offline preparation verifies the exact canonical bytes of all four assets, builds them in a private sibling staging directory, and only after full verification atomically renames that same-volume staging directory into the requested final path. The final path is never used as a build/cleanup workspace; if it appears or changes before publication, preparation fails closed and leaves that foreign path untouched.
 
 ### Deterministic bundle
 

@@ -33,10 +33,12 @@ function Test-ExpectedFailure {
         'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
         'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
         'nonempty-output-refusal'='Release artifacts directory is not empty'
+        'artifacts-volume-root'='Release artifacts directory must not be a volume root'
         'prepare-concurrent-lock'='Another offline release preparation is active'
         'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
         'prepare-fault-after-bundle'='FAULT_INJECTED:AfterBundle'
+        'prepare-target-race'='Release artifacts path appeared before atomic publish:'
         'wheel-tamper'='Provided release wheel size/SHA-256 mismatch.'
         'index-tamper'='release-index.json does not exactly match the canonical index'
         'index-identity-case'='release-index.json does not exactly match the canonical index'
@@ -45,6 +47,7 @@ function Test-ExpectedFailure {
         'index-bom'='release-index.json must be UTF-8 without BOM.'
         'checksums-tamper'='Invalid SHA256SUMS line'
         'checksums-noncanonical-order'='SHA256SUMS entries are not in canonical ordinal order.'
+        'checksums-extra-trailing-lf'='SHA256SUMS does not exactly match canonical byte serialization.'
         'checksums-bom'='SHA256SUMS must be UTF-8 without BOM.'
         'unexpected-fifth-asset'='Release artifact filename set count mismatch.'
         'zip-extra-member'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
@@ -65,6 +68,18 @@ function Test-ExpectedFailure {
         Write-Host "EXPECTED_FAILURE_OK $Label"
     }
 }
+function Assert-TestReleaseOutputClean {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Label)
+    if(Test-Path -LiteralPath $Path){
+        if(-not(Test-Path -LiteralPath $Path -PathType Container)){throw "$Label left a non-directory final output path."}
+        if(@(Get-ChildItem -LiteralPath $Path -Force).Count-ne0){throw "$Label left content in final output."}
+    }
+    $parent=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path));$leaf=[IO.Path]::GetFileName([IO.Path]::GetFullPath($Path))
+    $prefix='.'+$leaf+'.vllm-release-stage-'
+    $stages=@(Get-ChildItem -LiteralPath $parent -Force -Directory|Where-Object {$_.Name.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)})
+    if($stages.Count-ne0){throw "$Label leaked private release staging directories."}
+}
+
 function Write-TestArtifactChecksums {
     param([Parameter(Mandatory)][string]$ArtifactsDirectory)
     $wheel=Get-ChildItem -LiteralPath $ArtifactsDirectory -Filter '*.whl' -File
@@ -291,12 +306,15 @@ try {
     $badTagSnapshot=Get-VllmReleaseGitSnapshot -Repository $badTagRepo -Commit $badTagCommit
     try{$badTagContext=Get-VllmReleaseContext -Snapshot $badTagSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badTagWheel -Context $badTagContext|Out-Null} 'wheel-tag-substring'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badTagSnapshot}
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out1 | Out-Null } 'nonempty-output-refusal'
+    Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory ([IO.Path]::GetPathRoot($root)) | Out-Null } 'artifacts-volume-root'
+
     $concurrentOut=Join-Path $root 'concurrent-output'
+    New-Item -ItemType Directory -Path $concurrentOut -Force|Out-Null
     $heldPrepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $concurrentOut
     $heldLockPath=[string]$heldPrepareLock.Path
     try{
         Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $concurrentOut|Out-Null} 'prepare-concurrent-lock'
-        if((Test-Path -LiteralPath $concurrentOut) -and @(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne0){throw 'Losing concurrent preparation mutated the release artifacts directory.'}
+        if(@(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne0){throw 'Losing concurrent preparation mutated the release artifacts directory.'}
     }finally{Exit-VllmReleasePreparationLock -Lock $heldPrepareLock}
     $concurrentRetry=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $concurrentOut
     if($concurrentRetry.bundle_sha256-ne$r1.bundle_sha256){throw 'Serialized preparation retry produced a different bundle identity.'}
@@ -305,11 +323,21 @@ try {
     Write-Host 'RELEASE_PREPARE_SERIALIZATION_OK'
     $faultOut=Join-Path $root 'fault-output'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint DuringWheelCopy|Out-Null} 'prepare-fault-during-wheel'
-    if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'DuringWheelCopy failure left a partial wheel in release artifacts.'}
+    Assert-TestReleaseOutputClean -Path $faultOut -Label 'DuringWheelCopy failure'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint AfterWheelCopy|Out-Null} 'prepare-fault-after-wheel'
-    if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'AfterWheelCopy failure left partial release artifacts.'}
+    Assert-TestReleaseOutputClean -Path $faultOut -Label 'AfterWheelCopy failure'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint AfterBundle|Out-Null} 'prepare-fault-after-bundle'
-    if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'AfterBundle failure left partial release artifacts.'}
+    Assert-TestReleaseOutputClean -Path $faultOut -Label 'AfterBundle failure'
+
+    $raceOut=Join-Path $root 'target-race-output'
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $raceOut -FaultPoint BeforePublishTargetAppears|Out-Null} 'prepare-target-race'
+    $raceMarker=Join-Path $raceOut 'foreign-marker.txt'
+    if(-not(Test-Path -LiteralPath $raceMarker -PathType Leaf)-or[IO.File]::ReadAllText($raceMarker)-ne'foreign'){throw 'Atomic publish race did not preserve the foreign final-path marker.'}
+    foreach($asset in @('vllm-1.2.3-cp313-cp313-win_amd64.whl','vllm-windows-native-test-release.zip','release-index.json','SHA256SUMS')){if(Test-Path -LiteralPath (Join-Path $raceOut $asset)){throw "Atomic publish race wrote a release asset into the foreign final path: $asset"}}
+    $racePrefix='.target-race-output.vllm-release-stage-'
+    if(@(Get-ChildItem -LiteralPath $root -Force -Directory|Where-Object {$_.Name.StartsWith($racePrefix,[StringComparison]::OrdinalIgnoreCase)}).Count-ne0){throw 'Atomic publish race leaked private release staging.'}
+    Remove-Item -LiteralPath $raceOut -Recurse -Force
+
     $faultRetry=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut
     if($faultRetry.bundle_sha256-ne$r1.bundle_sha256){throw 'Retry after injected preparation failure produced a different bundle identity.'}
     Remove-Item -LiteralPath $faultOut -Recurse -Force
@@ -388,6 +416,11 @@ try {
     [Array]::Reverse($sumLines)
     [IO.File]::WriteAllText($sumPath,($sumLines -join [char]10)+[char]10,[Text.UTF8Encoding]::new($false))
     Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $reorderedSums|Out-Null} 'checksums-noncanonical-order'
+    $extraLfSums=Join-Path $root 'extra-lf-sums'
+    Copy-Item -LiteralPath $out1 -Destination $extraLfSums -Recurse
+    [IO.File]::AppendAllText((Join-Path $extraLfSums 'SHA256SUMS'),[string][char]10,[Text.UTF8Encoding]::new($false))
+    Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $extraLfSums|Out-Null} 'checksums-extra-trailing-lf'
+
     $bomSums=Join-Path $root 'bom-sums'
     Copy-Item -LiteralPath $out1 -Destination $bomSums -Recurse
     $bomSumsPath=Join-Path $bomSums 'SHA256SUMS'
