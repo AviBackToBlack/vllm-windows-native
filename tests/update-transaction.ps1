@@ -593,6 +593,57 @@ Invoke-TestScenario -Name 'retire-precommit-drift-refusal' -Body {
 }
 Write-Host 'UPDATE_RETIRE_PRECOMMIT_DRIFT_REFUSAL_OK'
 
+Invoke-TestScenario -Name 'retire-missing-source-recovery' -Body {
+    param($scenario)
+    $retireRelative='obsolete-recovery.txt'
+    $retireLive=Join-Path $scenario.Root $retireRelative
+    [IO.File]::WriteAllText($retireLive,'source-retire',[Text.UTF8Encoding]::new($false))
+    $retireFile=Get-TestIdentity -Path $retireLive
+    $distribution=@(
+        [pscustomobject]@{Class='replace';RelativePath='payload\a.txt';Source=$scenario.SourceA;Target=$scenario.NewA},
+        [pscustomobject]@{Class='retire';RelativePath=$retireRelative;Source=$retireFile;Target=$null}
+    )
+    $txid=[guid]::NewGuid().ToString('D')
+    $activation=Get-VllmUpdateActivationPlan -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -TransactionId $txid -DistributionPlan $distribution
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    $layout=Get-VllmUpdateStagingLayout -InstallationRoot $scenario.Root -TransactionId $txid
+    $plan=[pscustomobject]@{distribution=$distribution}
+    [void](Copy-VllmUpdateDistributionStage -Layout $layout -Plan $plan -TargetContext $scenario.TargetContext)
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+    Remove-Item -LiteralPath $retireLive -Force
+    $callbacks=Get-TestCallbacks -Scenario $scenario
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $scenario.TargetState -ValidateTargetState $callbacks.ValidateState -FaultPoint AfterTargetActivation)
+    } -Name 'retire-missing-source-recovery-activation' -Expected 'FAULT_INJECTED:AfterTargetActivation'
+    $recovery=Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root -ValidateGeneration $callbacks.ValidateGeneration
+    if(-not[bool]$recovery.recovered-or[string]$recovery.generation-ne'source'){throw 'Missing retire object blocked source-generation recovery.'}
+    Assert-ScenarioSource -Scenario $scenario
+    if(Test-Path -LiteralPath $retireLive){throw 'Missing retire object was unexpectedly recreated during source recovery.'}
+    Assert-TransactionEvidenceAbsent -Scenario $scenario
+}
+Write-Host 'UPDATE_RETIRE_MISSING_SOURCE_RECOVERY_OK'
+
+Invoke-TestScenario -Name 'retire-recovery-drift-refusal' -Body {
+    param($scenario)
+    $retireRelative='obsolete-recovery-drift.txt'
+    $retireLive=Join-Path $scenario.Root $retireRelative
+    [IO.File]::WriteAllText($retireLive,'source-retire',[Text.UTF8Encoding]::new($false))
+    $retireFile=Get-TestIdentity -Path $retireLive
+    $distribution=@([pscustomobject]@{Class='retire';RelativePath=$retireRelative;Source=$retireFile;Target=$null})
+    $txid=[guid]::NewGuid().ToString('D')
+    $activation=Get-VllmUpdateActivationPlan -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -TransactionId $txid -DistributionPlan $distribution
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+    [IO.File]::WriteAllText($retireLive,'DRIFTED-RETIRE-CONTENT',[Text.UTF8Encoding]::new($false))
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root)
+    } -Name 'retire-recovery-drift' -Expected "Cannot restore retire '$retireRelative': live state is unknown."
+    $state=Read-VllmUpdateInstallStateForRecovery -InstallationRoot $scenario.Root
+    if(-not([string]$state.GenerationId).Equals([string]$scenario.SourceGeneration,[StringComparison]::OrdinalIgnoreCase)){throw 'Retire recovery drift failure changed the authoritative generation.'}
+    if(-not(Test-Path -LiteralPath (Join-Path $scenario.Root 'state\update-transaction.json') -PathType Leaf)){throw 'Retire recovery drift failure did not preserve transaction evidence.'}
+}
+Write-Host 'UPDATE_RETIRE_RECOVERY_DRIFT_REFUSAL_OK'
+
 Invoke-TestScenario -Name 'engine-whatif-defense' -Body {
     param($scenario)
     [void](Open-TestScenario -Scenario $scenario)

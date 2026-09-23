@@ -817,7 +817,10 @@ function Restore-VllmUpdateSourceGeneration {
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $live -RelativePath $relative)
 
         if($class-eq'retire'){
-            Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.source -Label "Source retire remains live '$relative'"
+            $liveState=Get-VllmUpdateTransactionObjectState -Kind $kind -Path $live -SourceIdentity $item.source
+            if($liveState-notin@('source','missing')){
+                throw "Cannot restore retire '$relative': live state is $liveState."
+            }
             continue
         }
 

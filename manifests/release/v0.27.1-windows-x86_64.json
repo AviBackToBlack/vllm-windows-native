@@ -117,8 +117,8 @@
     },
     {
       "path": "scripts/update-transaction.ps1",
-      "size_bytes": 56083,
-      "sha256": "49E773C8EA76FDEB3BD6457C3414547281A9CE84B6AD743467D2D64A7F710FD0"
+      "size_bytes": 56155,
+      "sha256": "558F3681B9604968272F7BFE5CC5AA531B7EE342AB5A2D91A0DEB98D10DB5C8F"
     },
     {
       "path": "scripts/update-integration.ps1",
