@@ -182,6 +182,34 @@ Run the same command without `-ValidateOnly`. Long CUDA builds should be run det
 
 The resulting wheel and `build-result.json` are written under the selected artifact directory (by default `artifacts/<milestone>`).
 
+## Prepare deterministic offline release assets
+
+`release.ps1` is the SM-19A offline preparation/verification surface. It performs no GitHub mutation, tag creation, signing, upload, or network acquisition. Release bytes are sourced from an explicit Git commit rather than the mutable worktree.
+
+Validate the current repository release contract without requiring the accepted wheel:
+
+```powershell
+.\release.ps1 -Mode ValidateRepository
+```
+
+Prepare the four deterministic offline assets from the accepted caller-supplied wheel:
+
+```powershell
+.\release.ps1 -Mode Prepare `
+  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl' `
+  -ArtifactsDirectory '.\artifacts\release'
+```
+
+`Prepare` requires a clean worktree and the selected project commit to be the checked-out `HEAD`. The output directory must be empty and resolve without filesystem aliases/reparse points. The generated set is exactly the wheel copied byte-for-byte, `vllm-windows-native-<release>.zip`, `release-index.json`, and `SHA256SUMS`. The ZIP uses the canonical STORE profile defined by the SM-19 design and is byte-identical across the supported PowerShell 7 / Windows PowerShell 5.1 preparation paths.
+
+Verify an existing offline set independently:
+
+```powershell
+.\release.ps1 -Mode Verify -ArtifactsDirectory '.\artifacts\release'
+```
+
+Verification re-derives the release/runtime manifests and all distribution bytes from the selected Git commit, validates the wheel contract, requires canonical ZIP/index/checksum encoding, and rejects extra, missing, aliased, or drifted content. Signing and GitHub Release publication remain later SM-19 slices.
+
 ## Run the accepted Windows runtime
 
 `start.ps1` launches vLLM in the foreground and applies process-local containment before the server starts.

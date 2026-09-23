@@ -53,6 +53,25 @@ jobs:
         shell: pwsh
         run: ./tests/release-manifest.ps1
 
+      - name: Validate deterministic release bundle in PowerShell 7 and Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./release.ps1 -Mode ValidateRepository
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 canonical release repository validation failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./release.ps1 -Mode ValidateRepository
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 canonical release repository validation failed with exit $LASTEXITCODE." }
+
+          $ps7Summary = Join-Path $env:RUNNER_TEMP 'release-bundle-ps7.summary'
+          $ps51Summary = Join-Path $env:RUNNER_TEMP 'release-bundle-ps51.summary'
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/release-bundle.ps1 -SummaryPath $ps7Summary
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 release bundle regression failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/release-bundle.ps1 -SummaryPath $ps51Summary
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 release bundle regression failed with exit $LASTEXITCODE." }
+          if ([IO.File]::ReadAllText($ps7Summary) -ne [IO.File]::ReadAllText($ps51Summary)) {
+            throw 'PowerShell 7 and Windows PowerShell 5.1 release bundle identities differ.'
+          }
+          Write-Host 'RELEASE_CROSS_POWERSHELL_DETERMINISM_OK'
+
       - name: Run update planner regression in PowerShell 7 and Windows PowerShell 5.1
         shell: pwsh
         run: |
