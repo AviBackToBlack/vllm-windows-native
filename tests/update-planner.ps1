@@ -34,8 +34,21 @@ try{
     [void][IO.Directory]::CreateDirectory($base)
     $models=Join-Path $base 'models';[void][IO.Directory]::CreateDirectory($models)
     $canonical=Get-VllmUpdateReleaseContext -ReleaseManifestPath (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner
-    if($canonical.DistributionMap.Count-ne29-or$canonical.ManagedMap.Count-ne14-or$canonical.ManagedContractsMap.Count-ne9){throw 'Canonical target release context shape mismatch.'}
+    if($canonical.DistributionMap.Count-ne30-or$canonical.ManagedMap.Count-ne14-or$canonical.ManagedContractsMap.Count-ne9){throw 'Canonical target release context shape mismatch.'}
+    if(-not$canonical.DistributionMap.ContainsKey((Get-VllmUpdateRelativeKey 'scripts\update-integration.ps1'))){throw 'Canonical target does not own update integration helper.'}
     Write-Host 'UPDATE_TARGET_REFERENCE_GRAPH_OK'
+
+    $missingIntegrationRoot=Join-Path $base 'missing-update-integration'
+    $missingIntegrationRelease=Get-Content (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json
+    $missingIntegrationRelease.files=@($missingIntegrationRelease.files|Where-Object{
+        ([string]$_.path).Replace('\','/') -ne 'scripts/update-integration.ps1'
+    })
+    Copy-TestReleaseFiles -Release $missingIntegrationRelease -Root $missingIntegrationRoot
+    $missingIntegrationManifest=Write-TestReleaseManifest -Release $missingIntegrationRelease -Root $missingIntegrationRoot
+    Test-ExpectedFailure -Action {
+        Get-VllmUpdateReleaseContext -ReleaseManifestPath $missingIntegrationManifest -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner|Out-Null
+    } -Name 'missing-update-integration-helper' -Expected 'Required lifecycle distribution file'
+    Write-Host 'UPDATE_INTEGRATION_HELPER_REQUIRED_OK'
 
     $legacyRoot=Join-Path $base 'legacy-source-without-update-reservations'
     $legacyRelease=Get-Content (Join-Path $repoRoot 'manifests\release\v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json

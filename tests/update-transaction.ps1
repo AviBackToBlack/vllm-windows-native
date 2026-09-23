@@ -9,6 +9,7 @@ $repoRoot=Split-Path -Parent $PSScriptRoot
 . (Join-Path $repoRoot 'scripts\update-planner.ps1')
 . (Join-Path $repoRoot 'scripts\update-staging.ps1')
 . (Join-Path $repoRoot 'scripts\update-transaction.ps1')
+. (Join-Path $repoRoot 'scripts\update-integration.ps1')
 
 function Get-TestIdentity {
     param([Parameter(Mandatory)][string]$Path)
@@ -496,3 +497,481 @@ function Test-AtomicJsonPublication {
 
 Test-AtomicJsonPublication
 Write-Host 'UPDATE_ATOMIC_PUBLICATION_NO_GAP_OK'
+
+function Convert-TestTreeIdentity {
+    param([Parameter(Mandatory)]$Identity)
+    [pscustomobject][ordered]@{
+        entry_count=[int]$Identity.EntryCount
+        file_count=[int]$Identity.FileCount
+        tree_sha256=([string]$Identity.TreeSha256).ToUpperInvariant()
+    }
+}
+
+Invoke-TestScenario -Name 'managed-tree-replace-retire' -Body {
+    param($scenario)
+    $managedRelative='runtime\managed-tree'
+    $retireRelative='obsolete.txt'
+    $managedLive=Join-Path $scenario.Root $managedRelative
+    [void][IO.Directory]::CreateDirectory($managedLive)
+    [IO.File]::WriteAllText((Join-Path $managedLive 'payload.txt'),'managed-source',[Text.UTF8Encoding]::new($false))
+    $retireLive=Join-Path $scenario.Root $retireRelative
+    [IO.File]::WriteAllText($retireLive,'obsolete-source',[Text.UTF8Encoding]::new($false))
+
+    $sourceTree=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $managedLive)
+    $retireFile=Get-TestIdentity -Path $retireLive
+    $retireIdentity=[pscustomobject][ordered]@{size_bytes=[int64]$retireFile.Size;sha256=([string]$retireFile.Sha256).ToUpperInvariant()}
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $scenario.Root -TransactionId $txid
+    $stageRelative=[string]$paths.ManagedRelative+'\'+$managedRelative
+    $backupRelative=[string]$paths.BackupManagedRelative+'\'+$managedRelative
+
+    $targetSource=Join-Path $scenario.Base 'managed-target-source'
+    [void][IO.Directory]::CreateDirectory($targetSource)
+    [IO.File]::WriteAllText((Join-Path $targetSource 'payload.txt'),'managed-target',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $targetSource 'added.txt'),'new-content',[Text.UTF8Encoding]::new($false))
+    $targetTree=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $targetSource)
+
+    $activation=@(
+        [pscustomobject][ordered]@{
+            class='replace';kind='tree';role='runtime';relative_path=$managedRelative
+            source=$sourceTree;target=$targetTree;stage_relative=$stageRelative;backup_relative=$backupRelative
+        },
+        [pscustomobject][ordered]@{
+            class='retire';kind='file';role='distribution';relative_path=$retireRelative
+            source=$retireIdentity;target=$null;stage_relative=$null;backup_relative=$null
+        }
+    )
+
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    $stagePath=Join-Path $scenario.Root $stageRelative
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $stagePath))
+    Copy-Item -LiteralPath $targetSource -Destination $stagePath -Recurse
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+
+    $targetState=[pscustomobject][ordered]@{generation_id=$scenario.TargetGeneration;marker='target'}
+    $validateState={param($state,$path);if([string]$state.marker-ne'target'){throw "tree target state mismatch: $path"}}
+    $result=Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $targetState -ValidateTargetState $validateState
+    if(-not$result.committed){throw 'Managed-tree transaction did not commit.'}
+    if((Get-VllmUpdateTransactionObjectState -Kind tree -Path $managedLive -TargetIdentity $targetTree)-ne'target'){throw 'Managed tree did not activate.'}
+    if(Test-Path -LiteralPath $retireLive){throw 'Post-commit retire path remains live.'}
+    if(Test-Path -LiteralPath (Join-Path $scenario.Root 'state\update-transaction.json')){throw 'Managed-tree transaction journal residue remains.'}
+    if(Test-Path -LiteralPath (Join-Path $scenario.Root 'work\update-transaction')){throw 'Managed-tree transaction workspace residue remains.'}
+}
+Write-Host 'UPDATE_MANAGED_TREE_RETIRE_OK'
+
+Invoke-TestScenario -Name 'retire-precommit-drift-refusal' -Body {
+    param($scenario)
+    $relative='obsolete-drift.txt'
+    $live=Join-Path $scenario.Root $relative
+    [IO.File]::WriteAllText($live,'source-retire',[Text.UTF8Encoding]::new($false))
+    $sourceFile=Get-TestIdentity -Path $live
+    $sourceIdentity=[pscustomobject][ordered]@{
+        size_bytes=[int64]$sourceFile.Size
+        sha256=([string]$sourceFile.Sha256).ToUpperInvariant()
+    }
+    $txid=[guid]::NewGuid().ToString('D')
+    $activation=@(
+        [pscustomobject][ordered]@{
+            class='retire';kind='file';role='distribution';relative_path=$relative
+            source=$sourceIdentity;target=$null;stage_relative=$null;backup_relative=$null
+        }
+    )
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+
+    [IO.File]::WriteAllText($live,'DRIFTED-RETIRE-CONTENT',[Text.UTF8Encoding]::new($false))
+    $targetState=[pscustomobject][ordered]@{generation_id=$scenario.TargetGeneration;marker='target'}
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $targetState)
+    } -Name 'retire-precommit-drift' -Expected 'Retire source drifted immediately before commit'
+
+    $state=Get-Content -LiteralPath (Join-Path $scenario.Root 'state\install-state.json') -Raw|ConvertFrom-Json
+    if([string]$state.generation_id-ne[string]$scenario.SourceGeneration){
+        throw 'Retire drift failure committed the target install-state.'
+    }
+}
+Write-Host 'UPDATE_RETIRE_PRECOMMIT_DRIFT_REFUSAL_OK'
+
+Invoke-TestScenario -Name 'retire-missing-source-recovery' -Body {
+    param($scenario)
+    $retireRelative='obsolete-recovery.txt'
+    $retireLive=Join-Path $scenario.Root $retireRelative
+    [IO.File]::WriteAllText($retireLive,'source-retire',[Text.UTF8Encoding]::new($false))
+    $retireFile=Get-TestIdentity -Path $retireLive
+    $distribution=@(
+        [pscustomobject]@{Class='replace';RelativePath='payload\a.txt';Source=$scenario.SourceA;Target=$scenario.NewA},
+        [pscustomobject]@{Class='retire';RelativePath=$retireRelative;Source=$retireFile;Target=$null}
+    )
+    $txid=[guid]::NewGuid().ToString('D')
+    $activation=Get-VllmUpdateActivationPlan -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -TransactionId $txid -DistributionPlan $distribution
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    $layout=Get-VllmUpdateStagingLayout -InstallationRoot $scenario.Root -TransactionId $txid
+    $plan=[pscustomobject]@{distribution=$distribution}
+    [void](Copy-VllmUpdateDistributionStage -Layout $layout -Plan $plan -TargetContext $scenario.TargetContext)
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+    Remove-Item -LiteralPath $retireLive -Force
+    $callbacks=Get-TestCallbacks -Scenario $scenario
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $scenario.TargetState -ValidateTargetState $callbacks.ValidateState -FaultPoint AfterTargetActivation)
+    } -Name 'retire-missing-source-recovery-activation' -Expected 'FAULT_INJECTED:AfterTargetActivation'
+    $recovery=Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root -ValidateGeneration $callbacks.ValidateGeneration
+    if(-not[bool]$recovery.recovered-or[string]$recovery.generation-ne'source'){throw 'Missing retire object blocked source-generation recovery.'}
+    Assert-ScenarioSource -Scenario $scenario
+    if(Test-Path -LiteralPath $retireLive){throw 'Missing retire object was unexpectedly recreated during source recovery.'}
+    Assert-TransactionEvidenceAbsent -Scenario $scenario
+}
+Write-Host 'UPDATE_RETIRE_MISSING_SOURCE_RECOVERY_OK'
+
+Invoke-TestScenario -Name 'retire-recovery-drift-refusal' -Body {
+    param($scenario)
+    $retireRelative='obsolete-recovery-drift.txt'
+    $retireLive=Join-Path $scenario.Root $retireRelative
+    [IO.File]::WriteAllText($retireLive,'source-retire',[Text.UTF8Encoding]::new($false))
+    $retireFile=Get-TestIdentity -Path $retireLive
+    $distribution=@([pscustomobject]@{Class='retire';RelativePath=$retireRelative;Source=$retireFile;Target=$null})
+    $txid=[guid]::NewGuid().ToString('D')
+    $activation=Get-VllmUpdateActivationPlan -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -TransactionId $txid -DistributionPlan $distribution
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid)
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+    [IO.File]::WriteAllText($retireLive,'DRIFTED-RETIRE-CONTENT',[Text.UTF8Encoding]::new($false))
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root)
+    } -Name 'retire-recovery-drift' -Expected "Cannot restore retire '$retireRelative': live state is unknown."
+    $state=Read-VllmUpdateInstallStateForRecovery -InstallationRoot $scenario.Root
+    if(-not([string]$state.GenerationId).Equals([string]$scenario.SourceGeneration,[StringComparison]::OrdinalIgnoreCase)){throw 'Retire recovery drift failure changed the authoritative generation.'}
+    if(-not(Test-Path -LiteralPath (Join-Path $scenario.Root 'state\update-transaction.json') -PathType Leaf)){throw 'Retire recovery drift failure did not preserve transaction evidence.'}
+}
+Write-Host 'UPDATE_RETIRE_RECOVERY_DRIFT_REFUSAL_OK'
+
+Invoke-TestScenario -Name 'engine-whatif-defense' -Body {
+    param($scenario)
+    [void](Open-TestScenario -Scenario $scenario)
+    Stage-TestScenario -Scenario $scenario
+    $oldWhatIf=$WhatIfPreference
+    try{
+        $WhatIfPreference=$true
+        Test-ExpectedFailure -Action {
+            Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root|Out-Null
+        } -Name 'engine-recovery-whatif-defense' -Expected 'refuses to mutate under -WhatIf'
+        Test-ExpectedFailure -Action {
+            Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $scenario.TargetState|Out-Null
+        } -Name 'engine-activation-whatif-defense' -Expected 'refuses to mutate under -WhatIf'
+    }finally{
+        $WhatIfPreference=$oldWhatIf
+    }
+    $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $scenario.Root
+    if([string]$journal.phase-ne'prepared'){throw 'Internal WhatIf defense changed transaction phase.'}
+}
+Write-Host 'UPDATE_TRANSACTION_INTERNAL_WHATIF_DEFENSE_OK'
+
+Invoke-TestScenario -Name 'provisional-materialization-finalization' -Body {
+    param($scenario)
+    $relative='runtime\provisional-tree'
+    $live=Join-Path $scenario.Root $relative
+    [void][IO.Directory]::CreateDirectory($live)
+    [IO.File]::WriteAllText((Join-Path $live 'payload.txt'),'source',[Text.UTF8Encoding]::new($false))
+    $sourceIdentity=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $live)
+
+    $targetSource=Join-Path $scenario.Base 'provisional-target'
+    [void][IO.Directory]::CreateDirectory($targetSource)
+    [IO.File]::WriteAllText((Join-Path $targetSource 'payload.txt'),'target',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $targetSource 'new.txt'),'new',[Text.UTF8Encoding]::new($false))
+    $targetIdentity=Convert-TestTreeIdentity -Identity (Get-VllmUpdateTreeIdentity -Root $targetSource)
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $scenario.Root -TransactionId $txid
+    $contract='runtime-contract-v2'
+    $entry=[pscustomobject][ordered]@{
+        class='replace';kind='tree';role='runtime';relative_path=$relative
+        source=$sourceIdentity;target=$null;target_contract=$contract
+        stage_relative=([string]$paths.ManagedRelative+'\'+$relative)
+        backup_relative=([string]$paths.BackupManagedRelative+'\'+$relative)
+    }
+    [void](Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan @($entry) -TransactionId $txid)
+
+    Test-ExpectedFailure -Action {
+        [void](Invoke-VllmUpdateTransactionPhaseTransition -InstallationRoot $scenario.Root -Phase prepared)
+    } -Name 'provisional-prepared-refused' -Expected 'Replace activation identities are incomplete'
+
+    Test-ExpectedFailure -Action {
+        [void](Complete-VllmUpdateTransactionMaterializedTargets -InstallationRoot $scenario.Root -MaterializedTargets @(
+            [pscustomobject][ordered]@{relative_path=$relative;target_contract='wrong-contract';identity=$targetIdentity}
+        ))
+    } -Name 'provisional-contract-mismatch-refused' -Expected 'does not match the journal'
+
+    $journal=Complete-VllmUpdateTransactionMaterializedTargets -InstallationRoot $scenario.Root -MaterializedTargets @(
+        [pscustomobject][ordered]@{relative_path=$relative;target_contract=$contract;identity=$targetIdentity}
+    )
+    if($null-eq$journal.activation_plan[0].target){throw 'Materialized target identity was not persisted.'}
+
+    $stage=Join-Path $scenario.Root ([string]$entry.stage_relative)
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $stage))
+    Copy-Item -LiteralPath $targetSource -Destination $stage -Recurse
+    [void](Complete-VllmUpdateTransactionPreparation -InstallationRoot $scenario.Root)
+
+    $targetState=[pscustomobject][ordered]@{generation_id=$scenario.TargetGeneration;marker='target'}
+    [void](Invoke-VllmUpdateTransactionActivation -InstallationRoot $scenario.Root -TargetInstallState $targetState)
+    if((Get-VllmUpdateTransactionObjectState -Kind tree -Path $live -TargetIdentity $targetIdentity)-ne'target'){
+        throw 'Finalized provisional target did not activate.'
+    }
+}
+Write-Host 'UPDATE_PROVISIONAL_MATERIALIZATION_FINALIZATION_OK'
+
+$lockA=[pscustomobject][ordered]@{
+    path='requirements\runtime.lock.txt';size_bytes=10;sha256=('A'*64);package_count=2;hashes_required=$true;eol='lf'
+}
+$lockB=[pscustomobject][ordered]@{
+    path='requirements\runtime.lock.txt';size_bytes=11;sha256=('B'*64);package_count=3;hashes_required=$true;eol='lf'
+}
+$offlineSource=[pscustomobject]@{
+    ReleaseContext=[pscustomobject]@{DependencyManifest=[pscustomobject]@{lock=$lockA}}
+}
+$offlineTargetSame=[pscustomobject]@{DependencyManifest=[pscustomobject]@{lock=$lockA}}
+$offlineTargetChanged=[pscustomobject]@{DependencyManifest=[pscustomobject]@{lock=$lockB}}
+Assert-VllmUpdateOfflineDependencyLockCompatible -SourceContext $offlineSource -TargetContext $offlineTargetSame
+Test-ExpectedFailure -Action {
+    Assert-VllmUpdateOfflineDependencyLockCompatible -SourceContext $offlineSource -TargetContext $offlineTargetChanged
+} -Name 'offline-dependency-lock-change' -Expected 'changed dependency lock'
+Write-Host 'UPDATE_OFFLINE_DEPENDENCY_LOCK_GUARD_OK'
+
+$literalBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-literal-[root]-'+[guid]::NewGuid().ToString('N'))
+try{
+    $literalRuntime=Join-Path $literalBase 'runtime[tree]'
+    $literalScripts=Join-Path $literalRuntime 'Scripts'
+    $literalFinalPython=Join-Path $literalBase 'python[final]'
+    [void][IO.Directory]::CreateDirectory($literalScripts)
+    [void][IO.Directory]::CreateDirectory($literalFinalPython)
+    $lf=[string][char]10
+    [IO.File]::WriteAllText((Join-Path $literalRuntime 'pyvenv.cfg'),('home = C:\old\python'+$lf+'relocatable = true'+$lf),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $literalScripts 'activate.ps1'),'Write-Host literal',[Text.UTF8Encoding]::new($false))
+    Invoke-VllmUpdateIntegrationVenvRebase -RuntimeRoot $literalRuntime -FinalPythonRoot $literalFinalPython -MaterializationRoot (Join-Path $literalBase 'materialization')
+    $cfg=Get-Content -LiteralPath (Join-Path $literalRuntime 'pyvenv.cfg')
+    if($cfg -notcontains ('home = '+(Get-VllmNormalizedPath $literalFinalPython))){throw 'Literal-path venv rebase did not update pyvenv.cfg.'}
+}finally{
+    if(Test-Path -LiteralPath $literalBase){Remove-Item -LiteralPath $literalBase -Recurse -Force}
+}
+Write-Host 'UPDATE_LITERAL_PATH_REBASE_OK'
+
+$budgetBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-budget-'+[guid]::NewGuid().ToString('N'))
+try{
+    $budgetRoot=Join-Path $budgetBase 'i'
+    $pythonRoot=Join-Path $budgetRoot 'python\managed\python'
+    $uvRoot=Join-Path $budgetRoot 'uv\managed\uv'
+    $cacheRoot=Join-Path $budgetRoot 'cache\uv'
+    $runtimeRoot=Join-Path $budgetRoot 'runtime\venv'
+    foreach($dir in @($pythonRoot,$uvRoot,$cacheRoot,$runtimeRoot)){[void][IO.Directory]::CreateDirectory($dir)}
+    [IO.File]::WriteAllText((Join-Path $pythonRoot 'python.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $uvRoot 'uv.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $cacheRoot 'cache.bin'),'x',[Text.Encoding]::ASCII)
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $layout=Get-VllmUpdateStagingLayout -InstallationRoot $budgetRoot -TransactionId $txid
+    $stageRuntimeRoot=Join-Path $layout.ManagedRoot 'runtime\venv'
+    $wanted=[Math]::Max(35,261-$stageRuntimeRoot.Length)
+    $segments=New-Object System.Collections.Generic.List[string]
+    $relative=''
+    $n=0
+    while($relative.Length-lt$wanted){
+        $segment=('seg{0:D2}abcdefghijkl' -f $n)
+        $segments.Add($segment)
+        $relative=($segments.ToArray()-join'\')+'\payload.bin'
+        $n++
+    }
+    $liveDeep=Join-Path $runtimeRoot $relative
+    if($liveDeep.Length-ge260){throw "Path-budget fixture live path is unexpectedly too long: $($liveDeep.Length)"}
+    if((Join-Path $stageRuntimeRoot $relative).Length-lt260){throw 'Path-budget fixture did not reach the transaction staging limit.'}
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $liveDeep))
+    [IO.File]::WriteAllText($liveDeep,'deep',[Text.Encoding]::ASCII)
+
+    $wheel=Join-Path $budgetBase 'probe.whl'
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $zip=[IO.Compression.ZipFile]::Open($wheel,[IO.Compression.ZipArchiveMode]::Create)
+    try{
+        $entry=$zip.CreateEntry('vllm/__init__.py')
+        $stream=$entry.Open()
+        try{
+            $bytes=[Text.Encoding]::UTF8.GetBytes('x')
+            $stream.Write($bytes,0,$bytes.Length)
+        }finally{$stream.Dispose()}
+    }finally{$zip.Dispose()}
+
+    $sourceContext=[pscustomobject]@{
+        Committed=[pscustomobject]@{
+            State=[pscustomobject]@{
+                python=[pscustomobject]@{root=$pythonRoot}
+                uv=[pscustomobject]@{root=$uvRoot}
+                runtime=[pscustomobject]@{root=$runtimeRoot}
+            }
+        }
+    }
+    $targetContext=[pscustomobject]@{
+        PythonManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='python\managed\python';python_executable='python.exe'}}
+        UvManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='uv\managed\uv';uv_executable='uv.exe'}}
+        Release=[pscustomobject]@{orchestration=[pscustomobject]@{runtime_root='runtime\venv'}}
+        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage'}}
+        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage'}}
+    }
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $budgetRoot -TransactionId $txid -SourceContext $sourceContext -TargetContext $targetContext -WheelPath $wheel
+    } -Name 'deep-transaction-staging-path' -Expected 'materialization tree path exceeds'
+}finally{
+    if(Test-Path -LiteralPath $budgetBase){Remove-Item -LiteralPath $budgetBase -Recurse -Force}
+}
+Write-Host 'UPDATE_DEEP_TREE_PATH_BUDGET_OK'
+
+Invoke-TestScenario -Name 'empty-activation-plan-refusal' -Body {
+    param($scenario)
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $scenario.Root -TransactionId $txid
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateTransactionActivationPlan -Plan @() -Paths $paths -ModelsRoot $scenario.ModelsRoot -Phase materializing
+    } -Name 'empty-activation-plan' -Expected 'must not be empty'
+}
+Write-Host 'UPDATE_EMPTY_ACTIVATION_PLAN_REFUSAL_OK'
+
+$copyGuardBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-copy-guard-'+[guid]::NewGuid().ToString('N'))
+try{
+    $installRoot=Join-Path $copyGuardBase 'install'
+    $sourceRoot=Join-Path $copyGuardBase 'source'
+    $outside=Join-Path $copyGuardBase 'outside'
+    [void][IO.Directory]::CreateDirectory($installRoot)
+    [void][IO.Directory]::CreateDirectory($sourceRoot)
+    [void][IO.Directory]::CreateDirectory($outside)
+    [IO.File]::WriteAllText((Join-Path $sourceRoot 'payload.txt'),'source',[Text.UTF8Encoding]::new($false))
+    $sentinel=Join-Path $outside 'KEEP.txt'
+    [IO.File]::WriteAllText($sentinel,'DO-NOT-TOUCH',[Text.UTF8Encoding]::new($false))
+    $managed=Join-Path $installRoot 'work'
+    [void][IO.Directory]::CreateDirectory($managed)
+    $pivot=Join-Path $managed 'pivot'
+    New-Item -ItemType Junction -Path $pivot -Target $outside | Out-Null
+    Test-ExpectedFailure -Action {
+        Copy-VllmUpdateIntegrationTree -InstallationRoot $installRoot -Source $sourceRoot -Destination (Join-Path $pivot 'copied')
+    } -Name 'integration-destination-junction' -Expected 'filesystem alias outside expected location'
+    if((Get-Content -LiteralPath $sentinel -Raw).Trim()-ne'DO-NOT-TOUCH'){throw 'Integration destination junction modified outside sentinel.'}
+    if(Test-Path -LiteralPath (Join-Path $outside 'copied')){throw 'Integration destination junction copied content outside installation root.'}
+}finally{
+    if(Test-Path -LiteralPath $copyGuardBase){Remove-Item -LiteralPath $copyGuardBase -Recurse -Force}
+}
+Write-Host 'UPDATE_INTEGRATION_DESTINATION_REPARSE_REFUSAL_OK'
+
+$wheelCacheBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-wheel-cache-'+[guid]::NewGuid().ToString('N'))
+try{
+    $installRoot=Join-Path $wheelCacheBase 'i'
+    $pythonRoot=Join-Path $installRoot 'python\managed\python'
+    $uvRoot=Join-Path $installRoot 'uv\managed\uv'
+    $cacheRoot=Join-Path $installRoot 'cache\uv'
+    $runtimeRoot=Join-Path $installRoot 'runtime\venv'
+    foreach($dir in @($pythonRoot,$uvRoot,$cacheRoot,$runtimeRoot)){[void][IO.Directory]::CreateDirectory($dir)}
+    [IO.File]::WriteAllText((Join-Path $pythonRoot 'python.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $uvRoot 'uv.exe'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $cacheRoot 'cache.bin'),'x',[Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $runtimeRoot 'runtime.bin'),'x',[Text.Encoding]::ASCII)
+
+    $txid=[guid]::NewGuid().ToString('D')
+    $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $installRoot -TransactionId $txid
+    $isolatedRoot=Join-Path $paths.MaterializationRoot 'r'
+    $runtimePrefix=(Join-Path (Join-Path $isolatedRoot 'runtime\venv') 'Lib\site-packages')
+    $cachePrefix=Join-Path (Join-Path $isolatedRoot 'cache\uv') (Join-Path 'archive-v0' ('x'.PadRight(64,[char]'x')))
+    $minInternal=[Math]::Max(12,260-($cachePrefix.Length+1))
+    if(($runtimePrefix.Length+1+$minInternal)-ge260){throw 'Wheel-cache path-budget fixture cannot isolate cache projection from runtime projection.'}
+    $internal='vllm/'+('d'.PadRight($minInternal-8,[char]'d'))+'.py'
+
+    $wheel=Join-Path $wheelCacheBase 'probe.whl'
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $zip=[IO.Compression.ZipFile]::Open($wheel,[IO.Compression.ZipArchiveMode]::Create)
+    try{
+        $entry=$zip.CreateEntry($internal)
+        $stream=$entry.Open()
+        try{
+            $bytes=[Text.Encoding]::UTF8.GetBytes('x')
+            $stream.Write($bytes,0,$bytes.Length)
+        }finally{$stream.Dispose()}
+    }finally{$zip.Dispose()}
+
+    $sourceContext=[pscustomobject]@{
+        Committed=[pscustomobject]@{
+            State=[pscustomobject]@{
+                python=[pscustomobject]@{root=$pythonRoot}
+                uv=[pscustomobject]@{root=$uvRoot}
+                runtime=[pscustomobject]@{root=$runtimeRoot}
+            }
+        }
+    }
+    $targetContext=[pscustomobject]@{
+        PythonManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='python\managed\python';python_executable='python.exe'}}
+        UvManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='uv\managed\uv';uv_executable='uv.exe'}}
+        Release=[pscustomobject]@{orchestration=[pscustomobject]@{runtime_root='runtime\venv'}}
+        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage'}}
+        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage'}}
+    }
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $installRoot -TransactionId $txid -SourceContext $sourceContext -TargetContext $targetContext -WheelPath $wheel
+    } -Name 'incoming-wheel-cache-path' -Expected 'isolated uv cache tree'
+}finally{
+    if(Test-Path -LiteralPath $wheelCacheBase){Remove-Item -LiteralPath $wheelCacheBase -Recurse -Force}
+}
+Write-Host 'UPDATE_INCOMING_WHEEL_CACHE_PATH_BUDGET_OK'
+$liveGuardBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-live-guard-'+[guid]::NewGuid().ToString('N'))
+try{
+    $installRoot=Join-Path $liveGuardBase 'install'
+    $runtimeRoot=Join-Path $installRoot 'runtime\venv'
+    $scripts=Join-Path $runtimeRoot 'Scripts'
+    [void][IO.Directory]::CreateDirectory($scripts)
+    $targetContext=[pscustomobject]@{
+        Release=[pscustomobject]@{
+            orchestration=[pscustomobject]@{
+                runtime_root='runtime\venv'
+            }
+        }
+    }
+
+    Test-ExpectedFailure -Action {
+        Assert-VllmUpdateTargetLiveRuntime -InstallationRoot $installRoot -TargetContext $targetContext|Out-Null
+    } -Name 'missing-target-vllm-launcher' -Expected 'launcher is missing before commit'
+
+    [IO.File]::WriteAllText((Join-Path $scripts 'vllm.exe'),'launcher',[Text.Encoding]::ASCII)
+    $proof=Assert-VllmUpdateTargetLiveRuntime -InstallationRoot $installRoot -TargetContext $targetContext
+    if(-not(Test-Path -LiteralPath ([string]$proof.VllmExe) -PathType Leaf)){throw 'Target live launcher proof did not return the validated launcher.'}
+}finally{
+    if(Test-Path -LiteralPath $liveGuardBase){Remove-Item -LiteralPath $liveGuardBase -Recurse -Force}
+}
+Write-Host 'UPDATE_TARGET_LIVE_LAUNCHER_PRECOMMIT_GUARD_OK'
+$cancellationPlan=[pscustomobject][ordered]@{
+    source=[pscustomobject][ordered]@{
+        release='cancel-source'
+        manifest_sha256=('A'*64)
+        generation_id='11111111-1111-1111-1111-111111111111'
+    }
+    target=[pscustomobject][ordered]@{
+        release='cancel-target'
+        manifest_sha256=('B'*64)
+        wheel_sha256=('C'*64)
+    }
+    models_root='D:\Models'
+    counts=[pscustomobject][ordered]@{
+        distribution_reuse=1
+        distribution_replace=2
+        distribution_add=3
+        distribution_retire=4
+        managed_reuse=5
+        managed_replace=6
+        managed_add=7
+        managed_retire=8
+    }
+}
+$cancellation=Get-VllmUpdateCancellationResult -Plan $cancellationPlan -InstallationRoot 'D:\AI\vLLM'
+$cancellationRoundTrip=($cancellation|ConvertTo-Json -Depth 12|ConvertFrom-Json)
+if(-not$cancellationRoundTrip.ready-or$cancellationRoundTrip.committed-or-not$cancellationRoundTrip.cancelled-or$cancellationRoundTrip.what_if){
+    throw 'Update cancellation JSON status flags are incorrect.'
+}
+if([string]$cancellationRoundTrip.release-ne'cancel-target'-or
+   [string]$cancellationRoundTrip.generation_id-ne'11111111-1111-1111-1111-111111111111'-or
+   [string]$cancellationRoundTrip.source.release-ne'cancel-source'-or
+   [string]$cancellationRoundTrip.target.release-ne'cancel-target'-or
+   [int]$cancellationRoundTrip.counts.managed_replace-ne6){
+    throw 'Update cancellation JSON plan identity is incorrect.'
+}
+Write-Host 'UPDATE_CANCELLATION_JSON_CONTRACT_OK'

@@ -234,7 +234,16 @@ try{
     $maintenanceClear=$true
     $existingState=Read-JsonFile $statePath
     if(Test-Path -LiteralPath $statePath){
-        if($null-eq$existingState-or-not(Test-InstallState -State $existingState)){throw "Install state exists but is malformed or contradictory: $statePath"}
+        try{$committedContext=Get-VllmCommittedInstallationContext -InstallationRoot $InstallationRoot}
+        catch{throw "Install state exists but is malformed or contradictory: $statePath :: $($_.Exception.Message)"}
+        if(-not(Test-PathEqual ([string]$committedContext.State.models_root) $ModelsRoot)){
+            throw 'Committed installation models root does not match the requested installer models root.'
+        }
+        if([string]$committedContext.State.release-ne[string]$release.release-or
+           [string]$committedContext.State.release_manifest_sha256-ne[string]$releaseManifestIdentity.sha256){
+            throw 'Committed installation release does not match the requested installer release manifest.'
+        }
+        $existingState=$committedContext.State
         $final=Invoke-FinalRuntimeValidation
         $result=[ordered]@{schema_version=1;component='install';release=[string]$release.release;ready=$true;idempotent=$true;generation_id=[string]$existingState.generation_id;install_root=$InstallationRoot;models_root=$ModelsRoot;runtime_root=[string]$final.root;vllm_version=[string]$final.vllm_version;package_count=[int]$final.package_count;install_state=$statePath}
     }else{
