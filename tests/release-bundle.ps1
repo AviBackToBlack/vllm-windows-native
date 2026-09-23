@@ -24,13 +24,39 @@ function Get-TestIdentity {
 
 function Test-ExpectedFailure {
     param([scriptblock]$Action,[string]$Label)
+    $expected=@{
+        'wheel-filename-case'='Provided release wheel filename mismatch.'
+        'wheel-native-extension-case'='Provided release wheel native extension set mismatch'
+        'wheel-unsafe-member'='Provided release wheel member contains an unsafe path segment'
+        'nonempty-output-refusal'='Release artifacts directory is not empty'
+        'wheel-tamper'='Provided release wheel size/SHA-256 mismatch.'
+        'index-tamper'='release-index.json does not exactly match the canonical index'
+        'index-identity-case'='release-index.json does not exactly match the canonical index'
+        'index-noncanonical-json'='release-index.json does not exactly match the canonical index'
+        'index-property-order'='release-index.json does not exactly match the canonical index'
+        'index-bom'='release-index.json must be UTF-8 without BOM.'
+        'checksums-tamper'='Invalid SHA256SUMS line'
+        'checksums-noncanonical-order'='SHA256SUMS entries are not in canonical ordinal order.'
+        'checksums-bom'='SHA256SUMS must be UTF-8 without BOM.'
+        'unexpected-fifth-asset'='Release artifact filename set count mismatch.'
+        'zip-extra-member'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
+        'zip-missing-member'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
+        'zip-non-store-method'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
+        'zip-local-header-name'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
+        'manifest-blob-drift'='Tagged-commit blob does not match release manifest identity'
+        'unsafe-release-path'='Release distribution path contains an unsafe path segment'
+        'case-colliding-release-path'='Release distribution paths collide by Windows identity'
+    }
+    if(-not$expected.ContainsKey($Label)){throw "Expected failure reason is not configured: $Label"}
     try { & $Action; throw "Expected failure did not occur: $Label" }
     catch {
         if($_.Exception.Message -eq "Expected failure did not occur: $Label"){throw}
+        if($_.Exception.Message.IndexOf([string]$expected[$Label],[StringComparison]::Ordinal)-lt0){
+            throw "Expected failure '$Label' occurred for the wrong reason. Expected substring '$($expected[$Label])'; got '$($_.Exception.Message)'."
+        }
         Write-Host "EXPECTED_FAILURE_OK $Label"
     }
 }
-
 function Write-TestArtifactChecksums {
     param([Parameter(Mandatory)][string]$ArtifactsDirectory)
     $wheel=Get-ChildItem -LiteralPath $ArtifactsDirectory -Filter '*.whl' -File
@@ -160,12 +186,6 @@ function Initialize-FixtureRepo {
     return (Invoke-Git -Repository $Root -Arguments @('rev-parse','HEAD') -Capture)
 }
 
-function Copy-TestRelease {
-    param([string]$Source,[string]$Destination)
-    New-Item -ItemType Directory -Path $Destination -Force|Out-Null
-    Copy-Item -LiteralPath (Join-Path $Source '*') -Destination $Destination -Recurse -Force
-}
-
 $root=Join-Path ([IO.Path]::GetTempPath()) ('sm19a-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root -Force|Out-Null
 try {
@@ -281,6 +301,16 @@ try {
     Write-VllmReleaseCanonicalJson -Value $reordered -Path $reorderedIndexPath
     Write-TestArtifactChecksums -ArtifactsDirectory $reorderedIndex
     Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $reorderedIndex|Out-Null} 'index-property-order'
+    $bomIndex=Join-Path $root 'bom-index'
+    Copy-Item -LiteralPath $out1 -Destination $bomIndex -Recurse
+    $bomIndexPath=Join-Path $bomIndex 'release-index.json'
+    $indexBytes=[IO.File]::ReadAllBytes($bomIndexPath)
+    $bomBytes=New-Object byte[] ($indexBytes.Length+3)
+    $bomBytes[0]=0xEF;$bomBytes[1]=0xBB;$bomBytes[2]=0xBF
+    [Array]::Copy($indexBytes,0,$bomBytes,3,$indexBytes.Length)
+    [IO.File]::WriteAllBytes($bomIndexPath,$bomBytes)
+    Write-TestArtifactChecksums -ArtifactsDirectory $bomIndex
+    Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $bomIndex|Out-Null} 'index-bom'
 
     $tamperSums=Join-Path $root 'tamper-sums'
     Copy-Item -LiteralPath $out1 -Destination $tamperSums -Recurse
@@ -294,6 +324,15 @@ try {
     [Array]::Reverse($sumLines)
     [IO.File]::WriteAllText($sumPath,($sumLines -join [char]10)+[char]10,[Text.UTF8Encoding]::new($false))
     Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $reorderedSums|Out-Null} 'checksums-noncanonical-order'
+    $bomSums=Join-Path $root 'bom-sums'
+    Copy-Item -LiteralPath $out1 -Destination $bomSums -Recurse
+    $bomSumsPath=Join-Path $bomSums 'SHA256SUMS'
+    $sumBytes=[IO.File]::ReadAllBytes($bomSumsPath)
+    $sumBomBytes=New-Object byte[] ($sumBytes.Length+3)
+    $sumBomBytes[0]=0xEF;$sumBomBytes[1]=0xBB;$sumBomBytes[2]=0xBF
+    [Array]::Copy($sumBytes,0,$sumBomBytes,3,$sumBytes.Length)
+    [IO.File]::WriteAllBytes($bomSumsPath,$sumBomBytes)
+    Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $bomSums|Out-Null} 'checksums-bom'
 
     $extraAsset=Join-Path $root 'extra-asset'
     Copy-Item -LiteralPath $out1 -Destination $extraAsset -Recurse

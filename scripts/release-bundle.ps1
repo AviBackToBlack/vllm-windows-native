@@ -480,18 +480,21 @@ function Assert-VllmReleaseRawZipProfile {
     $count=[int][BitConverter]::ToUInt16($b,$e+10);$co=[int64][BitConverter]::ToUInt32($b,$e+16);$cl=[int64][BitConverter]::ToUInt32($b,$e+12)
     if([BitConverter]::ToUInt16($b,$e+4)-ne0-or[BitConverter]::ToUInt16($b,$e+6)-ne0-or[BitConverter]::ToUInt16($b,$e+8)-ne$count-or$count-ne@($Context.Members).Count){throw 'Release ZIP EOCD profile is not canonical.'}
     if([BitConverter]::ToUInt16($b,$e+20)-ne0-or$e+22-ne$b.Length-or$co+$cl-ne$e){throw 'Release ZIP archive comment/trailing extent is not canonical.'}
-    $u=New-Object Text.UTF8Encoding($false,$true);$p=[int64]$co
+    $u=New-Object Text.UTF8Encoding($false,$true);$p=[int64]$co;$expectedLocalOffset=[int64]0
     for($n=0;$n-lt$count;$n++){
         if($p+46-gt$e-or[BitConverter]::ToUInt32($b,[int]$p)-ne[uint32]0x02014b50){throw "Release ZIP central record invalid at index $n."}
-        $made=[BitConverter]::ToUInt16($b,[int]$p+4);$needed=[BitConverter]::ToUInt16($b,[int]$p+6);$flags=[BitConverter]::ToUInt16($b,[int]$p+8);$method=[BitConverter]::ToUInt16($b,[int]$p+10);$time=[BitConverter]::ToUInt16($b,[int]$p+12);$date=[BitConverter]::ToUInt16($b,[int]$p+14);$compressed=[BitConverter]::ToUInt32($b,[int]$p+20);$size=[BitConverter]::ToUInt32($b,[int]$p+24)
+        $made=[BitConverter]::ToUInt16($b,[int]$p+4);$needed=[BitConverter]::ToUInt16($b,[int]$p+6);$flags=[BitConverter]::ToUInt16($b,[int]$p+8);$method=[BitConverter]::ToUInt16($b,[int]$p+10);$time=[BitConverter]::ToUInt16($b,[int]$p+12);$date=[BitConverter]::ToUInt16($b,[int]$p+14);$crc=[BitConverter]::ToUInt32($b,[int]$p+16);$compressed=[BitConverter]::ToUInt32($b,[int]$p+20);$size=[BitConverter]::ToUInt32($b,[int]$p+24)
         $nl=[int][BitConverter]::ToUInt16($b,[int]$p+28);$xl=[int][BitConverter]::ToUInt16($b,[int]$p+30);$ml=[int][BitConverter]::ToUInt16($b,[int]$p+32);$disk=[BitConverter]::ToUInt16($b,[int]$p+34);$internal=[BitConverter]::ToUInt16($b,[int]$p+36);$ext=[BitConverter]::ToUInt32($b,[int]$p+38);$lo=[int64][BitConverter]::ToUInt32($b,[int]$p+42)
-        if($made-ne20-or$needed-ne20-or$flags-ne0x0800-or$method-ne0-or$time-ne0-or$date-ne33-or$compressed-ne$size-or$xl-ne0-or$ml-ne0-or$disk-ne0-or$internal-ne0-or$ext-ne0){throw "Release ZIP central profile is not canonical at index $n."}
-        $name=$u.GetString($b,[int]$p+46,$nl);if($name-ne[string]$Context.Members[$n].RelativePath){throw "Release ZIP raw member mismatch at index $n."}
-        if($lo+30-gt$co-or[BitConverter]::ToUInt32($b,[int]$lo)-ne[uint32]0x04034b50-or[BitConverter]::ToUInt16($b,[int]$lo+4)-ne20-or[BitConverter]::ToUInt16($b,[int]$lo+6)-ne0x0800-or[BitConverter]::ToUInt16($b,[int]$lo+8)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+10)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+12)-ne33-or[BitConverter]::ToUInt32($b,[int]$lo+18)-ne$size-or[BitConverter]::ToUInt32($b,[int]$lo+22)-ne$size-or[BitConverter]::ToUInt16($b,[int]$lo+26)-ne$nl-or[BitConverter]::ToUInt16($b,[int]$lo+28)-ne0){throw "Release ZIP local profile is not canonical: $name"}
-        if($u.GetString($b,[int]$lo+30,$nl)-ne$name){throw "Release ZIP local/central names disagree: $name"}
+        $member=$Context.Members[$n];$expectedCrc=[uint32](Get-VllmReleaseFileCrc32 -Path ([string]$member.Path))
+        if($made-ne20-or$needed-ne20-or$flags-ne0x0800-or$method-ne0-or$time-ne0-or$date-ne33-or$crc-ne$expectedCrc-or$compressed-ne$size-or[uint64]$size-ne[uint64][int64]$member.Size-or$xl-ne0-or$ml-ne0-or$disk-ne0-or$internal-ne0-or$ext-ne0){throw "Release ZIP central profile is not canonical at index $n."}
+        $name=$u.GetString($b,[int]$p+46,$nl);if(-not(Test-VllmReleaseOrdinalEqual $name ([string]$member.RelativePath))){throw "Release ZIP raw member mismatch at index $n."}
+        if($lo-ne$expectedLocalOffset-or$lo+30-gt$co-or[BitConverter]::ToUInt32($b,[int]$lo)-ne[uint32]0x04034b50-or[BitConverter]::ToUInt16($b,[int]$lo+4)-ne20-or[BitConverter]::ToUInt16($b,[int]$lo+6)-ne0x0800-or[BitConverter]::ToUInt16($b,[int]$lo+8)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+10)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+12)-ne33-or[BitConverter]::ToUInt32($b,[int]$lo+14)-ne$crc-or[BitConverter]::ToUInt32($b,[int]$lo+18)-ne$size-or[BitConverter]::ToUInt32($b,[int]$lo+22)-ne$size-or[BitConverter]::ToUInt16($b,[int]$lo+26)-ne$nl-or[BitConverter]::ToUInt16($b,[int]$lo+28)-ne0){throw "Release ZIP local profile is not canonical: $name"}
+        if(-not(Test-VllmReleaseOrdinalEqual ($u.GetString($b,[int]$lo+30,$nl)) $name)){throw "Release ZIP local/central names disagree: $name"}
+        $expectedLocalOffset=$lo+30+$nl+[int64]$size
+        if($expectedLocalOffset-gt$co){throw "Release ZIP local data extent overlaps the central directory: $name"}
         $p+=46+$nl
     }
-    if($p-ne$e){throw 'Release ZIP parsed central-directory length mismatch.'}
+    if($p-ne$e-or$expectedLocalOffset-ne$co){throw 'Release ZIP parsed extents are not canonical.'}
 }
 function Assert-VllmReleaseCanonicalZip {
     param([Parameter(Mandatory)]$Context,[Parameter(Mandatory)][string]$Path)
@@ -518,7 +521,7 @@ function Assert-VllmReleaseCanonicalZip {
             $key = $name.ToLowerInvariant()
             if ($seen.ContainsKey($key)) { throw "Release ZIP contains duplicate/case-colliding member: $name" }
             $seen[$key] = $true
-            if ($entry.LastWriteTime.UtcDateTime -ne $script:VllmReleaseZipTimestamp.UtcDateTime) { throw "Release ZIP member timestamp is not canonical: $name" }
+
             if ($entry.ExternalAttributes -ne 0) { throw "Release ZIP member external attributes are not canonical: $name" }
             $expected = $Context.Members[$i]
             if ([int64]$entry.Length -ne [int64]$expected.Size) { throw "Release ZIP member size mismatch: $name" }
@@ -589,6 +592,15 @@ function Get-VllmReleaseIndex {
     }
 }
 
+function Read-VllmReleaseUtf8NoBom {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$Label)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Label is missing: $Path" }
+    $bytes=[IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw "$Label must be UTF-8 without BOM." }
+    $utf8=New-Object Text.UTF8Encoding($false,$true)
+    try { return $utf8.GetString($bytes) } catch { throw "$Label is not valid UTF-8." }
+}
+
 function Write-VllmReleaseChecksums {
     param(
         [Parameter(Mandatory)][hashtable]$Identities,
@@ -607,8 +619,7 @@ function Write-VllmReleaseChecksums {
 
 function Read-VllmReleaseChecksums {
     param([Parameter(Mandatory)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "SHA256SUMS is missing: $Path" }
-    $text = [IO.File]::ReadAllText($Path,[Text.Encoding]::UTF8)
+    $text = Read-VllmReleaseUtf8NoBom -Path $Path -Label 'SHA256SUMS'
     if ($text.Contains([char]13) -or -not $text.EndsWith([string][char]10,[StringComparison]::Ordinal)) { throw 'SHA256SUMS must be LF-terminated UTF-8 text.' }
     $map = @{}
     $inputNames = New-Object System.Collections.Generic.List[string]
@@ -701,7 +712,7 @@ function Assert-VllmOfflineRelease {
         $bundle = Get-VllmReleaseFileIdentity -Path $bundlePath
 
         $indexPath = Join-Path $root 'release-index.json'
-        $indexText=[IO.File]::ReadAllText($indexPath,[Text.Encoding]::UTF8)
+        $indexText=Read-VllmReleaseUtf8NoBom -Path $indexPath -Label 'release-index.json'
         $expectedIndex=Get-VllmReleaseIndex -Context $context -Wheel $wheel -Bundle $bundle
         $canonicalIndexText=(ConvertTo-VllmReleaseCanonicalJsonValue -Value $expectedIndex)+[char]10
         if (-not $indexText.Equals($canonicalIndexText,[StringComparison]::Ordinal)) { throw 'release-index.json does not exactly match the canonical index for these verified inputs.' }
@@ -741,20 +752,21 @@ function Write-VllmOfflineRelease {
         [Parameter(Mandatory)][string]$WheelPath,
         [Parameter(Mandatory)][string]$ArtifactsDirectory
     )
+    $root = [IO.Path]::GetFullPath($ArtifactsDirectory)
+    if (Test-Path -LiteralPath $root) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Release artifacts path is not a directory: $root" }
+        $rootEntry=Get-VllmPathEntryInfo -Path $root
+        if ($rootEntry.IsReparsePoint) { throw "Release artifacts directory must not be a reparse point: $root" }
+        $entries = @(Get-ChildItem -LiteralPath $root -Force)
+        if ($entries.Count -gt 0) { throw "Release artifacts directory is not empty: $root" }
+    } else { New-Item -ItemType Directory -Path $root -Force | Out-Null }
+    $rootPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
+    if (-not $rootPhysical.Equals($root,[StringComparison]::OrdinalIgnoreCase)) { throw "Release artifacts directory resolves through a filesystem alias: $root -> $rootPhysical" }
+
     $snapshot = Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
     try {
         $context = Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath
         $wheel = Assert-VllmReleaseWheel -WheelPath $WheelPath -Context $context
-        $root = [IO.Path]::GetFullPath($ArtifactsDirectory)
-        if (Test-Path -LiteralPath $root) {
-            if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Release artifacts path is not a directory: $root" }
-            $rootEntry=Get-VllmPathEntryInfo -Path $root
-            if ($rootEntry.IsReparsePoint) { throw "Release artifacts directory must not be a reparse point: $root" }
-            $entries = @(Get-ChildItem -LiteralPath $root -Force)
-            if ($entries.Count -gt 0) { throw "Release artifacts directory is not empty: $root" }
-        } else { New-Item -ItemType Directory -Path $root -Force | Out-Null }
-        $rootPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
-        if (-not $rootPhysical.Equals($root,[StringComparison]::OrdinalIgnoreCase)) { throw "Release artifacts directory resolves through a filesystem alias: $root -> $rootPhysical" }
 
         $destWheel = Join-Path $root ([string]$wheel.Filename)
         if ([IO.Path]::GetFullPath($wheel.Path).Equals([IO.Path]::GetFullPath($destWheel),[StringComparison]::OrdinalIgnoreCase)) {
