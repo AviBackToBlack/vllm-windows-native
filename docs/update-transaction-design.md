@@ -1,6 +1,6 @@
 # Safe update transaction design
 
-Status: implemented through SM-18F. This document records the accepted transaction semantics implemented by `update.ps1` and its trusted regression coverage.
+Status: implemented through SM-18F. This document records the accepted transaction semantics implemented by `update.ps1`. SM-18F trusted coverage is provided by `.github/workflows/install-orchestration.yml` on `windows-2025`, which runs `tests/install-orchestration.ps1` in both PowerShell 7 and Windows PowerShell 5.1, including production update commit and crash-recovery acceptance.
 
 ## 1. Goal
 
@@ -284,6 +284,6 @@ Implementation should remain split into reviewable slices:
 3. **SM-18C — target staging.** Materialize and validate a target generation away from live paths; prove relocation/final-path semantics.
 4. **SM-18D — transaction journal and synthetic activation/recovery.** Implement persisted transaction state, replace/add rollback, target state commit, and fault-injection recovery using synthetic payloads.
 5. **SM-18E — full release integration.** Connect the transaction engine to real release/bootstrap payloads, target install-state generation, distribution replacement, and post-commit retirement cleanup.
-6. **SM-18F — trusted update regression.** Add Windows Server 2025 trusted workflow covering PS7/PS5.1 supported paths and crash-recovery acceptance; keep public PR CI source-only.
+6. **SM-18F — trusted update regression.** Implemented by `.github/workflows/install-orchestration.yml` plus `tests/install-orchestration.ps1`: Windows Server 2025 trusted coverage runs PS7/PS5.1 supported paths, production update commit, and crash-recovery acceptance while public PR CI remains source-only.
 
 Each significant slice stops at its own merge gate. No later slice may weaken the source-generation proof or transaction semantics established here merely to make an update proceed.
