@@ -27,6 +27,7 @@ function Test-ExpectedFailure {
     $expected=@{
         'wheel-filename-case'='Provided release wheel filename mismatch.'
         'wheel-native-extension-case'='Provided release wheel native extension set mismatch'
+        'wheel-extra-native-extension-case'='Provided release wheel native extension count does not match runtime manifest.'
         'wheel-unsafe-member'='Provided release wheel member contains an unsafe path segment'
         'wheel-metadata-name-line'='Provided release wheel distribution name is not vllm.'
         'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
@@ -239,6 +240,12 @@ try {
         $caseNativeContext=Get-VllmReleaseContext -Snapshot $caseNativeSnapshot -ReleaseManifestPath 'manifests/release/release.json'
         Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $caseNativeWheel -Context $caseNativeContext|Out-Null} 'wheel-native-extension-case'
     }finally{Close-VllmReleaseGitSnapshot -Snapshot $caseNativeSnapshot}
+    $extraNativeRoot=Join-Path $root 'extra-native-case'
+    $extraNativeWheel=Join-Path $extraNativeRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    Write-TestWheel -Path $extraNativeWheel -ExtraEntries @{'vllm/evil.PYD'='extra-native-bytes'}
+    $extraNativeRepo=Join-Path $extraNativeRoot 'repo';$extraNativeCommit=Initialize-FixtureRepo -Root $extraNativeRepo -WheelPath $extraNativeWheel
+    $extraNativeSnapshot=Get-VllmReleaseGitSnapshot -Repository $extraNativeRepo -Commit $extraNativeCommit
+    try{$extraNativeContext=Get-VllmReleaseContext -Snapshot $extraNativeSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $extraNativeWheel -Context $extraNativeContext|Out-Null} 'wheel-extra-native-extension-case'}finally{Close-VllmReleaseGitSnapshot -Snapshot $extraNativeSnapshot}
 
     $unsafeWheelRoot=Join-Path $root 'unsafe-wheel'
     $unsafeWheel=Join-Path $unsafeWheelRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'

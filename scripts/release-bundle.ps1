@@ -295,7 +295,7 @@ function Assert-VllmReleaseWheel {
         foreach($value in $tagValues){if(Test-VllmReleaseOrdinalEqual ([string]$value) $expectedTag){$tagFound=$true;break}}
         if(-not$tagFound){throw "Provided release wheel compatibility tag is missing: Tag: $expectedTag"}
 
-        $actualNative = @($zip.Entries | Where-Object { ([string]$_.FullName).EndsWith('.pyd',[StringComparison]::Ordinal) } | ForEach-Object { [string]$_.FullName })
+        $actualNative = @($zip.Entries | Where-Object { ([string]$_.FullName).EndsWith('.pyd',[StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { [string]$_.FullName })
         $actualNative = Get-VllmReleaseOrdinalStrings -Values $actualNative
         if (@($actualNative).Count -ne [int]$runtimeWheel.native_extension_count) { throw 'Provided release wheel native extension count does not match runtime manifest.' }
         Assert-VllmReleaseOrdinalSequence -Actual @($actualNative) -Expected @($Context.NativeExtensions) -Label 'Provided release wheel native extension set'
