@@ -769,7 +769,7 @@ function Write-VllmOfflineRelease {
         [Parameter(Mandatory)][string]$ReleaseManifestPath,
         [Parameter(Mandatory)][string]$WheelPath,
         [Parameter(Mandatory)][string]$ArtifactsDirectory,
-        [ValidateSet('None','AfterWheelCopy','AfterBundle')][string]$FaultPoint='None'
+        [ValidateSet('None','DuringWheelCopy','AfterWheelCopy','AfterBundle')][string]$FaultPoint='None'
     )
     $root = [IO.Path]::GetFullPath($ArtifactsDirectory)
     if (Test-Path -LiteralPath $root) {
@@ -792,8 +792,12 @@ function Write-VllmOfflineRelease {
         if ([IO.Path]::GetFullPath($wheel.Path).Equals([IO.Path]::GetFullPath($destWheel),[StringComparison]::OrdinalIgnoreCase)) {
             throw 'Source wheel must be outside the release artifacts directory during preparation.'
         }
-        Copy-Item -LiteralPath $wheel.Path -Destination $destWheel
         $createdPaths.Add($destWheel)
+        if($FaultPoint-eq'DuringWheelCopy'){
+            [IO.File]::WriteAllBytes($destWheel,[byte[]](1,2,3,4))
+            throw 'FAULT_INJECTED:DuringWheelCopy'
+        }
+        Copy-Item -LiteralPath $wheel.Path -Destination $destWheel
         $copiedWheel = Assert-VllmReleaseWheel -WheelPath $destWheel -Context $context
         if($FaultPoint-eq'AfterWheelCopy'){throw 'FAULT_INJECTED:AfterWheelCopy'}
 

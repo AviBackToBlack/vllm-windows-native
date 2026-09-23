@@ -33,6 +33,7 @@ function Test-ExpectedFailure {
         'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
         'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
         'nonempty-output-refusal'='Release artifacts directory is not empty'
+        'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
         'prepare-fault-after-bundle'='FAULT_INJECTED:AfterBundle'
         'wheel-tamper'='Provided release wheel size/SHA-256 mismatch.'
@@ -290,6 +291,8 @@ try {
     try{$badTagContext=Get-VllmReleaseContext -Snapshot $badTagSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badTagWheel -Context $badTagContext|Out-Null} 'wheel-tag-substring'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badTagSnapshot}
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out1 | Out-Null } 'nonempty-output-refusal'
     $faultOut=Join-Path $root 'fault-output'
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint DuringWheelCopy|Out-Null} 'prepare-fault-during-wheel'
+    if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'DuringWheelCopy failure left a partial wheel in release artifacts.'}
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint AfterWheelCopy|Out-Null} 'prepare-fault-after-wheel'
     if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'AfterWheelCopy failure left partial release artifacts.'}
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint AfterBundle|Out-Null} 'prepare-fault-after-bundle'
