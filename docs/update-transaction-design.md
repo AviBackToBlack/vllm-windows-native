@@ -275,15 +275,15 @@ Required adversarial coverage includes:
 
 Mutation regressions remain trusted-only. Public PR CI stays source-level in accordance with `AGENTS.md`.
 
-## 17. Implementation slices after this design gate
+## 17. Implementation record
 
-Implementation should remain split into reviewable slices:
+The accepted updater was delivered in reviewable slices:
 
-1. **SM-18A — start/maintenance serialization and forward-compatible maintenance guard.** Make managed `start.ps1` hold the operation lock for the server lifetime, resolve managed mode from the effective target, and make start/install/uninstall refuse on presence of the future update journal/reserved workspace while holding the relevant lifecycle lock. Add contention/dev-mode/override-target tests. No updater mutation yet.
-2. **SM-18B — update validation and transition planner.** Replace the updater stub with read-only source/target validation, same-release no-op, exact plan generation, and synthetic fixtures. No live mutation.
-3. **SM-18C — target staging.** Materialize and validate a target generation away from live paths; prove relocation/final-path semantics.
-4. **SM-18D — transaction journal and synthetic activation/recovery.** Implement persisted transaction state, replace/add rollback, target state commit, and fault-injection recovery using synthetic payloads.
-5. **SM-18E — full release integration.** Connect the transaction engine to real release/bootstrap payloads, target install-state generation, distribution replacement, and post-commit retirement cleanup.
+1. **SM-18A — start/maintenance serialization and forward-compatible maintenance guard.** Implemented managed-start operation locking, effective-target managed-mode resolution, pending-update guards, and contention/dev-mode/override-target coverage.
+2. **SM-18B — update validation and transition planner.** Implemented source/target validation, same-release no-op, exact transition planning, and synthetic fixtures without live mutation.
+3. **SM-18C — target staging.** Implemented target materialization away from live paths with relocation/final-path proof.
+4. **SM-18D — transaction journal and synthetic activation/recovery.** Implemented durable transaction state, replace/add rollback, target state commit, and fault-injection recovery.
+5. **SM-18E — full release integration.** Connected the transaction engine to real release/bootstrap payloads, target install-state generation, distribution replacement, and post-commit retirement cleanup.
 6. **SM-18F — trusted update regression.** Implemented by `.github/workflows/install-orchestration.yml` plus `tests/install-orchestration.ps1`: Windows Server 2025 trusted coverage runs PS7/PS5.1 supported paths, production update commit, and crash-recovery acceptance while public PR CI remains source-only.
 
-Each significant slice stops at its own merge gate. No later slice may weaken the source-generation proof or transaction semantics established here merely to make an update proceed.
+Each significant slice stopped at its own merge gate. Later work must not weaken the source-generation proof or transaction semantics established here merely to make an update proceed.

@@ -19,7 +19,7 @@ SM-18 completed safe install/update/uninstall lifecycle semantics. The remaining
 - GitHub Actions remain pinned to full commit SHAs.
 - Published assets should be immutable after release publication.
 
-## Design questions to close before implementation
+## Design questions resolved by this gate
 
 1. Exact release tag/identifier mapping and whether the first public release is prerelease vs stable.
 2. Canonical bundle contents and deterministic archive format.
@@ -29,7 +29,7 @@ SM-18 completed safe install/update/uninstall lifecycle semantics. The remaining
 6. Draft/upload/verify/publish ordering and rollback behavior before publication.
 7. Whether automatic installer/update acquisition ships in this milestone or follows as a separate slice.
 
-## Proposed slices
+## Planned slices
 
 - **SM-19 design gate** — release authority, trust boundaries, bundle/signing/publication contract, acceptance plan.
 - **SM-19A** — deterministic release bundle/index builder + offline verifier; no GitHub mutation.
@@ -51,15 +51,15 @@ Project releases use `release/<release-manifest release>` tags so they cannot co
 
 The first public binary release is published as a GitHub prerelease. After an independent consumer acceptance downloads the published immutable assets, verifies the release/tag/attestation chain, and completes a clean install, the same immutable release may be promoted by clearing prerelease status and marking it latest. Promotion never changes the tag or asset bytes.
 
-The release operator creates an annotated, cryptographically signed tag for the exact reviewed `main` commit. The existing hardware-backed SSH/Windows-Hello Git signing path is the intended operator-authorization mechanism. Publication tooling verifies the tag object and expected commit rather than trusting local Git configuration.
+The release operator creates an annotated, cryptographically signed tag for the exact reviewed `main` commit. The existing hardware-backed SSH/Windows-Hello Git signing path is the intended operator-authorization mechanism. Publication tooling must verify that the tag is signed, resolves to the expected commit, and matches an explicitly authorized release signer/principal from a versioned project trust root such as an OpenSSH allowed-signers file containing only public signer material. A valid signature from any other key is not authorization.
 
 ### Canonical publication assets
 
 The v1 public asset set is the accepted wheel, `vllm-windows-native-<release>.zip`, `release-index.json`, and `SHA256SUMS`. The ZIP contains the canonical release manifest at its self path plus every file in the release manifest `files` array and nothing else. The wheel is not duplicated inside the ZIP.
 
-`release-index.json` is versioned machine-readable root metadata binding project commit, release id/tag, release/runtime manifest digests, upstream and Windows patchset identities, wheel identity, distribution-bundle identity, checksum-file identity, and optional accepted-build evidence. It must not contain local absolute paths, machine/user names, tokens, or secrets.
+`release-index.json` is versioned machine-readable root metadata binding project commit, release id/tag, release/runtime manifest digests, upstream and Windows patchset identities, wheel identity, distribution-bundle identity, the checksum-file name/format (not its digest), and optional accepted-build evidence. It must not contain local absolute paths, machine/user names, tokens, or secrets.
 
-`SHA256SUMS` is deterministic LF UTF-8. SM-19A fixes the exact non-circular representation in tests; the expected v1 shape covers the wheel, bundle, and release index.
+`SHA256SUMS` is deterministic LF UTF-8 and covers exactly the wheel, distribution bundle, and `release-index.json`; it never contains a checksum for itself. The release index records only the expected checksum-file name/format, so generation is acyclic. The published immutable GitHub release attestation binds `SHA256SUMS` itself together with the other release assets.
 
 ### Deterministic bundle
 
