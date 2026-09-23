@@ -31,6 +31,19 @@ function Test-ExpectedFailure {
     }
 }
 
+function Write-TestArtifactChecksums {
+    param([Parameter(Mandatory)][string]$ArtifactsDirectory)
+    $wheel=Get-ChildItem -LiteralPath $ArtifactsDirectory -Filter '*.whl' -File
+    if(@($wheel).Count-ne1){throw 'Synthetic release must contain exactly one wheel for checksum rewrite.'}
+    $bundle=Get-ChildItem -LiteralPath $ArtifactsDirectory -Filter 'vllm-windows-native-*.zip' -File
+    if(@($bundle).Count-ne1){throw 'Synthetic release must contain exactly one bundle for checksum rewrite.'}
+    $ids=@{}
+    foreach($file in @($wheel[0],$bundle[0],(Get-Item -LiteralPath (Join-Path $ArtifactsDirectory 'release-index.json')))){
+        $ids[$file.Name]=(Get-VllmReleaseFileIdentity -Path $file.FullName).Sha256
+    }
+    Write-VllmReleaseChecksums -Identities $ids -Path (Join-Path $ArtifactsDirectory 'SHA256SUMS')
+}
+
 function Write-TestWheel {
     param([string]$Path)
     $parent=Split-Path -Parent $Path
@@ -197,6 +210,19 @@ try {
     [IO.File]::WriteAllText($noncanonicalIndexPath,($sameIndex|ConvertTo-Json -Depth 12)+[char]10,[Text.UTF8Encoding]::new($false))
     Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $noncanonicalIndex|Out-Null} 'index-noncanonical-json'
 
+    $reorderedIndex=Join-Path $root 'reordered-index'
+    Copy-Item -LiteralPath $out1 -Destination $reorderedIndex -Recurse
+    $reorderedIndexPath=Join-Path $reorderedIndex 'release-index.json'
+    $originalIndex=Get-Content $reorderedIndexPath -Raw|ConvertFrom-Json
+    $reordered=[ordered]@{}
+    $names=@($originalIndex.PSObject.Properties.Name)
+    $reordered[$names[1]]=$originalIndex.($names[1])
+    $reordered[$names[0]]=$originalIndex.($names[0])
+    foreach($name in $names[2..($names.Count-1)]){$reordered[$name]=$originalIndex.$name}
+    Write-VllmReleaseCanonicalJson -Value $reordered -Path $reorderedIndexPath
+    Write-TestArtifactChecksums -ArtifactsDirectory $reorderedIndex
+    Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $reorderedIndex|Out-Null} 'index-property-order'
+
     $tamperSums=Join-Path $root 'tamper-sums'
     Copy-Item -LiteralPath $out1 -Destination $tamperSums -Recurse
     [IO.File]::AppendAllText((Join-Path $tamperSums 'SHA256SUMS'),"BAD`n",[Text.Encoding]::ASCII)
@@ -239,6 +265,22 @@ try {
     $zipBytes[$central+10]=8;$zipBytes[$central+11]=0
     [IO.File]::WriteAllBytes($methodZip,$zipBytes)
     Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $tamperMethod|Out-Null} 'zip-non-store-method'
+
+    $tamperLocalName=Join-Path $root 'tamper-local-name'
+    Copy-Item -LiteralPath $out1 -Destination $tamperLocalName -Recurse
+    $localNameZip=Join-Path $tamperLocalName 'vllm-windows-native-test-release.zip'
+    $localBytes=[IO.File]::ReadAllBytes($localNameZip)
+    if([BitConverter]::ToUInt32($localBytes,0)-ne[uint32]0x04034b50){throw 'Synthetic ZIP does not start with a local header.'}
+    $localBytes[30]=[byte]([int]$localBytes[30]+1)
+    [IO.File]::WriteAllBytes($localNameZip,$localBytes)
+    $localIndexPath=Join-Path $tamperLocalName 'release-index.json'
+    $localIndex=Get-Content $localIndexPath -Raw|ConvertFrom-Json
+    $localBundleIdentity=Get-VllmReleaseFileIdentity -Path $localNameZip
+    $localIndex.bundle.size_bytes=[int64]$localBundleIdentity.Size
+    $localIndex.bundle.sha256=[string]$localBundleIdentity.Sha256
+    Write-VllmReleaseCanonicalJson -Value $localIndex -Path $localIndexPath
+    Write-TestArtifactChecksums -ArtifactsDirectory $tamperLocalName
+    Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $tamperLocalName|Out-Null} 'zip-local-header-name'
 
     & git -C $fixture checkout -- .
     [IO.File]::WriteAllText((Join-Path $fixture 'payload\a.txt'),"committed drift`n",[Text.UTF8Encoding]::new($false))
