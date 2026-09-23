@@ -196,4 +196,4 @@ If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the
 
 ## Remaining lifecycle work
 
-The lifecycle safety boundary is specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). Portable CPython, uv, the contained runtime venv, the accepted dependency graph, managed vLLM materialization, canonical runtime distribution ownership, and top-level installation are now productized. Remaining release-engineering work includes `update.ps1`, `uninstall.ps1`, release artifact publication/signing, and later service/process ownership work.
+The lifecycle safety boundary is specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). Portable CPython, uv, the contained runtime venv, the accepted dependency graph, managed vLLM materialization, canonical runtime distribution ownership, install, update, and uninstall are now productized. The next release-engineering milestone is the project-owned artifact publication/signing contract in [`docs/release-publication-design.md`](docs/release-publication-design.md); service/process ownership remains later work.

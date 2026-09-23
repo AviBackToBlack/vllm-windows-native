@@ -1,6 +1,6 @@
 # Safe update transaction design
 
-Status: SM-18 design gate. This document defines the required semantics for a future `update.ps1`; it does not implement update behavior.
+Status: implemented through SM-18F. This document records the accepted transaction semantics implemented by `update.ps1` and its trusted regression coverage.
 
 ## 1. Goal
 
