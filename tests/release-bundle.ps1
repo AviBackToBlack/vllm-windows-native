@@ -34,6 +34,7 @@ function Test-ExpectedFailure {
         'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
         'nonempty-output-refusal'='Release artifacts directory is not empty'
         'artifacts-volume-root'='Release artifacts directory must not be a volume root'
+        'directory-object-replacement'='changed filesystem object identity.'
         'prepare-concurrent-lock'='Another offline release preparation is active'
         'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
@@ -307,6 +308,17 @@ try {
     try{$badTagContext=Get-VllmReleaseContext -Snapshot $badTagSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badTagWheel -Context $badTagContext|Out-Null} 'wheel-tag-substring'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badTagSnapshot}
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out1 | Out-Null } 'nonempty-output-refusal'
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory ([IO.Path]::GetPathRoot($root)) | Out-Null } 'artifacts-volume-root'
+    $identityPath=Join-Path $root 'identity-object'
+    $identityMoved=Join-Path $root 'identity-object-original'
+    [void][IO.Directory]::CreateDirectory($identityPath)
+    $identityPhysical=Get-VllmCanonicalExistingPath -Path $identityPath -Format Dos
+    $identityOriginal=[VllmWindowsNative.NativePath]::GetFileIdentity($identityPath)
+    [IO.Directory]::Move($identityPath,$identityMoved)
+    [void][IO.Directory]::CreateDirectory($identityPath)
+    Test-ExpectedFailure {Assert-VllmReleaseDirectoryIdentity -Path $identityPath -ExpectedPhysical $identityPhysical -ExpectedIdentity $identityOriginal -Label 'Synthetic directory'|Out-Null} 'directory-object-replacement'
+    Remove-Item -LiteralPath $identityPath -Recurse -Force
+    Remove-Item -LiteralPath $identityMoved -Recurse -Force
+    Write-Host 'RELEASE_DIRECTORY_IDENTITY_OK'
 
     $concurrentOut=Join-Path $root 'concurrent-output'
     New-Item -ItemType Directory -Path $concurrentOut -Force|Out-Null

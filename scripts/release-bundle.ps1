@@ -834,6 +834,22 @@ function Exit-VllmReleasePreparationLock {
     # avoids a close/delete/recreate race while keeping it outside release assets.
 }
 
+function Assert-VllmReleaseDirectoryIdentity {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ExpectedPhysical,
+        [Parameter(Mandatory)][string]$ExpectedIdentity,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $entry=Get-VllmPathEntryInfo -Path $Path
+    if(-not$entry.Exists-or-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "$Label changed type or became a reparse point."}
+    $physical=Get-VllmCanonicalExistingPath -Path $Path -Format Dos
+    if(-not$physical.Equals($ExpectedPhysical,[StringComparison]::OrdinalIgnoreCase)){throw "$Label changed physical path."}
+    $identity=[VllmWindowsNative.NativePath]::GetFileIdentity($Path)
+    if(-not[string]::Equals($identity,$ExpectedIdentity,[StringComparison]::Ordinal)){throw "$Label changed filesystem object identity."}
+    return $Path
+}
+
 function Write-VllmOfflineRelease {
     param(
         [Parameter(Mandatory)][string]$Repository,
@@ -853,6 +869,7 @@ function Write-VllmOfflineRelease {
     if(-not$parentEntry.Exists-or-not$parentEntry.IsDirectory-or$parentEntry.IsReparsePoint){throw "Release artifacts parent must be a regular directory: $parent"}
     $parentPhysical=Get-VllmCanonicalExistingPath -Path $parent -Format Dos
     if(-not$parentPhysical.Equals($parent,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts parent resolves through a filesystem alias: $parent -> $parentPhysical"}
+    $parentIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($parent)
     $prepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $root
     $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null
     try {
@@ -864,7 +881,8 @@ function Write-VllmOfflineRelease {
             $rootInitialPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
             if(-not$rootInitialPhysical.Equals($root,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts directory resolves through a filesystem alias: $root -> $rootInitialPhysical"}
             if(@(Get-ChildItem -LiteralPath $root -Force).Count-gt0){throw "Release artifacts directory is not empty: $root"}
-        }        $snapshot=Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
+        }
+        $snapshot=Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
         $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath
         $wheel=Assert-VllmReleaseWheel -WheelPath $WheelPath -Context $context
         $finalWheel=Join-Path $root ([string]$wheel.Filename)
@@ -887,7 +905,9 @@ function Write-VllmOfflineRelease {
         if(-not$stageEntry.Exists-or-not$stageEntry.IsDirectory-or$stageEntry.IsReparsePoint){throw "Private release staging path is not a regular directory: $stageRoot"}
         $stageExpectedPhysical=Get-VllmCanonicalExistingPath -Path $stageRoot -Format Dos
         $expectedStagePath=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($stageRoot))
-        if(-not$stageExpectedPhysical.Equals($expectedStagePath,[StringComparison]::OrdinalIgnoreCase)){throw "Private release staging path resolves through a filesystem alias: $stageRoot -> $stageExpectedPhysical"}        $destWheel=Join-Path $stageRoot ([string]$wheel.Filename)
+        if(-not$stageExpectedPhysical.Equals($expectedStagePath,[StringComparison]::OrdinalIgnoreCase)){throw "Private release staging path resolves through a filesystem alias: $stageRoot -> $stageExpectedPhysical"}
+        $stageIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($stageRoot)
+        $destWheel=Join-Path $stageRoot ([string]$wheel.Filename)
         if($FaultPoint-eq'DuringWheelCopy'){
             [IO.File]::WriteAllBytes($destWheel,[byte[]](1,2,3,4));throw 'FAULT_INJECTED:DuringWheelCopy'
         }
@@ -909,6 +929,8 @@ function Write-VllmOfflineRelease {
         }
         Write-VllmReleaseChecksums -Identities $identities -Path $sumPath
         [void](Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit $snapshot.Commit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $stageRoot)
+        [void](Assert-VllmReleaseDirectoryIdentity -Path $parent -ExpectedPhysical $parentPhysical -ExpectedIdentity $parentIdentity -Label 'Release artifacts parent')
+        [void](Assert-VllmReleaseDirectoryIdentity -Path $stageRoot -ExpectedPhysical $stageExpectedPhysical -ExpectedIdentity $stageIdentity -Label 'Private release staging path')
         if($FaultPoint-eq'BeforePublishTargetAppears'){
             [void][IO.Directory]::CreateDirectory($root)
             [IO.File]::WriteAllText((Join-Path $root 'foreign-marker.txt'),'foreign',[Text.UTF8Encoding]::new($false))
@@ -920,10 +942,7 @@ function Write-VllmOfflineRelease {
     } catch {
         if($null-ne$stageRoot-and(Test-Path -LiteralPath $stageRoot)){
             try {
-                $stageEntry=Get-VllmPathEntryInfo -Path $stageRoot
-                if(-not$stageEntry.IsDirectory-or$stageEntry.IsReparsePoint){throw 'Private release staging path changed type or became a reparse point.'}
-                $stageCurrentPhysical=Get-VllmCanonicalExistingPath -Path $stageRoot -Format Dos
-                if($null-eq$stageExpectedPhysical-or-not$stageCurrentPhysical.Equals($stageExpectedPhysical,[StringComparison]::OrdinalIgnoreCase)){throw 'Private release staging path changed filesystem identity.'}
+                [void](Assert-VllmReleaseDirectoryIdentity -Path $stageRoot -ExpectedPhysical $stageExpectedPhysical -ExpectedIdentity $stageIdentity -Label 'Private release staging path')
                 Remove-Item -LiteralPath $stageRoot -Recurse -Force
             }catch{
                 Write-Warning "Release staging cleanup was skipped because staging ownership could not be re-proved safely: $($_.Exception.Message)"
