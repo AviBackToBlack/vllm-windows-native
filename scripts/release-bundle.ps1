@@ -233,6 +233,19 @@ function Get-VllmReleaseContext {
     }
 }
 
+function Get-VllmReleaseMetadataFieldValues {
+    param([Parameter(Mandatory)][string]$Text,[Parameter(Mandatory)][string]$Field)
+    $prefix=$Field+':'
+    $values=New-Object System.Collections.Generic.List[string]
+    foreach($line in @($Text -split '\r?\n')){
+        if(([string]$line).StartsWith($prefix,[StringComparison]::Ordinal)){
+            $raw=([string]$line).Substring($prefix.Length)
+            $values.Add($raw.Trim([char[]]@([char]32,[char]9)))
+        }
+    }
+    return $values.ToArray()
+}
+
 function Assert-VllmReleaseWheel {
     param([Parameter(Mandatory)][string]$WheelPath,[Parameter(Mandatory)]$Context)
 
@@ -272,10 +285,15 @@ function Assert-VllmReleaseWheel {
         $wheelReader = New-Object IO.StreamReader($wheelEntries[0].Open())
         try { $wheelMetadata = $wheelReader.ReadToEnd() } finally { $wheelReader.Dispose() }
 
-        if (-not [regex]::IsMatch($metadata,'(?m)^Name:\s*vllm\s*$')) { throw 'Provided release wheel distribution name is not vllm.' }
-        if (-not [regex]::IsMatch($metadata,('(?m)^Version:\s*' + [regex]::Escape([string]$runtimeWheel.version) + '\s*$'))) { throw 'Provided release wheel version does not match runtime manifest.' }
-        $tag = 'Tag: ' + [string]$runtimeWheel.python_tag + '-' + [string]$runtimeWheel.abi_tag + '-' + [string]$runtimeWheel.platform_tag
-        if ($wheelMetadata.IndexOf($tag,[StringComparison]::Ordinal) -lt 0) { throw "Provided release wheel compatibility tag is missing: $tag" }
+        $nameValues=@(Get-VllmReleaseMetadataFieldValues -Text $metadata -Field 'Name')
+        if($nameValues.Count-ne1-or-not(Test-VllmReleaseOrdinalEqual $nameValues[0] 'vllm')){throw 'Provided release wheel distribution name is not vllm.'}
+        $versionValues=@(Get-VllmReleaseMetadataFieldValues -Text $metadata -Field 'Version')
+        if($versionValues.Count-ne1-or-not(Test-VllmReleaseOrdinalEqual $versionValues[0] ([string]$runtimeWheel.version))){throw 'Provided release wheel version does not match runtime manifest.'}
+        $expectedTag=[string]$runtimeWheel.python_tag+'-'+[string]$runtimeWheel.abi_tag+'-'+[string]$runtimeWheel.platform_tag
+        $tagValues=@(Get-VllmReleaseMetadataFieldValues -Text $wheelMetadata -Field 'Tag')
+        $tagFound=$false
+        foreach($value in $tagValues){if(Test-VllmReleaseOrdinalEqual ([string]$value) $expectedTag){$tagFound=$true;break}}
+        if(-not$tagFound){throw "Provided release wheel compatibility tag is missing: Tag: $expectedTag"}
 
         $actualNative = @($zip.Entries | Where-Object { ([string]$_.FullName).EndsWith('.pyd',[StringComparison]::Ordinal) } | ForEach-Object { [string]$_.FullName })
         $actualNative = Get-VllmReleaseOrdinalStrings -Values $actualNative
@@ -750,7 +768,8 @@ function Write-VllmOfflineRelease {
         [Parameter(Mandatory)][string]$ProjectCommit,
         [Parameter(Mandatory)][string]$ReleaseManifestPath,
         [Parameter(Mandatory)][string]$WheelPath,
-        [Parameter(Mandatory)][string]$ArtifactsDirectory
+        [Parameter(Mandatory)][string]$ArtifactsDirectory,
+        [ValidateSet('None','AfterWheelCopy','AfterBundle')][string]$FaultPoint='None'
     )
     $root = [IO.Path]::GetFullPath($ArtifactsDirectory)
     if (Test-Path -LiteralPath $root) {
@@ -763,6 +782,7 @@ function Write-VllmOfflineRelease {
     $rootPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
     if (-not $rootPhysical.Equals($root,[StringComparison]::OrdinalIgnoreCase)) { throw "Release artifacts directory resolves through a filesystem alias: $root -> $rootPhysical" }
 
+    $createdPaths=New-Object System.Collections.Generic.List[string]
     $snapshot = Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
     try {
         $context = Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath
@@ -773,17 +793,23 @@ function Write-VllmOfflineRelease {
             throw 'Source wheel must be outside the release artifacts directory during preparation.'
         }
         Copy-Item -LiteralPath $wheel.Path -Destination $destWheel
+        $createdPaths.Add($destWheel)
         $copiedWheel = Assert-VllmReleaseWheel -WheelPath $destWheel -Context $context
+        if($FaultPoint-eq'AfterWheelCopy'){throw 'FAULT_INJECTED:AfterWheelCopy'}
 
         $bundlePath = Join-Path $root ([string]$context.BundleFilename)
+        $createdPaths.Add($bundlePath)
         $bundle = Write-VllmReleaseCanonicalZip -Context $context -Path $bundlePath
+        if($FaultPoint-eq'AfterBundle'){throw 'FAULT_INJECTED:AfterBundle'}
 
         $index = Get-VllmReleaseIndex -Context $context -Wheel $copiedWheel -Bundle $bundle
         $indexPath = Join-Path $root 'release-index.json'
+        $createdPaths.Add($indexPath)
         Write-VllmReleaseCanonicalJson -Value $index -Path $indexPath
         $indexIdentity = Get-VllmReleaseFileIdentity -Path $indexPath
 
         $sumPath = Join-Path $root 'SHA256SUMS'
+        $createdPaths.Add($sumPath)
         $identities = @{
             ([string]$copiedWheel.Filename)=[string]$copiedWheel.Sha256
             ([string]$context.BundleFilename)=[string]$bundle.Sha256
@@ -792,5 +818,8 @@ function Write-VllmOfflineRelease {
         Write-VllmReleaseChecksums -Identities $identities -Path $sumPath
 
         return Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit $snapshot.Commit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $root
+    } catch {
+        for($i=$createdPaths.Count-1;$i-ge0;$i--){if(Test-Path -LiteralPath $createdPaths[$i] -PathType Leaf){Remove-Item -LiteralPath $createdPaths[$i] -Force -ErrorAction SilentlyContinue}}
+        throw
     } finally { Close-VllmReleaseGitSnapshot -Snapshot $snapshot }
 }

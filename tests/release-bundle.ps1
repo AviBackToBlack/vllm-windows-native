@@ -28,7 +28,12 @@ function Test-ExpectedFailure {
         'wheel-filename-case'='Provided release wheel filename mismatch.'
         'wheel-native-extension-case'='Provided release wheel native extension set mismatch'
         'wheel-unsafe-member'='Provided release wheel member contains an unsafe path segment'
+        'wheel-metadata-name-line'='Provided release wheel distribution name is not vllm.'
+        'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
+        'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
         'nonempty-output-refusal'='Release artifacts directory is not empty'
+        'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
+        'prepare-fault-after-bundle'='FAULT_INJECTED:AfterBundle'
         'wheel-tamper'='Provided release wheel size/SHA-256 mismatch.'
         'index-tamper'='release-index.json does not exactly match the canonical index'
         'index-identity-case'='release-index.json does not exactly match the canonical index'
@@ -74,7 +79,9 @@ function Write-TestWheel {
     param(
         [string]$Path,
         [string]$NativePath = 'vllm/_test.pyd',
-        [hashtable]$ExtraEntries = @{}
+        [hashtable]$ExtraEntries = @{},
+        [string]$MetadataText = '',
+        [string]$WheelMetadataText = ''
     )
     $parent=Split-Path -Parent $Path
     New-Item -ItemType Directory -Path $parent -Force|Out-Null
@@ -85,8 +92,10 @@ function Write-TestWheel {
         $entries=[ordered]@{}
         $entries['vllm/__init__.py']="__version__ = '1.2.3'"+[char]10
         $entries[$NativePath]='synthetic-native-bytes'
-        $entries['vllm-1.2.3.dist-info/METADATA']="Metadata-Version: 2.1"+[char]10+"Name: vllm"+[char]10+"Version: 1.2.3"+[char]10
-        $entries['vllm-1.2.3.dist-info/WHEEL']="Wheel-Version: 1.0"+[char]10+"Generator: sm19a-test"+[char]10+"Root-Is-Purelib: false"+[char]10+"Tag: cp313-cp313-win_amd64"+[char]10
+        if([string]::IsNullOrEmpty($MetadataText)){$MetadataText="Metadata-Version: 2.1"+[char]10+"Name: vllm"+[char]10+"Version: 1.2.3"+[char]10}
+        if([string]::IsNullOrEmpty($WheelMetadataText)){$WheelMetadataText="Wheel-Version: 1.0"+[char]10+"Generator: sm19a-test"+[char]10+"Root-Is-Purelib: false"+[char]10+"Tag: cp313-cp313-win_amd64"+[char]10}
+        $entries['vllm-1.2.3.dist-info/METADATA']=$MetadataText
+        $entries['vllm-1.2.3.dist-info/WHEEL']=$WheelMetadataText
         foreach($name in @($ExtraEntries.Keys)){
             if($entries.Contains($name)){throw "Duplicate synthetic wheel entry: $name"}
             $entries[$name]=[string]$ExtraEntries[$name]
@@ -249,7 +258,39 @@ try {
         $unsafeWheelContext=Get-VllmReleaseContext -Snapshot $unsafeWheelSnapshot -ReleaseManifestPath 'manifests/release/release.json'
         Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $unsafeWheel -Context $unsafeWheelContext|Out-Null} 'wheel-unsafe-member'
     }finally{Close-VllmReleaseGitSnapshot -Snapshot $unsafeWheelSnapshot}
+    $badNameRoot=Join-Path $root 'bad-name-metadata'
+    $badNameWheel=Join-Path $badNameRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    $badNameText="Metadata-Version: 2.1"+[char]10+"Name:"+[char]10+" vllm"+[char]10+"Version: 1.2.3"+[char]10
+    Write-TestWheel -Path $badNameWheel -MetadataText $badNameText
+    $badNameRepo=Join-Path $badNameRoot 'repo';$badNameCommit=Initialize-FixtureRepo -Root $badNameRepo -WheelPath $badNameWheel
+    $badNameSnapshot=Get-VllmReleaseGitSnapshot -Repository $badNameRepo -Commit $badNameCommit
+    try{$badNameContext=Get-VllmReleaseContext -Snapshot $badNameSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badNameWheel -Context $badNameContext|Out-Null} 'wheel-metadata-name-line'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badNameSnapshot}
+
+    $badVersionRoot=Join-Path $root 'bad-version-metadata'
+    $badVersionWheel=Join-Path $badVersionRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    $badVersionText="Metadata-Version: 2.1"+[char]10+"Name: vllm"+[char]10+"Version:"+[char]10+" 1.2.3"+[char]10
+    Write-TestWheel -Path $badVersionWheel -MetadataText $badVersionText
+    $badVersionRepo=Join-Path $badVersionRoot 'repo';$badVersionCommit=Initialize-FixtureRepo -Root $badVersionRepo -WheelPath $badVersionWheel
+    $badVersionSnapshot=Get-VllmReleaseGitSnapshot -Repository $badVersionRepo -Commit $badVersionCommit
+    try{$badVersionContext=Get-VllmReleaseContext -Snapshot $badVersionSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badVersionWheel -Context $badVersionContext|Out-Null} 'wheel-metadata-version-line'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badVersionSnapshot}
+
+    $badTagRoot=Join-Path $root 'bad-tag-metadata'
+    $badTagWheel=Join-Path $badTagRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    $badTagText="Wheel-Version: 1.0"+[char]10+"Generator: sm19a-test"+[char]10+"Root-Is-Purelib: false"+[char]10+"NotTag: cp313-cp313-win_amd64"+[char]10
+    Write-TestWheel -Path $badTagWheel -WheelMetadataText $badTagText
+    $badTagRepo=Join-Path $badTagRoot 'repo';$badTagCommit=Initialize-FixtureRepo -Root $badTagRepo -WheelPath $badTagWheel
+    $badTagSnapshot=Get-VllmReleaseGitSnapshot -Repository $badTagRepo -Commit $badTagCommit
+    try{$badTagContext=Get-VllmReleaseContext -Snapshot $badTagSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badTagWheel -Context $badTagContext|Out-Null} 'wheel-tag-substring'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badTagSnapshot}
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out1 | Out-Null } 'nonempty-output-refusal'
+    $faultOut=Join-Path $root 'fault-output'
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint AfterWheelCopy|Out-Null} 'prepare-fault-after-wheel'
+    if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'AfterWheelCopy failure left partial release artifacts.'}
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint AfterBundle|Out-Null} 'prepare-fault-after-bundle'
+    if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'AfterBundle failure left partial release artifacts.'}
+    $faultRetry=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut
+    if($faultRetry.bundle_sha256-ne$r1.bundle_sha256){throw 'Retry after injected preparation failure produced a different bundle identity.'}
+    Remove-Item -LiteralPath $faultOut -Recurse -Force
+    Write-Host 'RELEASE_PREPARE_FAILURE_CLEANUP_OK'
 
     [IO.File]::WriteAllText((Join-Path $fixture 'payload\a.txt'),"worktree drift`n",[Text.UTF8Encoding]::new($false))
     $out3=Join-Path $root 'out3'
