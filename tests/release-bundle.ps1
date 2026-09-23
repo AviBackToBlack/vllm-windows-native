@@ -45,18 +45,25 @@ function Write-TestArtifactChecksums {
 }
 
 function Write-TestWheel {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [string]$NativePath = 'vllm/_test.pyd',
+        [hashtable]$ExtraEntries = @{}
+    )
     $parent=Split-Path -Parent $Path
     New-Item -ItemType Directory -Path $parent -Force|Out-Null
     $sourceRoot=$Path+'.source'
     if(Test-Path -LiteralPath $sourceRoot){Remove-Item -LiteralPath $sourceRoot -Recurse -Force}
     New-Item -ItemType Directory -Path $sourceRoot -Force|Out-Null
     try{
-        $entries=[ordered]@{
-            'vllm/__init__.py'="__version__ = '1.2.3'`n"
-            'vllm/_test.pyd'='synthetic-native-bytes'
-            'vllm-1.2.3.dist-info/METADATA'="Metadata-Version: 2.1`nName: vllm`nVersion: 1.2.3`n"
-            'vllm-1.2.3.dist-info/WHEEL'="Wheel-Version: 1.0`nGenerator: sm19a-test`nRoot-Is-Purelib: false`nTag: cp313-cp313-win_amd64`n"
+        $entries=[ordered]@{}
+        $entries['vllm/__init__.py']="__version__ = '1.2.3'"+[char]10
+        $entries[$NativePath]='synthetic-native-bytes'
+        $entries['vllm-1.2.3.dist-info/METADATA']="Metadata-Version: 2.1"+[char]10+"Name: vllm"+[char]10+"Version: 1.2.3"+[char]10
+        $entries['vllm-1.2.3.dist-info/WHEEL']="Wheel-Version: 1.0"+[char]10+"Generator: sm19a-test"+[char]10+"Root-Is-Purelib: false"+[char]10+"Tag: cp313-cp313-win_amd64"+[char]10
+        foreach($name in @($ExtraEntries.Keys)){
+            if($entries.Contains($name)){throw "Duplicate synthetic wheel entry: $name"}
+            $entries[$name]=[string]$ExtraEntries[$name]
         }
         $members=New-Object System.Collections.Generic.List[object]
         foreach($name in (Get-VllmReleaseOrdinalStrings -Values @($entries.Keys))){
@@ -178,6 +185,50 @@ try {
     }
     Write-Host 'RELEASE_DETERMINISM_OK'
 
+    $snapshot=Get-VllmReleaseGitSnapshot -Repository $fixture -Commit $commit
+    try{
+        $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath 'manifests/release/release.json'
+        $wheelTemp=Join-Path $root 'wheel-case-temp.whl'
+        $caseWheelPath=Join-Path $root 'VLLM-1.2.3-cp313-cp313-win_amd64.whl'
+        Move-Item -LiteralPath $wheelPath -Destination $wheelTemp
+        Move-Item -LiteralPath $wheelTemp -Destination $caseWheelPath
+        try{
+            Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $caseWheelPath -Context $context|Out-Null} 'wheel-filename-case'
+        }finally{
+            Move-Item -LiteralPath $caseWheelPath -Destination $wheelTemp
+            Move-Item -LiteralPath $wheelTemp -Destination $wheelPath
+        }
+    }finally{Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
+
+    $caseNativeRoot=Join-Path $root 'case-native'
+    $caseNativeWheel=Join-Path $caseNativeRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    Write-TestWheel -Path $caseNativeWheel -NativePath 'vllm/_TEST.pyd'
+    $caseNativeRepo=Join-Path $caseNativeRoot 'repo'
+    $caseNativeCommit=Initialize-FixtureRepo -Root $caseNativeRepo -WheelPath $caseNativeWheel
+    $caseNativeSnapshot=Get-VllmReleaseGitSnapshot -Repository $caseNativeRepo -Commit $caseNativeCommit
+    try{
+        $caseNativeContext=Get-VllmReleaseContext -Snapshot $caseNativeSnapshot -ReleaseManifestPath 'manifests/release/release.json'
+        Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $caseNativeWheel -Context $caseNativeContext|Out-Null} 'wheel-native-extension-case'
+    }finally{Close-VllmReleaseGitSnapshot -Snapshot $caseNativeSnapshot}
+
+    $unsafeWheelRoot=Join-Path $root 'unsafe-wheel'
+    $unsafeWheel=Join-Path $unsafeWheelRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    Write-TestWheel -Path $unsafeWheel
+    $unsafeZip=[IO.Compression.ZipFile]::Open($unsafeWheel,[IO.Compression.ZipArchiveMode]::Update)
+    try{
+        $unsafeEntry=$unsafeZip.CreateEntry('../escape.txt',[IO.Compression.CompressionLevel]::NoCompression)
+        $unsafeEntry.LastWriteTime=$script:VllmReleaseZipTimestamp
+        $unsafeEntry.ExternalAttributes=0
+        $writer=New-Object IO.StreamWriter($unsafeEntry.Open())
+        try{$writer.Write('escape')}finally{$writer.Dispose()}
+    }finally{$unsafeZip.Dispose()}
+    $unsafeWheelRepo=Join-Path $unsafeWheelRoot 'repo'
+    $unsafeWheelCommit=Initialize-FixtureRepo -Root $unsafeWheelRepo -WheelPath $unsafeWheel
+    $unsafeWheelSnapshot=Get-VllmReleaseGitSnapshot -Repository $unsafeWheelRepo -Commit $unsafeWheelCommit
+    try{
+        $unsafeWheelContext=Get-VllmReleaseContext -Snapshot $unsafeWheelSnapshot -ReleaseManifestPath 'manifests/release/release.json'
+        Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $unsafeWheel -Context $unsafeWheelContext|Out-Null} 'wheel-unsafe-member'
+    }finally{Close-VllmReleaseGitSnapshot -Snapshot $unsafeWheelSnapshot}
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out1 | Out-Null } 'nonempty-output-refusal'
 
     [IO.File]::WriteAllText((Join-Path $fixture 'payload\a.txt'),"worktree drift`n",[Text.UTF8Encoding]::new($false))
@@ -202,6 +253,14 @@ try {
     $idx.project_commit=('f'*40)
     [IO.File]::WriteAllText($indexPath,($idx|ConvertTo-Json -Depth 12 -Compress)+[char]10,[Text.UTF8Encoding]::new($false))
     Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $tamperIndex|Out-Null} 'index-tamper'
+    $caseIndex=Join-Path $root 'case-index'
+    Copy-Item -LiteralPath $out1 -Destination $caseIndex -Recurse
+    $caseIndexPath=Join-Path $caseIndex 'release-index.json'
+    $caseIndexValue=Get-Content $caseIndexPath -Raw|ConvertFrom-Json
+    $caseIndexValue.platform=([string]$caseIndexValue.platform).ToUpperInvariant()
+    Write-VllmReleaseCanonicalJson -Value $caseIndexValue -Path $caseIndexPath
+    Write-TestArtifactChecksums -ArtifactsDirectory $caseIndex
+    Test-ExpectedFailure {Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $caseIndex|Out-Null} 'index-identity-case'
 
     $noncanonicalIndex=Join-Path $root 'noncanonical-index'
     Copy-Item -LiteralPath $out1 -Destination $noncanonicalIndex -Recurse

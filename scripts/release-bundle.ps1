@@ -36,11 +36,9 @@ function Assert-VllmReleaseCanonicalPath {
 function Assert-VllmReleaseExactProperties {
     param([Parameter(Mandatory)]$Value,[Parameter(Mandatory)][string[]]$Expected,[Parameter(Mandatory)][string]$Label)
     if ($null -eq $Value) { throw "$Label is missing." }
-    $actual = @($Value.PSObject.Properties.Name | Sort-Object)
-    $wanted = @($Expected | Sort-Object)
-    if (@(Compare-Object -ReferenceObject $wanted -DifferenceObject $actual).Count -ne 0) {
-        throw "$Label schema is unexpected. Expected [$($wanted -join ', ')], got [$($actual -join ', ')]."
-    }
+    $actual = Get-VllmReleaseOrdinalStrings -Values @($Value.PSObject.Properties.Name)
+    $wanted = Get-VllmReleaseOrdinalStrings -Values @($Expected)
+    Assert-VllmReleaseOrdinalSequence -Actual $actual -Expected $wanted -Label "$Label property set"
 }
 
 function Get-VllmReleaseOrdinalStrings {
@@ -49,6 +47,21 @@ function Get-VllmReleaseOrdinalStrings {
     for ($i=0; $i -lt $Values.Count; $i++) { $copy[$i] = [string]$Values[$i] }
     [Array]::Sort($copy,[StringComparer]::Ordinal)
     return $copy
+}
+
+function Test-VllmReleaseOrdinalEqual {
+    param([AllowNull()][string]$Actual,[AllowNull()][string]$Expected)
+    return [string]::Equals($Actual,$Expected,[StringComparison]::Ordinal)
+}
+
+function Assert-VllmReleaseOrdinalSequence {
+    param([Parameter(Mandatory)][object[]]$Actual,[Parameter(Mandatory)][object[]]$Expected,[Parameter(Mandatory)][string]$Label)
+    if ($Actual.Count -ne $Expected.Count) { throw "$Label count mismatch." }
+    for ($i=0; $i -lt $Actual.Count; $i++) {
+        if (-not (Test-VllmReleaseOrdinalEqual -Actual ([string]$Actual[$i]) -Expected ([string]$Expected[$i]))) {
+            throw "$Label mismatch at index $i."
+        }
+    }
 }
 
 function Resolve-VllmReleaseCommit {
@@ -101,7 +114,7 @@ function Assert-VllmReleaseGitRegularBlob {
     if ($rows.Count -ne 1 -or $rows[0] -notmatch '^(100644|100755) blob ([0-9a-fA-F]{40,64})\t(.+)$') {
         throw "Git release member is not one regular blob: $relative"
     }
-    if ([string]$Matches[3] -ne $relative) { throw "Git release member path mismatch. Expected '$relative', got '$($Matches[3])'." }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$Matches[3]) $relative)) { throw "Git release member path mismatch. Expected '$relative', got '$($Matches[3])'." }
     return [pscustomobject][ordered]@{Mode=$Matches[1];ObjectId=$Matches[2].ToLowerInvariant();Path=$relative}
 }
 
@@ -112,7 +125,7 @@ function Get-VllmReleaseSnapshotFile {
     $path = Join-Path $Snapshot.Root ($relative.Replace('/','\'))
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Snapshot release member is missing after git archive: $relative" }
     $materializedObject=Invoke-Git -Repository $Snapshot.Repository -Arguments @('hash-object','--no-filters',$path) -Capture
-    if ([string]$materializedObject -ne [string]$blob.ObjectId) { throw "Materialized release member bytes differ from the tagged Git blob: $relative" }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$materializedObject) ([string]$blob.ObjectId))) { throw "Materialized release member bytes differ from the tagged Git blob: $relative" }
     $entry = Get-VllmPathEntryInfo -Path $path
     if ($entry.IsDirectory -or $entry.IsReparsePoint) { throw "Snapshot release member is not a regular non-reparse file: $relative" }
     return [pscustomobject][ordered]@{
@@ -136,14 +149,14 @@ function Get-VllmReleaseContext {
     Assert-VllmReleaseExactProperties -Value $release.wheel -Expected @('filename','version','size_bytes','sha256') -Label 'Release wheel identity'
     Assert-VllmReleaseExactProperties -Value $release.orchestration -Expected @('python_manifest','uv_manifest','venv_manifest','dependency_manifest','runtime_manifest','python_receipt','uv_receipt','venv_receipt','dependency_receipt','runtime_receipt','runtime_root') -Label 'Release orchestration'
 
-    if ([int]$release.schema_version -ne 1 -or [string]$release.component -ne 'runtime-release' -or [string]$release.platform -ne 'windows-x86_64') {
+    if ([int]$release.schema_version -ne 1 -or -not (Test-VllmReleaseOrdinalEqual ([string]$release.component) 'runtime-release') -or -not (Test-VllmReleaseOrdinalEqual ([string]$release.platform) 'windows-x86_64')) {
         throw 'Release manifest has unsupported schema/component/platform.'
     }
     if ([string]::IsNullOrWhiteSpace([string]$release.release) -or [string]$release.release -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') {
         throw 'Release identifier is invalid for publication.'
     }
-    if ([string]$release.self_path -ne $releaseRelative) { throw 'Release manifest self_path does not match the selected manifest path.' }
-    if ([IO.Path]::GetFileName([string]$release.wheel.filename) -ne [string]$release.wheel.filename -or [string]$release.wheel.filename -notlike '*.whl') {
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$release.self_path) $releaseRelative)) { throw 'Release manifest self_path does not match the selected manifest path.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([IO.Path]::GetFileName([string]$release.wheel.filename)) ([string]$release.wheel.filename)) -or -not ([string]$release.wheel.filename).EndsWith('.whl',[StringComparison]::Ordinal)) {
         throw 'Release wheel filename must be a simple .whl filename.'
     }
     if ([int64]$release.wheel.size_bytes -lt 0 -or [string]$release.wheel.sha256 -notmatch '^[0-9A-Fa-f]{64}$') {
@@ -179,15 +192,15 @@ function Get-VllmReleaseContext {
     if (-not $membersByKey.ContainsKey($runtimeKey)) { throw 'Runtime manifest is not release-owned.' }
     try { $runtime = Get-Content -LiteralPath $membersByKey[$runtimeKey].Path -Raw | ConvertFrom-Json }
     catch { throw "Runtime manifest JSON is invalid: $runtimeRelative" }
-    if ([int]$runtime.schema_version -ne 1 -or [string]$runtime.component -ne 'vllm-runtime' -or [string]$runtime.platform -ne [string]$release.platform -or [string]$runtime.milestone -ne [string]$release.release) {
+    if ([int]$runtime.schema_version -ne 1 -or -not (Test-VllmReleaseOrdinalEqual ([string]$runtime.component) 'vllm-runtime') -or -not (Test-VllmReleaseOrdinalEqual ([string]$runtime.platform) ([string]$release.platform)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$runtime.milestone) ([string]$release.release))) {
         throw 'Runtime manifest identity does not match the release.'
     }
 
     Assert-VllmReleaseExactProperties -Value $runtime.project_wheel -Expected @('distribution','version','filename','size_bytes','sha256','python_tag','abi_tag','platform_tag','acquisition','dependency_install','native_extension_count','native_extensions') -Label 'Runtime project wheel'
     foreach ($name in @('filename','version','size_bytes','sha256')) {
-        if ([string]$runtime.project_wheel.$name -ne [string]$release.wheel.$name) { throw 'Runtime and release manifests disagree on project wheel identity.' }
+        if (-not (Test-VllmReleaseOrdinalEqual ([string]$runtime.project_wheel.$name) ([string]$release.wheel.$name))) { throw 'Runtime and release manifests disagree on project wheel identity.' }
     }
-    if ([string]$runtime.project_wheel.distribution -ne 'vllm') { throw 'Runtime project wheel distribution must be vllm.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$runtime.project_wheel.distribution) 'vllm')) { throw 'Runtime project wheel distribution must be vllm.' }
     if ([int]$runtime.project_wheel.native_extension_count -ne @($runtime.project_wheel.native_extensions).Count) {
         throw 'Runtime project wheel native extension count is inconsistent.'
     }
@@ -232,39 +245,44 @@ function Assert-VllmReleaseWheel {
 
     $runtimeWheel = $Context.Runtime.project_wheel
     $identity = Get-VllmReleaseFileIdentity -Path $resolved
-    if ([IO.Path]::GetFileName($resolved) -ne [string]$runtimeWheel.filename) { throw 'Provided release wheel filename mismatch.' }
+    if (-not (Test-VllmReleaseOrdinalEqual -Actual ([IO.Path]::GetFileName($resolved)) -Expected ([string]$runtimeWheel.filename))) { throw 'Provided release wheel filename mismatch.' }
     if ($identity.Size -ne [int64]$runtimeWheel.size_bytes -or $identity.Sha256 -ne ([string]$runtimeWheel.sha256).ToUpperInvariant()) {
         throw 'Provided release wheel size/SHA-256 mismatch.'
     }
 
     $zip = [IO.Compression.ZipFile]::OpenRead($resolved)
     try {
-        $metadataEntries = @($zip.Entries | Where-Object { $_.FullName -match '\.dist-info/METADATA$' })
-        $wheelEntries = @($zip.Entries | Where-Object { $_.FullName -match '\.dist-info/WHEEL$' })
-        if ($metadataEntries.Count -ne 1 -or $wheelEntries.Count -ne 1) { throw 'Provided release wheel must contain exactly one METADATA and one WHEEL entry.' }
+        $seen = @{}
+        foreach ($z in @($zip.Entries)) {
+            $name = Assert-VllmReleaseCanonicalPath -RelativePath ([string]$z.FullName) -Label 'Provided release wheel member'
+            $key = $name.ToLowerInvariant()
+            if ($seen.ContainsKey($key)) { throw "Provided release wheel contains duplicate/case-colliding member: $name" }
+            $seen[$key] = $true
+        }
+
+        $distInfoPrefix = 'vllm-' + [string]$runtimeWheel.version + '.dist-info/'
+        $metadataName = $distInfoPrefix + 'METADATA'
+        $wheelName = $distInfoPrefix + 'WHEEL'
+        $metadataEntries = @($zip.Entries | Where-Object { [string]::Equals([string]$_.FullName,$metadataName,[StringComparison]::Ordinal) })
+        $wheelEntries = @($zip.Entries | Where-Object { [string]::Equals([string]$_.FullName,$wheelName,[StringComparison]::Ordinal) })
+        if ($metadataEntries.Count -ne 1 -or $wheelEntries.Count -ne 1) { throw 'Provided release wheel must contain the exact canonical METADATA and WHEEL entries.' }
 
         $metadataReader = New-Object IO.StreamReader($metadataEntries[0].Open())
         try { $metadata = $metadataReader.ReadToEnd() } finally { $metadataReader.Dispose() }
         $wheelReader = New-Object IO.StreamReader($wheelEntries[0].Open())
         try { $wheelMetadata = $wheelReader.ReadToEnd() } finally { $wheelReader.Dispose() }
 
-        if ($metadata -notmatch '(?m)^Name:\s*vllm\s*$') { throw 'Provided release wheel distribution name is not vllm.' }
-        if ($metadata -notmatch ('(?m)^Version:\s*' + [regex]::Escape([string]$runtimeWheel.version) + '\s*$')) { throw 'Provided release wheel version does not match runtime manifest.' }
+        if (-not [regex]::IsMatch($metadata,'(?m)^Name:\s*vllm\s*$')) { throw 'Provided release wheel distribution name is not vllm.' }
+        if (-not [regex]::IsMatch($metadata,('(?m)^Version:\s*' + [regex]::Escape([string]$runtimeWheel.version) + '\s*$'))) { throw 'Provided release wheel version does not match runtime manifest.' }
         $tag = 'Tag: ' + [string]$runtimeWheel.python_tag + '-' + [string]$runtimeWheel.abi_tag + '-' + [string]$runtimeWheel.platform_tag
         if ($wheelMetadata.IndexOf($tag,[StringComparison]::Ordinal) -lt 0) { throw "Provided release wheel compatibility tag is missing: $tag" }
 
-        $actualNative = @($zip.Entries | Where-Object { $_.FullName -like '*.pyd' } | ForEach-Object { $_.FullName.Replace('\','/') })
+        $actualNative = @($zip.Entries | Where-Object { ([string]$_.FullName).EndsWith('.pyd',[StringComparison]::Ordinal) } | ForEach-Object { [string]$_.FullName })
         $actualNative = Get-VllmReleaseOrdinalStrings -Values $actualNative
-        if (@($actualNative).Count -ne [int]$runtimeWheel.native_extension_count -or @(Compare-Object -ReferenceObject @($Context.NativeExtensions) -DifferenceObject @($actualNative)).Count -ne 0) {
-            throw 'Provided release wheel native extension set does not match runtime manifest.'
-        }
+        if (@($actualNative).Count -ne [int]$runtimeWheel.native_extension_count) { throw 'Provided release wheel native extension count does not match runtime manifest.' }
+        Assert-VllmReleaseOrdinalSequence -Actual @($actualNative) -Expected @($Context.NativeExtensions) -Label 'Provided release wheel native extension set'
 
-        $seen = @{}
         foreach ($z in @($zip.Entries)) {
-            if ([string]::IsNullOrWhiteSpace($z.FullName)) { throw 'Provided release wheel contains an empty member name.' }
-            $key = $z.FullName.ToLowerInvariant()
-            if ($seen.ContainsKey($key)) { throw "Provided release wheel contains duplicate/case-colliding member: $($z.FullName)" }
-            $seen[$key] = $true
             $stream = $z.Open()
             try {
                 $buffer = New-Object byte[] 65536
@@ -491,7 +509,7 @@ function Assert-VllmReleaseCanonicalZip {
         $expectedNames = @($Context.Members | ForEach-Object { $_.RelativePath })
         if ($actualNames.Count -ne $expectedNames.Count) { throw 'Release ZIP member count mismatch.' }
         for ($i=0; $i -lt $expectedNames.Count; $i++) {
-            if ([string]$actualNames[$i] -ne [string]$expectedNames[$i]) { throw "Release ZIP ordering/member mismatch at index $i." }
+            if (-not (Test-VllmReleaseOrdinalEqual ([string]$actualNames[$i]) ([string]$expectedNames[$i]))) { throw "Release ZIP ordering/member mismatch at index $i." }
         }
         $seen = @{}
         for ($i=0; $i -lt $zip.Entries.Count; $i++) {
@@ -605,7 +623,7 @@ function Read-VllmReleaseChecksums {
     $sortedNames = Get-VllmReleaseOrdinalStrings -Values $inputNames.ToArray()
     if ($sortedNames.Count -ne $inputNames.Count) { throw 'SHA256SUMS ordering check failed.' }
     for ($i=0; $i -lt $sortedNames.Count; $i++) {
-        if ([string]$sortedNames[$i] -ne [string]$inputNames[$i]) { throw 'SHA256SUMS entries are not in canonical ordinal order.' }
+        if (-not (Test-VllmReleaseOrdinalEqual ([string]$sortedNames[$i]) ([string]$inputNames[$i]))) { throw 'SHA256SUMS entries are not in canonical ordinal order.' }
     }
     return $map
 }
@@ -614,8 +632,8 @@ function Assert-VllmReleaseIndex {
     param([Parameter(Mandatory)]$Index,[Parameter(Mandatory)]$Context,[Parameter(Mandatory)]$Wheel,[Parameter(Mandatory)]$Bundle)
 
     Assert-VllmReleaseExactProperties -Value $Index -Expected @('schema_version','component','platform','release','tag','project_commit','release_manifest','runtime_manifest','upstream','windows_patchset','wheel','bundle','checksums','preparation') -Label 'Release index'
-    if ([int]$Index.schema_version -ne 1 -or [string]$Index.component -ne 'vllm-windows-native-release-index') { throw 'Release index identity is unsupported.' }
-    if ([string]$Index.platform -ne [string]$Context.Release.platform -or [string]$Index.release -ne [string]$Context.Release.release -or [string]$Index.tag -ne [string]$Context.Tag -or [string]$Index.project_commit -ne [string]$Context.Snapshot.Commit) {
+    if ([int]$Index.schema_version -ne 1 -or -not (Test-VllmReleaseOrdinalEqual -Actual ([string]$Index.component) -Expected 'vllm-windows-native-release-index')) { throw 'Release index identity is unsupported.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.platform) ([string]$Context.Release.platform)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.release) ([string]$Context.Release.release)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.tag) ([string]$Context.Tag)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.project_commit) ([string]$Context.Snapshot.Commit))) {
         throw 'Release index project/release identity mismatch.'
     }
 
@@ -625,29 +643,31 @@ function Assert-VllmReleaseIndex {
     )) {
         $value=$pair[0];$expected=$pair[1];$label=[string]$pair[2]
         Assert-VllmReleaseExactProperties -Value $value -Expected @('path','size_bytes','sha256') -Label "Release index $label"
-        if ([string]$value.path -ne [string]$expected.RelativePath -or [int64]$value.size_bytes -ne [int64]$expected.Size -or [string]$value.sha256 -ne [string]$expected.Sha256) { throw "Release index $label identity mismatch." }
+        if (-not (Test-VllmReleaseOrdinalEqual ([string]$value.path) ([string]$expected.RelativePath)) -or [int64]$value.size_bytes -ne [int64]$expected.Size -or -not (Test-VllmReleaseOrdinalEqual ([string]$value.sha256) ([string]$expected.Sha256))) { throw "Release index $label identity mismatch." }
     }
 
     Assert-VllmReleaseExactProperties -Value $Index.wheel -Expected @('filename','version','size_bytes','sha256','python_tag','abi_tag','platform_tag','native_extension_count','native_extensions') -Label 'Release index wheel'
-    if ([string]$Index.wheel.filename -ne [string]$Wheel.Filename -or [int64]$Index.wheel.size_bytes -ne [int64]$Wheel.Size -or [string]$Index.wheel.sha256 -ne [string]$Wheel.Sha256) { throw 'Release index wheel file identity mismatch.' }
-    if ([string]$Index.wheel.version -ne [string]$Context.Runtime.project_wheel.version -or [string]$Index.wheel.python_tag -ne [string]$Context.Runtime.project_wheel.python_tag -or [string]$Index.wheel.abi_tag -ne [string]$Context.Runtime.project_wheel.abi_tag -or [string]$Index.wheel.platform_tag -ne [string]$Context.Runtime.project_wheel.platform_tag) { throw 'Release index wheel metadata mismatch.' }
-    $indexNative = Get-VllmReleaseOrdinalStrings -Values @($Index.wheel.native_extensions)
-    if ([int]$Index.wheel.native_extension_count -ne @($Context.NativeExtensions).Count -or @(Compare-Object -ReferenceObject @($Context.NativeExtensions) -DifferenceObject @($indexNative)).Count -ne 0) { throw 'Release index native extension set mismatch.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.wheel.filename) ([string]$Wheel.Filename)) -or [int64]$Index.wheel.size_bytes -ne [int64]$Wheel.Size -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.wheel.sha256) ([string]$Wheel.Sha256))) { throw 'Release index wheel file identity mismatch.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.wheel.version) ([string]$Context.Runtime.project_wheel.version)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.wheel.python_tag) ([string]$Context.Runtime.project_wheel.python_tag)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.wheel.abi_tag) ([string]$Context.Runtime.project_wheel.abi_tag)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.wheel.platform_tag) ([string]$Context.Runtime.project_wheel.platform_tag))) { throw 'Release index wheel metadata mismatch.' }
+    $indexNative = @($Index.wheel.native_extensions)
+    if ([int]$Index.wheel.native_extension_count -ne @($Context.NativeExtensions).Count) { throw 'Release index native extension count mismatch.' }
+    Assert-VllmReleaseOrdinalSequence -Actual $indexNative -Expected @($Context.NativeExtensions) -Label 'Release index native extension set'
 
     Assert-VllmReleaseExactProperties -Value $Index.bundle -Expected @('filename','size_bytes','sha256') -Label 'Release index bundle'
-    if ([string]$Index.bundle.filename -ne [string]$Context.BundleFilename -or [int64]$Index.bundle.size_bytes -ne [int64]$Bundle.Size -or [string]$Index.bundle.sha256 -ne [string]$Bundle.Sha256) { throw 'Release index bundle identity mismatch.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.bundle.filename) ([string]$Context.BundleFilename)) -or [int64]$Index.bundle.size_bytes -ne [int64]$Bundle.Size -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.bundle.sha256) ([string]$Bundle.Sha256))) { throw 'Release index bundle identity mismatch.' }
 
     Assert-VllmReleaseExactProperties -Value $Index.checksums -Expected @('filename','algorithm','format') -Label 'Release index checksums'
-    if ([string]$Index.checksums.filename -ne 'SHA256SUMS' -or [string]$Index.checksums.algorithm -ne 'SHA256' -or [string]$Index.checksums.format -ne 'sha256-two-space-v1') { throw 'Release index checksum contract mismatch.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.checksums.filename) 'SHA256SUMS') -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.checksums.algorithm) 'SHA256') -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.checksums.format) 'sha256-two-space-v1')) { throw 'Release index checksum contract mismatch.' }
 
     Assert-VllmReleaseExactProperties -Value $Index.preparation -Expected @('source_commit','tool_path') -Label 'Release index preparation'
-    if ([string]$Index.preparation.source_commit -ne [string]$Context.Snapshot.Commit -or [string]$Index.preparation.tool_path -ne 'release.ps1') { throw 'Release index preparation identity mismatch.' }
+    if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.preparation.source_commit) ([string]$Context.Snapshot.Commit)) -or -not (Test-VllmReleaseOrdinalEqual ([string]$Index.preparation.tool_path) 'release.ps1')) { throw 'Release index preparation identity mismatch.' }
 
     Assert-VllmReleaseExactProperties -Value $Index.upstream -Expected @('repository','tag','commit') -Label 'Release index upstream'
     Assert-VllmReleaseExactProperties -Value $Index.windows_patchset -Expected @('implementation_commit','tree','patch_sha256') -Label 'Release index Windows patchset'
-    foreach ($name in @('repository','tag','commit')) { if ([string]$Index.upstream.$name -ne [string]$Context.Release.upstream.$name) { throw 'Release index upstream identity mismatch.' } }
+    foreach ($name in @('repository','tag','commit')) { if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.upstream.$name) ([string]$Context.Release.upstream.$name))) { throw 'Release index upstream identity mismatch.' } }
     foreach ($name in @('implementation_commit','tree','patch_sha256')) {
-        if (([string]$Index.windows_patchset.$name).ToUpperInvariant() -ne ([string]$Context.Release.windows_patchset.$name).ToUpperInvariant()) { throw 'Release index Windows patchset identity mismatch.' }
+        $expectedPatchValue = if ($name -eq 'patch_sha256') { ([string]$Context.Release.windows_patchset.$name).ToUpperInvariant() } else { [string]$Context.Release.windows_patchset.$name }
+        if (-not (Test-VllmReleaseOrdinalEqual ([string]$Index.windows_patchset.$name) $expectedPatchValue)) { throw 'Release index Windows patchset identity mismatch.' }
     }
 }
 
@@ -673,7 +693,7 @@ function Assert-VllmOfflineRelease {
         $actualFiles = @(Get-ChildItem -LiteralPath $root -Force)
         if (@($actualFiles | Where-Object { $_.PSIsContainer -or $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -ne 0) { throw 'Release artifacts directory contains a directory or reparse point.' }
         $actualNames = Get-VllmReleaseOrdinalStrings -Values @($actualFiles | ForEach-Object { $_.Name })
-        if (@(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames).Count -ne 0) { throw 'Release artifacts directory does not contain exactly the expected four assets.' }
+        Assert-VllmReleaseOrdinalSequence -Actual $actualNames -Expected $expectedNames -Label 'Release artifact filename set'
 
         $wheel = Assert-VllmReleaseWheel -WheelPath (Join-Path $root ([string]$context.Release.wheel.filename)) -Context $context
         $bundlePath = Join-Path $root ([string]$context.BundleFilename)
@@ -695,7 +715,7 @@ function Assert-VllmOfflineRelease {
             $key = $name.ToLowerInvariant()
             if (-not $checksums.ContainsKey($key)) { throw "SHA256SUMS is missing asset: $name" }
             $actual = Get-VllmReleaseFileIdentity -Path (Join-Path $root $name)
-            if ([string]$checksums[$key].Filename -ne $name -or [string]$checksums[$key].Sha256 -ne [string]$actual.Sha256) { throw "SHA256SUMS identity mismatch: $name" }
+            if (-not (Test-VllmReleaseOrdinalEqual ([string]$checksums[$key].Filename) $name) -or -not (Test-VllmReleaseOrdinalEqual ([string]$checksums[$key].Sha256) ([string]$actual.Sha256))) { throw "SHA256SUMS identity mismatch: $name" }
         }
 
         return [pscustomobject][ordered]@{
