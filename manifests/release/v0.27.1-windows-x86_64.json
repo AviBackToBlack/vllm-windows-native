@@ -97,8 +97,8 @@
     },
     {
       "path": "scripts/common.ps1",
-      "size_bytes": 37064,
-      "sha256": "40447AEBF3EA297DC1F7B6CE915CB4347C2159943915675D88F4577B69F0ACDB"
+      "size_bytes": 37772,
+      "sha256": "67E544DFF57B95BC77389BFA5C18EEA764FF178995D1CBD3CE85C30B3C7FE150"
     },
     {
       "path": "scripts/lifecycle.ps1",
