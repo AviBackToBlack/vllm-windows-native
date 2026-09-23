@@ -108,9 +108,11 @@ function Assert-VllmReleaseGitRegularBlob {
 function Get-VllmReleaseSnapshotFile {
     param([Parameter(Mandatory)]$Snapshot,[Parameter(Mandatory)][string]$RelativePath)
     $relative = Assert-VllmReleaseCanonicalPath -RelativePath $RelativePath -Label 'Snapshot release member'
-    [void](Assert-VllmReleaseGitRegularBlob -Repository $Snapshot.Repository -Commit $Snapshot.Commit -RelativePath $relative)
+    $blob=Assert-VllmReleaseGitRegularBlob -Repository $Snapshot.Repository -Commit $Snapshot.Commit -RelativePath $relative
     $path = Join-Path $Snapshot.Root ($relative.Replace('/','\'))
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Snapshot release member is missing after git archive: $relative" }
+    $materializedObject=Invoke-Git -Repository $Snapshot.Repository -Arguments @('hash-object','--no-filters',$path) -Capture
+    if ([string]$materializedObject -ne [string]$blob.ObjectId) { throw "Materialized release member bytes differ from the tagged Git blob: $relative" }
     $entry = Get-VllmPathEntryInfo -Path $path
     if ($entry.IsDirectory -or $entry.IsReparsePoint) { throw "Snapshot release member is not a regular non-reparse file: $relative" }
     return [pscustomobject][ordered]@{
@@ -463,17 +465,25 @@ function Assert-VllmReleaseRawZipProfile {
     $u=New-Object Text.UTF8Encoding($false,$true);$p=[int64]$co
     for($n=0;$n-lt$count;$n++){
         if($p+46-gt$e-or[BitConverter]::ToUInt32($b,[int]$p)-ne[uint32]0x02014b50){throw "Release ZIP central record invalid at index $n."}
-        $flags=[BitConverter]::ToUInt16($b,[int]$p+8);$method=[BitConverter]::ToUInt16($b,[int]$p+10);$time=[BitConverter]::ToUInt16($b,[int]$p+12);$date=[BitConverter]::ToUInt16($b,[int]$p+14)
-        $nl=[int][BitConverter]::ToUInt16($b,[int]$p+28);$xl=[int][BitConverter]::ToUInt16($b,[int]$p+30);$ml=[int][BitConverter]::ToUInt16($b,[int]$p+32);$ext=[BitConverter]::ToUInt32($b,[int]$p+38);$lo=[int64][BitConverter]::ToUInt32($b,[int]$p+42)
-        if($flags-ne0x0800-or$method-ne0-or$time-ne0-or$date-ne33-or$xl-ne0-or$ml-ne0-or$ext-ne0){throw "Release ZIP central profile is not canonical at index $n."}
+        $made=[BitConverter]::ToUInt16($b,[int]$p+4);$needed=[BitConverter]::ToUInt16($b,[int]$p+6);$flags=[BitConverter]::ToUInt16($b,[int]$p+8);$method=[BitConverter]::ToUInt16($b,[int]$p+10);$time=[BitConverter]::ToUInt16($b,[int]$p+12);$date=[BitConverter]::ToUInt16($b,[int]$p+14);$compressed=[BitConverter]::ToUInt32($b,[int]$p+20);$size=[BitConverter]::ToUInt32($b,[int]$p+24)
+        $nl=[int][BitConverter]::ToUInt16($b,[int]$p+28);$xl=[int][BitConverter]::ToUInt16($b,[int]$p+30);$ml=[int][BitConverter]::ToUInt16($b,[int]$p+32);$disk=[BitConverter]::ToUInt16($b,[int]$p+34);$internal=[BitConverter]::ToUInt16($b,[int]$p+36);$ext=[BitConverter]::ToUInt32($b,[int]$p+38);$lo=[int64][BitConverter]::ToUInt32($b,[int]$p+42)
+        if($made-ne20-or$needed-ne20-or$flags-ne0x0800-or$method-ne0-or$time-ne0-or$date-ne33-or$compressed-ne$size-or$xl-ne0-or$ml-ne0-or$disk-ne0-or$internal-ne0-or$ext-ne0){throw "Release ZIP central profile is not canonical at index $n."}
         $name=$u.GetString($b,[int]$p+46,$nl);if($name-ne[string]$Context.Members[$n].RelativePath){throw "Release ZIP raw member mismatch at index $n."}
-        if($lo+30-gt$co-or[BitConverter]::ToUInt32($b,[int]$lo)-ne[uint32]0x04034b50-or[BitConverter]::ToUInt16($b,[int]$lo+6)-ne0x0800-or[BitConverter]::ToUInt16($b,[int]$lo+8)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+10)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+12)-ne33-or[BitConverter]::ToUInt16($b,[int]$lo+28)-ne0){throw "Release ZIP local profile is not canonical: $name"}
+        if($lo+30-gt$co-or[BitConverter]::ToUInt32($b,[int]$lo)-ne[uint32]0x04034b50-or[BitConverter]::ToUInt16($b,[int]$lo+4)-ne20-or[BitConverter]::ToUInt16($b,[int]$lo+6)-ne0x0800-or[BitConverter]::ToUInt16($b,[int]$lo+8)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+10)-ne0-or[BitConverter]::ToUInt16($b,[int]$lo+12)-ne33-or[BitConverter]::ToUInt32($b,[int]$lo+18)-ne$size-or[BitConverter]::ToUInt32($b,[int]$lo+22)-ne$size-or[BitConverter]::ToUInt16($b,[int]$lo+26)-ne$nl-or[BitConverter]::ToUInt16($b,[int]$lo+28)-ne0){throw "Release ZIP local profile is not canonical: $name"}
+        if($u.GetString($b,[int]$lo+30,$nl)-ne$name){throw "Release ZIP local/central names disagree: $name"}
         $p+=46+$nl
     }
     if($p-ne$e){throw 'Release ZIP parsed central-directory length mismatch.'}
 }
 function Assert-VllmReleaseCanonicalZip {
     param([Parameter(Mandatory)]$Context,[Parameter(Mandatory)][string]$Path)
+    $canonicalTemp=Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-canonical-'+[guid]::NewGuid().ToString('N')+'.zip')
+    try {
+        Write-VllmReleaseStoredZip -Context $Context -Path $canonicalTemp
+        $expectedIdentity=Get-VllmReleaseFileIdentity -Path $canonicalTemp
+        $actualIdentity=Get-VllmReleaseFileIdentity -Path $Path
+        if ($actualIdentity.Size -ne $expectedIdentity.Size -or $actualIdentity.Sha256 -ne $expectedIdentity.Sha256) { throw 'Release ZIP bytes are not the exact canonical tagged-commit bundle.' }
+    } finally { Remove-Item -LiteralPath $canonicalTemp -Force -ErrorAction SilentlyContinue }
     Assert-VllmReleaseRawZipProfile -Context $Context -Path $Path
     $zip = [IO.Compression.ZipFile]::OpenRead($Path)
     try {
@@ -672,9 +682,10 @@ function Assert-VllmOfflineRelease {
 
         $indexPath = Join-Path $root 'release-index.json'
         $indexText=[IO.File]::ReadAllText($indexPath,[Text.Encoding]::UTF8)
+        $expectedIndex=Get-VllmReleaseIndex -Context $context -Wheel $wheel -Bundle $bundle
+        $canonicalIndexText=(ConvertTo-VllmReleaseCanonicalJsonValue -Value $expectedIndex)+[char]10
+        if (-not $indexText.Equals($canonicalIndexText,[StringComparison]::Ordinal)) { throw 'release-index.json does not exactly match the canonical index for these verified inputs.' }
         try { $index = $indexText | ConvertFrom-Json } catch { throw 'release-index.json is invalid JSON.' }
-        $canonicalIndexText=(ConvertTo-VllmReleaseCanonicalJsonValue -Value $index)+[char]10
-        if (-not $indexText.Equals($canonicalIndexText,[StringComparison]::Ordinal)) { throw 'release-index.json is not canonical deterministic JSON.' }
         Assert-VllmReleaseIndex -Index $index -Context $context -Wheel $wheel -Bundle $bundle
 
         $checksums = Read-VllmReleaseChecksums -Path (Join-Path $root 'SHA256SUMS')
