@@ -200,7 +200,7 @@ Prepare the four deterministic offline assets from the accepted caller-supplied 
   -ArtifactsDirectory '.\artifacts\release'
 ```
 
-`Prepare` requires a clean worktree and the selected project commit to be the checked-out `HEAD`. The output directory must be empty and resolve without filesystem aliases/reparse points. The generated set is exactly the wheel copied byte-for-byte, `vllm-windows-native-<release>.zip`, `release-index.json`, and `SHA256SUMS`. The ZIP uses the canonical STORE profile defined by the SM-19 design and is byte-identical across the supported PowerShell 7 / Windows PowerShell 5.1 preparation paths.
+`Prepare` requires a clean worktree and the selected project commit to be the checked-out `HEAD`. The output directory must be empty and resolve without filesystem aliases/reparse points. Concurrent preparation into the same output directory is serialized by an exclusive persistent sibling `.\.<output-leaf>.vllm-release-prepare.lock` coordination file, which is outside the four release assets. The generated set is exactly the wheel copied byte-for-byte, `vllm-windows-native-<release>.zip`, `release-index.json`, and `SHA256SUMS`. The ZIP uses the canonical STORE profile defined by the SM-19 design and is byte-identical across the supported PowerShell 7 / Windows PowerShell 5.1 preparation paths.
 
 Verify an existing offline set independently:
 

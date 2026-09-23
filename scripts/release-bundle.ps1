@@ -762,6 +762,70 @@ function Assert-VllmOfflineRelease {
     } finally { Close-VllmReleaseGitSnapshot -Snapshot $snapshot }
 }
 
+function Enter-VllmReleasePreparationLock {
+    param([Parameter(Mandatory)][string]$ArtifactsDirectory)
+
+    $root = Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($ArtifactsDirectory))
+    $parent = [IO.Path]::GetDirectoryName($root)
+    $leaf = [IO.Path]::GetFileName($root)
+    if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($leaf)) {
+        throw "Release artifacts directory must have a parent and leaf name: $root"
+    }
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "Release artifacts parent directory is missing: $parent"
+    }
+
+    $lockName = '.' + $leaf + '.vllm-release-prepare.lock'
+    $lockPath = [IO.Path]::Combine($parent,$lockName)
+    try {
+        $stream = [IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+    } catch [IO.IOException] {
+        throw "Another offline release preparation is active for '$root'."
+    } catch [UnauthorizedAccessException] {
+        throw "Release preparation lock cannot be acquired safely: $lockPath"
+    }
+
+    try {
+        $parentPhysical = Get-VllmPhysicalCandidatePath -Path $parent -Format Guid
+        $expectedPhysical = Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($parentPhysical,$lockName))
+        $actualPhysical = Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stream.SafeFileHandle))
+        if (-not $actualPhysical.Equals($expectedPhysical,[StringComparison]::OrdinalIgnoreCase)) {
+            throw "Release preparation lock resolves outside expected location '$lockPath': $actualPhysical"
+        }
+        $linkCount = [VllmWindowsNative.NativePath]::GetLinkCount($stream.SafeFileHandle)
+        if ($linkCount -ne 1) {
+            throw "Release preparation lock has unexpected hard-link count $linkCount; refusing to use it: $lockPath"
+        }
+
+        $stream.SetLength(0)
+        $writer = New-Object IO.StreamWriter($stream,(New-Object Text.UTF8Encoding($false)),1024,$true)
+        try {
+            $writer.WriteLine('operation=release-prepare')
+            $writer.WriteLine("root=$root")
+            $writer.WriteLine("pid=$PID")
+            $writer.WriteLine("started=$((Get-Date).ToString('o'))")
+            $writer.Flush()
+            $stream.Flush()
+        } finally { $writer.Dispose() }
+
+        return [pscustomobject][ordered]@{
+            Stream=$stream
+            Path=$lockPath
+            Root=$root
+        }
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
+function Exit-VllmReleasePreparationLock {
+    param([Parameter(Mandatory)]$Lock)
+    if ($null -ne $Lock.Stream) { $Lock.Stream.Dispose() }
+    # Deliberately retain the sidecar coordination file. Reusing one stable path
+    # avoids a close/delete/recreate race while keeping it outside release assets.
+}
+
 function Write-VllmOfflineRelease {
     param(
         [Parameter(Mandatory)][string]$Repository,
@@ -776,11 +840,19 @@ function Write-VllmOfflineRelease {
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Release artifacts path is not a directory: $root" }
         $rootEntry=Get-VllmPathEntryInfo -Path $root
         if ($rootEntry.IsReparsePoint) { throw "Release artifacts directory must not be a reparse point: $root" }
-        $entries = @(Get-ChildItem -LiteralPath $root -Force)
-        if ($entries.Count -gt 0) { throw "Release artifacts directory is not empty: $root" }
     } else { New-Item -ItemType Directory -Path $root -Force | Out-Null }
     $rootPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
     if (-not $rootPhysical.Equals($root,[StringComparison]::OrdinalIgnoreCase)) { throw "Release artifacts directory resolves through a filesystem alias: $root -> $rootPhysical" }
+
+    $prepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $root
+    try {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Release artifacts directory disappeared while acquiring preparation lock: $root" }
+        $rootEntry=Get-VllmPathEntryInfo -Path $root
+        if ($rootEntry.IsReparsePoint) { throw "Release artifacts directory became a reparse point: $root" }
+        $rootPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
+        if (-not $rootPhysical.Equals($root,[StringComparison]::OrdinalIgnoreCase)) { throw "Release artifacts directory changed filesystem identity while acquiring preparation lock: $root -> $rootPhysical" }
+        $entries=@(Get-ChildItem -LiteralPath $root -Force)
+        if ($entries.Count -gt 0) { throw "Release artifacts directory is not empty: $root" }
 
     $createdPaths=New-Object System.Collections.Generic.List[string]
     $snapshot = Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
@@ -826,4 +898,5 @@ function Write-VllmOfflineRelease {
         for($i=$createdPaths.Count-1;$i-ge0;$i--){if(Test-Path -LiteralPath $createdPaths[$i] -PathType Leaf){Remove-Item -LiteralPath $createdPaths[$i] -Force -ErrorAction SilentlyContinue}}
         throw
     } finally { Close-VllmReleaseGitSnapshot -Snapshot $snapshot }
+    } finally { Exit-VllmReleasePreparationLock -Lock $prepareLock }
 }

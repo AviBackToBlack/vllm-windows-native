@@ -33,6 +33,7 @@ function Test-ExpectedFailure {
         'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
         'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
         'nonempty-output-refusal'='Release artifacts directory is not empty'
+        'prepare-concurrent-lock'='Another offline release preparation is active'
         'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
         'prepare-fault-after-bundle'='FAULT_INJECTED:AfterBundle'
@@ -290,6 +291,18 @@ try {
     $badTagSnapshot=Get-VllmReleaseGitSnapshot -Repository $badTagRepo -Commit $badTagCommit
     try{$badTagContext=Get-VllmReleaseContext -Snapshot $badTagSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badTagWheel -Context $badTagContext|Out-Null} 'wheel-tag-substring'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badTagSnapshot}
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out1 | Out-Null } 'nonempty-output-refusal'
+    $concurrentOut=Join-Path $root 'concurrent-output'
+    $heldPrepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $concurrentOut
+    $heldLockPath=[string]$heldPrepareLock.Path
+    try{
+        Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $concurrentOut|Out-Null} 'prepare-concurrent-lock'
+        if((Test-Path -LiteralPath $concurrentOut) -and @(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne0){throw 'Losing concurrent preparation mutated the release artifacts directory.'}
+    }finally{Exit-VllmReleasePreparationLock -Lock $heldPrepareLock}
+    $concurrentRetry=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $concurrentOut
+    if($concurrentRetry.bundle_sha256-ne$r1.bundle_sha256){throw 'Serialized preparation retry produced a different bundle identity.'}
+    if(@(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne4){throw 'Serialized preparation output does not contain exactly four assets.'}
+    if(-not(Test-Path -LiteralPath $heldLockPath -PathType Leaf)){throw 'Release preparation coordination sidecar was not retained for safe reuse.'}
+    Write-Host 'RELEASE_PREPARE_SERIALIZATION_OK'
     $faultOut=Join-Path $root 'fault-output'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint DuringWheelCopy|Out-Null} 'prepare-fault-during-wheel'
     if(@(Get-ChildItem -LiteralPath $faultOut -Force).Count-ne0){throw 'DuringWheelCopy failure left a partial wheel in release artifacts.'}
