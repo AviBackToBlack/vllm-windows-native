@@ -2,6 +2,8 @@
 
 Status: implemented through SM-18F. This document records the accepted transaction semantics implemented by `update.ps1`. SM-18F trusted coverage is provided by `.github/workflows/install-orchestration.yml` on `windows-2025`, which runs `tests/install-orchestration.ps1` in both PowerShell 7 and Windows PowerShell 5.1, including production update commit and crash-recovery acceptance.
 
+Sections 1–16 retain the accepted design rationale but are written to describe the implemented v1 behavior rather than an unshipped future updater. Section 17 records the delivered slices.
+
 ## 1. Goal
 
 `update.ps1` will perform an explicit, provenance-preserving transition from one fully recorded vLLM Windows Native release to another without adopting unknown content or mutating the active runtime in place.
@@ -17,7 +19,7 @@ The current repository has these constraints:
 - the canonical repository currently contains only one real release manifest, `v0.27.1-windows-x86_64.json`, so cross-release regression must initially use synthetic release fixtures;
 - `bootstrap-dependencies.ps1` already demonstrates the preferred persisted transaction-receipt / staging / backup / recovery pattern;
 - the Python, uv, and base-venv bootstraps have local rollback behavior, but that is not a substitute for a top-level update transaction spanning the whole release;
-- `start.ps1` currently does not hold the lifecycle operation lock while the server is running. Destructive update activation MUST NOT ship until start/maintenance coordination closes that race.
+- At the SM-18 design gate, `start.ps1` did not yet hold the lifecycle operation lock while the server was running; SM-18A closed that race before destructive update activation shipped.
 
 ## 3. Non-goals for the first updater
 
@@ -34,9 +36,9 @@ The first updater will not:
 
 A caller selects an exact target release manifest. A transition to an older or newer recorded release is therefore explicit; the updater does not guess ordering from release names.
 
-## 4. Proposed command surface
+## 4. Accepted command surface
 
-The implementation should follow the installer input model:
+The implemented updater follows the installer input model:
 
 - `-ReleaseManifestPath` selects the exact target release manifest;
 - `-WheelPath` supplies the exact target wheel named and hashed by that manifest;
@@ -59,7 +61,7 @@ Top-level update follows the existing lifecycle order:
 3. keep both locks through source validation, recovery, planning, activation, install-state commit, required synchronous validation, and synchronous cleanup;
 4. release locks only after rollback is complete, or after a committed target has either completed cleanup or durably retained its transaction record for later cleanup recovery.
 
-Before destructive update activation is implemented, `start.ps1` MUST participate in lifecycle serialization. The preferred v1 behavior is for a normal foreground start to hold `.vllm-operation.lock` for the lifetime of the managed server process. `-ValidateOnly` may acquire and release it only for validation.
+SM-18A established lifecycle serialization before destructive update activation: a normal foreground managed start holds `.vllm-operation.lock` for the lifetime of the server process, while `-ValidateOnly` acquires and releases it only for validation.
 
 This turns a running managed server into an OS-level maintenance conflict instead of relying only on a CIM process scan. Process inspection remains defense in depth for visible managed executables and diagnostics, not the sole race-prevention mechanism.
 
@@ -73,7 +75,7 @@ Managed starts are non-blocking with respect to the operation lock: if another s
 
 A pending update is lifecycle-wide maintenance state, not private updater scratch space. Any non-update lifecycle entry that observes `state\update-transaction.json` at all — valid, malformed, or undecodable — MUST refuse without needing to understand its schema and direct the operator to `update.ps1`. Presence of the fixed reserved subtree `work\update-transaction` also causes unconditional refusal. `start.ps1 -ValidateOnly` in managed mode follows the same rule: it may report the maintenance condition, but it does not perform ordinary launch validation through it. `update.ps1` is the only normal lifecycle entry allowed to interpret, recover, or clean this state.
 
-The pending-record/reserved-subtree check MUST occur, or be repeated, after the operation lock is held so that classification and refusal are serialized against transaction creation. SM-18A may add these forward-compatible presence checks before SM-18D can create the journal; until then they are normally absent but already define the safe behavior for future releases.
+The pending-record/reserved-subtree check occurs after the operation lock is held so that classification and refusal are serialized against transaction creation. SM-18A added these forward-compatible presence checks before SM-18D introduced journal creation.
 
 ## 6. Source-generation proof
 
@@ -134,7 +136,7 @@ and a fixed transaction workspace root at:
 
 `work\update-transaction`
 
-Future release manifests that ship the updater MUST reserve both as lifecycle-owned metadata.
+Release manifests that ship the updater MUST reserve both as lifecycle-owned metadata.
 
 Reserved update metadata and the fixed transaction workspace are lifecycle-owned independently of the frozen source release's `managed_paths`. This is required for the first transition from v0.27.1, whose manifest predates the updater and cannot retroactively list them. The journal is the ownership proof for exact descendants beneath `work\update-transaction`; any non-update entry refuses on presence of the journal or workspace root without parsing either, while `update.ps1` validates their exact relationship before recovery or cleanup.
 
