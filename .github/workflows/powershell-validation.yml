@@ -53,6 +53,14 @@ jobs:
         shell: pwsh
         run: ./tests/release-manifest.ps1
 
+      - name: Validate release signing and attestation contract in PowerShell 7 and Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/release-verification.ps1
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 release verification contract failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/release-verification.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 release verification contract failed with exit $LASTEXITCODE." }
+
       - name: Validate deterministic release bundle in PowerShell 7 and Windows PowerShell 5.1
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh

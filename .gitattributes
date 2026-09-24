@@ -7,3 +7,4 @@ tests/fixtures/*.lock.txt text eol=lf
 *.psd1 text eol=lf
 *.md text eol=lf
 LICENSE text eol=lf
+config/release-allowed-signers text eol=lf
