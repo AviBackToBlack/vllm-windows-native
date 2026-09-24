@@ -160,7 +160,7 @@ function Assert-VllmReleaseAttestationJson {
     if ($null -eq $s) { throw 'GitHub release verification output is missing the verified statement.' }
     if (-not ([string]$s._type).Equals('https://in-toto.io/Statement/v1',[StringComparison]::Ordinal)) { throw 'GitHub release attestation statement type is unsupported.' }
     if (-not ([string]$s.predicateType).Equals('https://in-toto.io/attestation/release/v0.2',[StringComparison]::Ordinal)) { throw 'GitHub release attestation predicate type is unsupported.' }
-    if (-not ([string]$s.predicate.repository).Equals($RepositorySlug,[StringComparison]::Ordinal) -or
+    if (-not ([string]$s.predicate.repository).Equals($RepositorySlug,[StringComparison]::OrdinalIgnoreCase) -or
         -not ([string]$s.predicate.tag).Equals($Tag,[StringComparison]::Ordinal)) {
         throw 'GitHub release attestation repository/tag identity mismatch.'
     }
@@ -187,7 +187,18 @@ function Assert-VllmReleaseAttestationJson {
     }
     if($pkg.Count-ne1){throw 'GitHub release attestation must contain exactly one package subject.'}
     if($assets.Count-ne$ExpectedAssets.Count){throw 'GitHub release attestation asset count mismatch.'}
-    if (-not ([string]$pkg[0].uri).Equals("pkg:github/$RepositorySlug@$Tag",[StringComparison]::Ordinal)) { throw 'GitHub release attestation package URI mismatch.' }
+    $packageUri=[string]$pkg[0].uri
+    $packagePrefix='pkg:github/'
+    $separator=$packageUri.LastIndexOf('@')
+    if(-not$packageUri.StartsWith($packagePrefix,[StringComparison]::Ordinal) -or $separator-le$packagePrefix.Length){
+        throw 'GitHub release attestation package URI mismatch.'
+    }
+    $packageRepository=$packageUri.Substring($packagePrefix.Length,$separator-$packagePrefix.Length)
+    $packageTag=$packageUri.Substring($separator+1)
+    if(-not$packageRepository.Equals($RepositorySlug,[StringComparison]::OrdinalIgnoreCase) -or
+       -not$packageTag.Equals($Tag,[StringComparison]::Ordinal)){
+        throw 'GitHub release attestation package URI mismatch.'
+    }
     if (-not ([string]$pkg[0].digest.sha1).Equals($ExpectedTagObject,[StringComparison]::OrdinalIgnoreCase)) { throw 'GitHub release attestation tag-object mismatch.' }
 
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -207,6 +218,30 @@ function Assert-VllmReleaseAttestationJson {
     }
 }
 
+function Invoke-VllmGhJsonCommand {
+    param(
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$FailureLabel,
+        [string]$Executable = 'gh'
+    )
+    $stderrPath=[IO.Path]::GetTempFileName()
+    $oldErrorActionPreference=$ErrorActionPreference
+    try {
+        $ErrorActionPreference='Continue'
+        $stdout=@(& $Executable @Arguments 2> $stderrPath)
+        $exitCode=$LASTEXITCODE
+        $stderr=if([IO.File]::Exists($stderrPath)){[IO.File]::ReadAllText($stderrPath).Trim()}else{''}
+    } finally {
+        $ErrorActionPreference=$oldErrorActionPreference
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+    if($exitCode-ne0){
+        $detail=if([string]::IsNullOrWhiteSpace($stderr)){('exit '+$exitCode)}else{$stderr}
+        throw ($FailureLabel+': '+$detail)
+    }
+    $stdout -join [char]10
+}
+
 function Invoke-VllmGitHubReleaseVerification {
     param(
         [Parameter(Mandatory)][string]$RepositorySlug,
@@ -215,14 +250,12 @@ function Invoke-VllmGitHubReleaseVerification {
         [Parameter(Mandatory)][string]$ArtifactsDirectory,
         [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedAssets
     )
-    $releaseJson=& gh release verify $Tag --repo $RepositorySlug --format json 2>&1
-    if($LASTEXITCODE -ne 0){throw "GitHub release attestation verification failed: $($releaseJson -join ' ')"}
-    $result=Assert-VllmReleaseAttestationJson -Json ($releaseJson -join [char]10) -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
+    $releaseJson=Invoke-VllmGhJsonCommand -Arguments @('release','verify',$Tag,'--repo',$RepositorySlug,'--format','json') -FailureLabel 'GitHub release attestation verification failed'
+    $result=Assert-VllmReleaseAttestationJson -Json $releaseJson -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
     foreach($name in $ExpectedAssets.Keys){
         $path=Join-Path ([IO.Path]::GetFullPath($ArtifactsDirectory)) ([string]$name)
-        $assetJson=& gh release verify-asset $Tag $path --repo $RepositorySlug --format json 2>&1
-        if($LASTEXITCODE -ne 0){throw "GitHub release asset verification failed for $name"}
-        $null=Assert-VllmReleaseAttestationJson -Json ($assetJson -join [char]10) -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
+        $assetJson=Invoke-VllmGhJsonCommand -Arguments @('release','verify-asset',$Tag,$path,'--repo',$RepositorySlug,'--format','json') -FailureLabel "GitHub release asset verification failed for $name"
+        $null=Assert-VllmReleaseAttestationJson -Json $assetJson -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
     }
     [pscustomobject][ordered]@{
         schema_version=1

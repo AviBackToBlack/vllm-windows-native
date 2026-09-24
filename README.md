@@ -231,9 +231,9 @@ A consumer must obtain and pin the allowed-signers file independently of the rel
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
 
-`VerifySignedTag` requires an annotated SSH-signed tag, resolves `<tag>^{commit}` to the expected commit, and invokes Git with explicit SSH-signing configuration rather than relying on the operator's global Git trust configuration.
+`VerifySignedTag` requires the signed release tag object to exist in the local clone (fetch `refs/tags/release/...` before verification if necessary). It requires an annotated SSH-signed tag, resolves `<tag>^{commit}` to the expected commit, and invokes Git with explicit SSH-signing configuration rather than relying on the operator's global Git trust configuration.
 
-After downloading the four immutable release assets, compose offline verification, signed-tag authorization, and GitHub's release attestation:
+After downloading the four immutable release assets, compose offline verification, signed-tag authorization, and GitHub's release attestation. `VerifyPublished` has the same local-tag prerequisite and additionally requires an authenticated GitHub CLI (`gh auth status` must succeed):
 
 ```powershell
 .\release.ps1 -Mode VerifyPublished `

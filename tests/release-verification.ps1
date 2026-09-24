@@ -42,7 +42,7 @@ try {
     & git -C $repo config user.email 'sm19b@example.invalid'
     [IO.File]::WriteAllText((Join-Path $repo 'fixture.txt'),'one',[Text.UTF8Encoding]::new($false))
     & git -C $repo add fixture.txt
-    & git -C $repo commit -q -m one
+    & git -C $repo -c commit.gpgsign=false commit -q -m one
     $commit1=(& git -C $repo rev-parse HEAD).Trim()
 
     $key=Join-Path $root 'fixture-key'
@@ -53,7 +53,7 @@ try {
     [IO.File]::WriteAllText($allowed,"fixture-release $($pubFields[0]) $($pubFields[1])"+[char]10,[Text.UTF8Encoding]::new($false))
     $fingerprint=Get-VllmReleaseSigningKeyFingerprint -KeyType $pubFields[0] -KeyData $pubFields[1]
 
-    & git -C $repo -c 'gpg.format=ssh' -c "user.signingkey=$key" tag -s -a release/fixture -m fixture $commit1
+    & git -C $repo -c tag.gpgSign=false -c 'gpg.format=ssh' -c "user.signingkey=$key" tag -s -a release/fixture -m fixture $commit1
     if($LASTEXITCODE-ne0){throw 'fixture signed tag creation failed.'}
     $tagObjectId=(& git -C $repo rev-parse 'refs/tags/release/fixture').Trim()
     if($tagObjectId.Equals($commit1,[StringComparison]::OrdinalIgnoreCase)){throw 'annotated tag object must differ from its peeled commit in the fixture.'}
@@ -100,12 +100,12 @@ try {
     if($LASTEXITCODE-ne0){throw 'fake PGP tag ref creation failed.'}
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fake-pgp' -ExpectedCommit $commit1 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'must contain an SSH signature'
 
-    & git -C $repo tag unsigned $commit1
+    & git -C $repo -c tag.gpgSign=false tag unsigned $commit1
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag unsigned -ExpectedCommit $commit1 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'annotated tag'
 
     [IO.File]::WriteAllText((Join-Path $repo 'fixture.txt'),'two',[Text.UTF8Encoding]::new($false))
     & git -C $repo add fixture.txt
-    & git -C $repo commit -q -m two
+    & git -C $repo -c commit.gpgsign=false commit -q -m two
     $commit2=(& git -C $repo rev-parse HEAD).Trim()
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit2 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'commit mismatch'
 
@@ -131,6 +131,10 @@ try {
     $json=Get-FixtureAttestation
     $a=Assert-VllmReleaseAttestationJson -Json $json -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets
     if($a.asset_count-ne4){throw 'attestation verifier returned wrong asset count.'}
+
+    $lowercaseRepoJson=Get-FixtureAttestation -Repository 'avibacktoblack/vllm-windows-native'
+    $lowercaseRepo=Assert-VllmReleaseAttestationJson -Json $lowercaseRepoJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets
+    if($lowercaseRepo.asset_count-ne4){throw 'case-insensitive repository binding returned wrong asset count.'}
 
     Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -Repository 'Other/repo') -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'repository/tag'
     Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -Tag 'release/other') -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'repository/tag'
@@ -160,6 +164,15 @@ try {
     $badDigestDoc.verificationResult.statement.subject[1].digest | Add-Member -NotePropertyName sha1 -NotePropertyValue ('0'*40)
     $badDigestJson=$badDigestDoc|ConvertTo-Json -Depth 10 -Compress
     Assert-Fails { Assert-VllmReleaseAttestationJson -Json $badDigestJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'asset digest schema'
+
+    $fakeGh=Join-Path $root 'fake-gh-success.cmd'
+    [IO.File]::WriteAllLines($fakeGh,@('@echo off','echo {"ok":true}','echo gh update notice 1>&2','exit /b 0'),[Text.Encoding]::ASCII)
+    $capturedJson=Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'fake gh failed' -Executable $fakeGh
+    if(-not$capturedJson.Equals('{"ok":true}',[StringComparison]::Ordinal)){throw "stdout/stderr separation failed: $capturedJson"}
+
+    $fakeGhFail=Join-Path $root 'fake-gh-fail.cmd'
+    [IO.File]::WriteAllLines($fakeGhFail,@('@echo off','echo bad gh diagnostic 1>&2','exit /b 7'),[Text.Encoding]::ASCII)
+    Assert-Fails { Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'fake gh failed' -Executable $fakeGhFail } 'bad gh diagnostic'
 
     Write-Host 'RELEASE_VERIFICATION_CONTRACT_OK'
 }
