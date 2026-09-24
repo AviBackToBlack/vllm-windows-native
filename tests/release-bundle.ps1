@@ -45,6 +45,7 @@ function Test-ExpectedFailure {
         'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
         'prepare-fault-after-bundle'='FAULT_INJECTED:AfterBundle'
+        'prepare-postverify-tamper'='Provided release wheel size/SHA-256 mismatch.'
         'prepare-target-race'='Release artifacts path appeared before atomic publish:'
         'wheel-tamper'='Provided release wheel size/SHA-256 mismatch.'
         'index-tamper'='release-index.json does not exactly match the canonical index'
@@ -440,6 +441,14 @@ try {
     Assert-TestReleaseOutputClean -Path $faultOut -Label 'AfterWheelCopy failure'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint AfterBundle|Out-Null} 'prepare-fault-after-bundle'
     Assert-TestReleaseOutputClean -Path $faultOut -Label 'AfterBundle failure'
+
+    $postVerifyTamperOut=Join-Path $root 'postverify-tamper-output'
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $postVerifyTamperOut -FaultPoint AfterPrePublishVerifyTamper|Out-Null} 'prepare-postverify-tamper'
+    if(Test-Path -LiteralPath $postVerifyTamperOut){throw 'Post-verify tamper rollback left the requested final output path.'}
+    foreach($prefix in @('.postverify-tamper-output.vllm-release-stage-','.postverify-tamper-output.vllm-release-rejected-')){
+        if(@(Get-ChildItem -LiteralPath $root -Force -Directory|Where-Object {$_.Name.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)}).Count-ne0){throw "Post-verify tamper rollback leaked private directory prefix: $prefix"}
+    }
+    Write-Host 'RELEASE_POSTVERIFY_ROLLBACK_OK'
 
     $raceOut=Join-Path $root 'target-race-output'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $raceOut -FaultPoint BeforePublishTargetAppears|Out-Null} 'prepare-target-race'

@@ -715,13 +715,24 @@ function Assert-VllmReleaseRawZipProfile {
 }
 function Assert-VllmReleaseCanonicalZip {
     param([Parameter(Mandatory)]$Context,[Parameter(Mandatory)][string]$Path)
-    $canonicalTemp=Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-canonical-'+[guid]::NewGuid().ToString('N')+'.zip')
+    $canonicalRoot=Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-canonical-'+[guid]::NewGuid().ToString('N'))
+    $canonicalGuard=$null;$canonicalPhysical=$null;$canonicalIdentity=$null
+    [void][IO.Directory]::CreateDirectory($canonicalRoot)
+    $canonicalEntry=Get-VllmPathEntryInfo -Path $canonicalRoot
+    if(-not$canonicalEntry.Exists-or-not$canonicalEntry.IsDirectory-or$canonicalEntry.IsReparsePoint){throw "Canonical ZIP temp root is not a regular directory: $canonicalRoot"}
+    $canonicalPhysical=Get-VllmCanonicalExistingPath -Path $canonicalRoot -Format Dos
+    $canonicalIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($canonicalRoot)
+    $canonicalGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($canonicalRoot)
+    $canonicalTemp=Join-Path $canonicalRoot 'canonical.zip'
     try {
         Write-VllmReleaseStoredZip -Context $Context -Path $canonicalTemp
         $expectedIdentity=Get-VllmReleaseFileIdentity -Path $canonicalTemp
         $actualIdentity=Get-VllmReleaseFileIdentity -Path $Path
         if ($actualIdentity.Size -ne $expectedIdentity.Size -or $actualIdentity.Sha256 -ne $expectedIdentity.Sha256) { throw 'Release ZIP bytes are not the exact canonical tagged-commit bundle.' }
-    } finally { Remove-Item -LiteralPath $canonicalTemp -Force -ErrorAction SilentlyContinue }
+    } finally {
+        try{Invoke-VllmReleaseOwnedTempCleanup -Path $canonicalRoot -ExpectedPhysical $canonicalPhysical -ExpectedIdentity $canonicalIdentity -ExistingRootGuard $canonicalGuard}catch{Write-Warning "Canonical ZIP temp cleanup was skipped or incomplete: $($_.Exception.Message)"}
+        if($null-ne$canonicalGuard){$canonicalGuard.Dispose();$canonicalGuard=$null}
+    }
     Assert-VllmReleaseRawZipProfile -Context $Context -Path $Path
     $zip = [IO.Compression.ZipFile]::OpenRead($Path)
     try {
@@ -1143,7 +1154,7 @@ function Write-VllmOfflineRelease {
         [Parameter(Mandatory)][string]$ReleaseManifestPath,
         [Parameter(Mandatory)][string]$WheelPath,
         [Parameter(Mandatory)][string]$ArtifactsDirectory,
-        [ValidateSet('None','AfterPrepareLock','DuringWheelCopy','AfterWheelCopy','AfterBundle','BeforePublishTargetAppears')][string]$FaultPoint='None'
+        [ValidateSet('None','AfterPrepareLock','DuringWheelCopy','AfterWheelCopy','AfterBundle','AfterPrePublishVerifyTamper','BeforePublishTargetAppears')][string]$FaultPoint='None'
     )
     if(-not[Environment]::Is64BitProcess){throw 'Offline release preparation requires a 64-bit PowerShell process.'}
     $root=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($ArtifactsDirectory))
@@ -1158,7 +1169,7 @@ function Write-VllmOfflineRelease {
     if(-not$parentPhysical.Equals($parent,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts parent resolves through a filesystem alias: $parent -> $parentPhysical"}
     $parentIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($parent)
     $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
-    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null;$prepareLock=$null
+    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null;$prepareLock=$null;$publishedRoot=$null
     $destWheel=$null;$bundlePath=$null;$indexPath=$null;$sumPath=$null
     try {
         try {
@@ -1220,6 +1231,14 @@ function Write-VllmOfflineRelease {
         }
         Write-VllmReleaseChecksums -Identities $identities -Path $sumPath
         [void](Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit $snapshot.Commit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $stageRoot -ExistingRootGuard $stageGuard)
+        $prePublishIdentities=@{}
+        foreach($name in @([string]$copiedWheel.Filename,[string]$context.BundleFilename,'release-index.json','SHA256SUMS')){
+            $prePublishIdentities[$name.ToLowerInvariant()]=[VllmWindowsNative.NativePath]::GetFileIdentity((Join-Path $stageRoot $name))
+        }
+        if($FaultPoint-eq'AfterPrePublishVerifyTamper'){
+            $tamperStream=[IO.File]::Open($destWheel,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::None)
+            try{$tamperStream.WriteByte(0x5A)}finally{$tamperStream.Dispose()}
+        }
         [void](Assert-VllmReleaseDirectoryIdentity -Path $parent -ExpectedPhysical $parentPhysical -ExpectedIdentity $parentIdentity -Label 'Release artifacts parent')
         [void](Assert-VllmReleaseDirectoryIdentity -Path $stageRoot -ExpectedPhysical $stageExpectedPhysical -ExpectedIdentity $stageIdentity -Label 'Private release staging path')
         if($FaultPoint-eq'BeforePublishTargetAppears'){
@@ -1228,12 +1247,34 @@ function Write-VllmOfflineRelease {
         }
         if(Test-Path -LiteralPath $root){throw "Release artifacts path appeared before atomic publish: $root"}
         [VllmWindowsNative.ReleaseDirectoryGuard]::Rename($stageGuard,$root)
+        $publishedRoot=$root
         $finalGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stageGuard))
         $expectedFinalGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $root -Format Guid)
         if(-not$finalGuardPhysical.Equals($expectedFinalGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Published release directory handle resolves outside final path: $finalGuardPhysical"}
+        foreach($name in @([string]$copiedWheel.Filename,[string]$context.BundleFilename,'release-index.json','SHA256SUMS')){
+            $finalIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity((Join-Path $root $name))
+            if(-not[string]::Equals($finalIdentity,[string]$prePublishIdentities[$name.ToLowerInvariant()],[StringComparison]::Ordinal)){
+                throw "Published release asset changed filesystem object identity during publication: $name"
+            }
+        }
+        $postVerify=Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit $snapshot.Commit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $root -ExistingRootGuard $stageGuard
         $stageRoot=$null
-        return Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit $snapshot.Commit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $root -ExistingRootGuard $stageGuard
+        $publishedRoot=$null
+        return $postVerify
     } catch {
+        $originalError=$_
+        if($null-ne$publishedRoot-and$null-ne$stageGuard-and(Test-Path -LiteralPath $publishedRoot -PathType Container)){
+            try{
+                $quarantine=Join-Path $parent ('.'+$leaf+'.vllm-release-rejected-'+[guid]::NewGuid().ToString('N'))
+                if(Test-Path -LiteralPath $quarantine){throw "Release rejection quarantine unexpectedly exists: $quarantine"}
+                [VllmWindowsNative.ReleaseDirectoryGuard]::Rename($stageGuard,$quarantine)
+                $stageRoot=$quarantine
+                $stageExpectedGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stageGuard))
+                $publishedRoot=$null
+            }catch{
+                Write-Warning "Failed release publication could not be quarantined safely: $($_.Exception.Message)"
+            }
+        }
         if($null-ne$stageRoot-and(Test-Path -LiteralPath $stageRoot)){
             try {
                 if($null-eq$stageExpectedGuid-or[string]::IsNullOrWhiteSpace([string]$stageIdentity)){throw 'Private release staging ownership metadata is incomplete; cleanup is refused.'}
@@ -1243,7 +1284,7 @@ function Write-VllmOfflineRelease {
                 Write-Warning "Release staging cleanup was skipped or incomplete because staging ownership could not be handled safely: $($_.Exception.Message)"
             }
         }
-        throw
+        throw $originalError
     } finally {
         if($null-ne$stageGuard){$stageGuard.Dispose();$stageGuard=$null}
         if($null-ne$snapshot){Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
