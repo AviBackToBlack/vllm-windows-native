@@ -61,7 +61,7 @@ function Test-ExpectedFailure {
         'zip-non-store-method'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'zip-local-header-name'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'manifest-blob-drift'='Tagged-commit blob does not match release manifest identity'
-        'snapshot-reparse-parent'='Snapshot release member resolves outside canonical snapshot root'
+        'snapshot-reparse-parent'='Snapshot release member handle resolves outside the owned snapshot root:'
         'unsafe-release-path'='Release distribution path contains an unsafe path segment'
         'case-colliding-release-path'='Release distribution paths collide by Windows identity'
     }
