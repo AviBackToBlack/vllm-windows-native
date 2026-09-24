@@ -196,12 +196,18 @@ try {
     }
 
     $exhaustState=[pscustomobject]@{Count=0}
-    Assert-Fails {
+    $exhaustMessage=$null
+    try {
         Invoke-VllmBoundedRetry -Attempts 2 -DelayMilliseconds 0 -Action {
             $exhaustState.Count++
             throw 'permanent attestation failure'
         }
-    } 'permanent attestation failure'
+    } catch {
+        $exhaustMessage=$_.Exception.Message
+    }
+    if($null-eq$exhaustMessage-or$exhaustMessage.IndexOf('after 2 attempts',[StringComparison]::OrdinalIgnoreCase)-lt0-or$exhaustMessage.IndexOf('permanent attestation failure',[StringComparison]::OrdinalIgnoreCase)-lt0){
+        throw "Bounded retry exhaustion diagnostic is incomplete: $exhaustMessage"
+    }
     if($exhaustState.Count-ne2){throw 'Bounded retry did not stop at the configured attempt limit.'}
 
     Write-Host 'RELEASE_VERIFICATION_CONTRACT_OK'

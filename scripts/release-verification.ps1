@@ -265,7 +265,7 @@ function Invoke-VllmBoundedRetry {
         try {
             return (& $Action)
         } catch {
-            if($attempt-ge$Attempts){throw}
+            if($attempt-ge$Attempts){throw ("Operation failed after $Attempts attempts: "+$_.Exception.Message)}
             if($DelayMilliseconds-gt0){Start-Sleep -Milliseconds $DelayMilliseconds}
         }
     }

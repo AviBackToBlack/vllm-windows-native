@@ -17,6 +17,20 @@ Assert-Fails {
     Invoke-VllmPublicationGhCommand -Arguments @('--version') -FailureLabel 'fake gh launch' -Executable 'definitely-not-a-vllm-gh-command'
 } 'executable not found'
 
+$missingGhMessage=$null
+try {
+    $null=Assert-VllmGitHubReleaseImmutability -RepositorySlug 'AviBackToBlack/vllm-windows-native' -GhExecutable 'definitely-not-a-vllm-gh-command'
+} catch {
+    $missingGhMessage=$_.Exception.Message
+}
+if($null-eq$missingGhMessage){throw 'Missing gh immutability preflight unexpectedly succeeded.'}
+if($missingGhMessage.IndexOf('executable not found',[StringComparison]::OrdinalIgnoreCase)-lt0){
+    throw "Missing gh immutability preflight lost the executable diagnostic: $missingGhMessage"
+}
+if($missingGhMessage.IndexOf('immutable releases are not enabled',[StringComparison]::OrdinalIgnoreCase)-ge0){
+    throw "Missing gh immutability preflight was incorrectly remapped to repository configuration: $missingGhMessage"
+}
+
 $root=Join-Path ([IO.Path]::GetTempPath()) ('vllm-sm19c-'+[guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root)|Out-Null
 try{

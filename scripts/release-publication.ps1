@@ -75,7 +75,7 @@ function Assert-VllmGitHubReleaseImmutability {
     try {
         $state=Invoke-VllmPublicationGhJson -Arguments (Get-VllmPublicationApiArguments -Endpoint "repos/$RepositorySlug/immutable-releases") -FailureLabel 'Unable to read GitHub immutable-release state' -Executable $GhExecutable
     } catch {
-        if ($_.Exception.Message -match '(?i)(HTTP 404|Not Found)') {
+        if ($_.Exception.Message -match '(?i)HTTP 404') {
             throw 'Repository immutable releases are not enabled.'
         }
         throw
