@@ -174,6 +174,8 @@ try {
     $badDigestJson=$badDigestDoc|ConvertTo-Json -Depth 10 -Compress
     Assert-Fails { Assert-VllmReleaseAttestationJson -Json $badDigestJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'asset digest schema'
 
+    Assert-Fails { Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'missing gh' -Executable 'definitely-not-a-vllm-gh-command' } 'executable not found'
+
     $fakeGh=Join-Path $root 'fake-gh-success.cmd'
     [IO.File]::WriteAllLines($fakeGh,@('@echo off','echo {"ok":true}','echo gh update notice 1>&2','exit /b 0'),[Text.Encoding]::ASCII)
     $capturedJson=Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'fake gh failed' -Executable $fakeGh
