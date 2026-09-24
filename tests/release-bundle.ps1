@@ -29,6 +29,7 @@ function Test-ExpectedFailure {
         'wheel-native-extension-case'='Provided release wheel native extension set mismatch'
         'wheel-extra-native-extension-case'='Provided release wheel native extension count does not match runtime manifest.'
         'wheel-unsafe-member'='Provided release wheel member contains an unsafe path segment'
+        'wheel-invalid-windows-character'='Provided release wheel member contains a Windows-invalid filename character'
         'wheel-metadata-name-line'='Provided release wheel distribution name is not vllm.'
         'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
         'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
@@ -283,6 +284,26 @@ try {
         $unsafeWheelContext=Get-VllmReleaseContext -Snapshot $unsafeWheelSnapshot -ReleaseManifestPath 'manifests/release/release.json'
         Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $unsafeWheel -Context $unsafeWheelContext|Out-Null} 'wheel-unsafe-member'
     }finally{Close-VllmReleaseGitSnapshot -Snapshot $unsafeWheelSnapshot}
+
+    $invalidCharRoot=Join-Path $root 'invalid-char-wheel'
+    $invalidCharWheel=Join-Path $invalidCharRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    Write-TestWheel -Path $invalidCharWheel
+    $invalidCharZip=[IO.Compression.ZipFile]::Open($invalidCharWheel,[IO.Compression.ZipArchiveMode]::Update)
+    try{
+        $invalidCharEntry=$invalidCharZip.CreateEntry('vllm/bad*.py',[IO.Compression.CompressionLevel]::NoCompression)
+        $invalidCharEntry.LastWriteTime=$script:VllmReleaseZipTimestamp
+        $invalidCharEntry.ExternalAttributes=0
+        $writer=New-Object IO.StreamWriter($invalidCharEntry.Open())
+        try{$writer.Write('invalid-name')}finally{$writer.Dispose()}
+    }finally{$invalidCharZip.Dispose()}
+    $invalidCharRepo=Join-Path $invalidCharRoot 'repo'
+    $invalidCharCommit=Initialize-FixtureRepo -Root $invalidCharRepo -WheelPath $invalidCharWheel
+    $invalidCharSnapshot=Get-VllmReleaseGitSnapshot -Repository $invalidCharRepo -Commit $invalidCharCommit
+    try{
+        $invalidCharContext=Get-VllmReleaseContext -Snapshot $invalidCharSnapshot -ReleaseManifestPath 'manifests/release/release.json'
+        Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $invalidCharWheel -Context $invalidCharContext|Out-Null} 'wheel-invalid-windows-character'
+    }finally{Close-VllmReleaseGitSnapshot -Snapshot $invalidCharSnapshot}
+
     $badNameRoot=Join-Path $root 'bad-name-metadata'
     $badNameWheel=Join-Path $badNameRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
     $badNameText="Metadata-Version: 2.1"+[char]10+"Name:"+[char]10+" vllm"+[char]10+"Version: 1.2.3"+[char]10
@@ -333,6 +354,26 @@ try {
     if(@(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne4){throw 'Serialized preparation output does not contain exactly four assets.'}
     if(-not(Test-Path -LiteralPath $heldLockPath -PathType Leaf)){throw 'Release preparation coordination sidecar was not retained for safe reuse.'}
     Write-Host 'RELEASE_PREPARE_SERIALIZATION_OK'
+
+    $guardStage=Join-Path $root 'guard-stage'
+    $guardFinal=Join-Path $root 'guard-final'
+    [void][IO.Directory]::CreateDirectory($guardStage)
+    [IO.File]::WriteAllText((Join-Path $guardStage 'marker.txt'),'marker',[Text.UTF8Encoding]::new($false))
+    $guard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($guardStage)
+    try{
+        $guardMoveBlocked=$false
+        try{[IO.Directory]::Move($guardStage,(Join-Path $root 'guard-evil'))}catch [IO.IOException]{$guardMoveBlocked=$true}
+        if(-not$guardMoveBlocked){throw 'Release staging DELETE-handle did not block an external rename.'}
+        [VllmWindowsNative.ReleaseDirectoryGuard]::Rename($guard,$guardFinal)
+        $guardFinalPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($guard))
+        $guardExpectedPhysical=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $guardFinal -Format Guid)
+        if(-not$guardFinalPhysical.Equals($guardExpectedPhysical,[StringComparison]::OrdinalIgnoreCase)){throw 'Handle-based staging publication resolved to the wrong final directory.'}
+    }finally{$guard.Dispose()}
+    if(Test-Path -LiteralPath $guardStage){throw 'Handle-based staging publication left the old stage path.'}
+    if(-not(Test-Path -LiteralPath (Join-Path $guardFinal 'marker.txt') -PathType Leaf)){throw 'Handle-based staging publication lost the staged marker.'}
+    Remove-Item -LiteralPath $guardFinal -Recurse -Force
+    Write-Host 'RELEASE_STAGE_HANDLE_GUARD_OK'
+
     $faultOut=Join-Path $root 'fault-output'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $faultOut -FaultPoint DuringWheelCopy|Out-Null} 'prepare-fault-during-wheel'
     Assert-TestReleaseOutputClean -Path $faultOut -Label 'DuringWheelCopy failure'

@@ -3,6 +3,50 @@ Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+if (-not ('VllmWindowsNative.ReleaseDirectoryGuard' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace VllmWindowsNative {
+    public static class ReleaseDirectoryGuard {
+        private const uint DeleteAccess=0x00010000;
+        private const uint FileReadAttributes=0x00000080;
+        private const uint FileShareRead=0x00000001;
+        private const uint FileShareWrite=0x00000002;
+        private const uint OpenExisting=3;
+        private const uint BackupSemantics=0x02000000;
+        private const uint OpenReparsePoint=0x00200000;
+        private const int FileRenameInfo=3;
+        [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+        private static extern SafeFileHandle CreateFile(string path,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
+        [DllImport("kernel32.dll",SetLastError=true)]
+        private static extern bool SetFileInformationByHandle(SafeFileHandle handle,int infoClass,IntPtr info,uint size);
+        public static SafeFileHandle Open(string path) {
+            var handle=CreateFile(path,DeleteAccess|FileReadAttributes,FileShareRead|FileShareWrite,IntPtr.Zero,OpenExisting,BackupSemantics|OpenReparsePoint,IntPtr.Zero);
+            if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return handle;
+        }
+        public static void Rename(SafeFileHandle handle,string destination) {
+            var bytes=Encoding.Unicode.GetBytes(destination+"\0");
+            const int header=20;
+            var buffer=Marshal.AllocHGlobal(header+bytes.Length);
+            try {
+                for(int i=0;i<header+bytes.Length;i++) Marshal.WriteByte(buffer,i,0);
+                Marshal.WriteByte(buffer,0,0);
+                Marshal.WriteIntPtr(buffer,8,IntPtr.Zero);
+                // Supported Windows behavior for FileRenameInfo uses the WCHAR count here.
+                Marshal.WriteInt32(buffer,16,destination.Length);
+                Marshal.Copy(bytes,0,IntPtr.Add(buffer,20),bytes.Length);
+                if(!SetFileInformationByHandle(handle,FileRenameInfo,buffer,(uint)(header+bytes.Length))) throw new Win32Exception(Marshal.GetLastWin32Error());
+            } finally { Marshal.FreeHGlobal(buffer); }
+        }
+    }
+}
+"@
+}
 $script:VllmReleaseZipTimestamp = New-Object DateTimeOffset(1980,1,1,0,0,0,[TimeSpan]::Zero)
 $script:VllmReleaseCrc32Table = $null
 
@@ -27,6 +71,10 @@ function Get-VllmReleaseStreamSha256 {
 
 function Assert-VllmReleaseCanonicalPath {
     param([Parameter(Mandatory)][string]$RelativePath,[string]$Label='Release path')
+    $invalid=[IO.Path]::GetInvalidFileNameChars()
+    foreach($segment in @($RelativePath -split '/')){
+        if($segment.IndexOfAny($invalid)-ge0){throw "$Label contains a Windows-invalid filename character: $RelativePath"}
+    }
     $safe = Assert-VllmSafeRelativePath -RelativePath $RelativePath -Label $Label
     $canonical = $safe.Replace('\','/')
     if ($canonical -ne $RelativePath) { throw "$Label must use canonical forward-slash separators: $RelativePath" }
@@ -870,8 +918,17 @@ function Write-VllmOfflineRelease {
     $parentPhysical=Get-VllmCanonicalExistingPath -Path $parent -Format Dos
     if(-not$parentPhysical.Equals($parent,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts parent resolves through a filesystem alias: $parent -> $parentPhysical"}
     $parentIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($parent)
+    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null
+    $destWheel=$null;$bundlePath=$null;$indexPath=$null;$sumPath=$null
     $prepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $root
-    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null
+    $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
+    $parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($parent)
+    $parentGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($parentGuard))
+    if(-not$parentGuardPhysical.Equals($parentExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){
+        $parentGuard.Dispose();$parentGuard=$null
+        Exit-VllmReleasePreparationLock -Lock $prepareLock
+        throw "Release artifacts parent guard resolves outside expected directory: $parentGuardPhysical"
+    }
     try {
         $rootInitiallyExisted=Test-Path -LiteralPath $root;$rootInitialPhysical=$null
         if($rootInitiallyExisted){
@@ -907,6 +964,10 @@ function Write-VllmOfflineRelease {
         $expectedStagePath=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($stageRoot))
         if(-not$stageExpectedPhysical.Equals($expectedStagePath,[StringComparison]::OrdinalIgnoreCase)){throw "Private release staging path resolves through a filesystem alias: $stageRoot -> $stageExpectedPhysical"}
         $stageIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($stageRoot)
+        $stageExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $stageRoot -Format Guid)
+        $stageGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($stageRoot)
+        $guardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stageGuard))
+        if(-not$guardPhysical.Equals($stageExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Private release staging guard resolves outside expected directory: $guardPhysical"}
         $destWheel=Join-Path $stageRoot ([string]$wheel.Filename)
         if($FaultPoint-eq'DuringWheelCopy'){
             [IO.File]::WriteAllBytes($destWheel,[byte[]](1,2,3,4));throw 'FAULT_INJECTED:DuringWheelCopy'
@@ -936,21 +997,39 @@ function Write-VllmOfflineRelease {
             [IO.File]::WriteAllText((Join-Path $root 'foreign-marker.txt'),'foreign',[Text.UTF8Encoding]::new($false))
         }
         if(Test-Path -LiteralPath $root){throw "Release artifacts path appeared before atomic publish: $root"}
-        [IO.Directory]::Move($stageRoot,$root)
+        [VllmWindowsNative.ReleaseDirectoryGuard]::Rename($stageGuard,$root)
+        $finalGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stageGuard))
+        $expectedFinalGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $root -Format Guid)
+        if(-not$finalGuardPhysical.Equals($expectedFinalGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Published release directory handle resolves outside final path: $finalGuardPhysical"}
         $stageRoot=$null
         return Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit $snapshot.Commit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $root
     } catch {
         if($null-ne$stageRoot-and(Test-Path -LiteralPath $stageRoot)){
             try {
-                [void](Assert-VllmReleaseDirectoryIdentity -Path $stageRoot -ExpectedPhysical $stageExpectedPhysical -ExpectedIdentity $stageIdentity -Label 'Private release staging path')
-                Remove-Item -LiteralPath $stageRoot -Recurse -Force
+                if($null-ne$stageGuard){
+                    $guardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stageGuard))
+                    if($null-eq$stageExpectedGuid-or-not$guardPhysical.Equals($stageExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw 'Private release staging guard no longer resolves to the owned staging directory.'}
+                }else{
+                    [void](Assert-VllmReleaseDirectoryIdentity -Path $stageRoot -ExpectedPhysical $stageExpectedPhysical -ExpectedIdentity $stageIdentity -Label 'Private release staging path')
+                }
+                foreach($candidate in @($sumPath,$indexPath,$bundlePath,$destWheel)){
+                    if(-not[string]::IsNullOrWhiteSpace([string]$candidate)-and(Test-Path -LiteralPath $candidate -PathType Leaf)){
+                        $candidateEntry=Get-VllmPathEntryInfo -Path $candidate
+                        if($candidateEntry.IsReparsePoint){throw "Release staging cleanup refuses reparse-point asset: $candidate"}
+                        Remove-Item -LiteralPath $candidate -Force
+                    }
+                }
+                if($null-ne$stageGuard){$stageGuard.Dispose();$stageGuard=$null}
+                if(Test-Path -LiteralPath $stageRoot){[IO.Directory]::Delete($stageRoot,$false)}
             }catch{
-                Write-Warning "Release staging cleanup was skipped because staging ownership could not be re-proved safely: $($_.Exception.Message)"
+                Write-Warning "Release staging cleanup was skipped or incomplete because staging ownership could not be handled safely: $($_.Exception.Message)"
             }
         }
         throw
     } finally {
+        if($null-ne$stageGuard){$stageGuard.Dispose();$stageGuard=$null}
         if($null-ne$snapshot){Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
+        if($null-ne$parentGuard){$parentGuard.Dispose();$parentGuard=$null}
         Exit-VllmReleasePreparationLock -Lock $prepareLock
     }
 }
