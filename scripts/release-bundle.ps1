@@ -37,8 +37,8 @@ namespace VllmWindowsNative {
                 for(int i=0;i<header+bytes.Length;i++) Marshal.WriteByte(buffer,i,0);
                 Marshal.WriteByte(buffer,0,0);
                 Marshal.WriteIntPtr(buffer,8,IntPtr.Zero);
-                // Supported Windows behavior for FileRenameInfo uses the WCHAR count here.
-                Marshal.WriteInt32(buffer,16,destination.Length);
+                // FILE_RENAME_INFO.FileNameLength is the UTF-16 byte count, excluding the terminating NUL; the cross-edition regression covers a non-ASCII destination.
+                Marshal.WriteInt32(buffer,16,Encoding.Unicode.GetByteCount(destination));
                 Marshal.Copy(bytes,0,IntPtr.Add(buffer,20),bytes.Length);
                 if(!SetFileInformationByHandle(handle,FileRenameInfo,buffer,(uint)(header+bytes.Length))) throw new Win32Exception(Marshal.GetLastWin32Error());
             } finally { Marshal.FreeHGlobal(buffer); }
@@ -769,7 +769,7 @@ function Assert-VllmOfflineRelease {
     $snapshot = Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
     try {
         $context = Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath
-        $root = [IO.Path]::GetFullPath($ArtifactsDirectory)
+        $root = Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($ArtifactsDirectory))
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Release artifacts directory is missing: $root" }
         $rootEntry=Get-VllmPathEntryInfo -Path $root
         if ($rootEntry.IsReparsePoint) { throw "Release artifacts directory must not be a reparse point: $root" }
@@ -911,6 +911,7 @@ function Write-VllmOfflineRelease {
         [Parameter(Mandatory)][string]$ArtifactsDirectory,
         [ValidateSet('None','AfterPrepareLock','DuringWheelCopy','AfterWheelCopy','AfterBundle','BeforePublishTargetAppears')][string]$FaultPoint='None'
     )
+    if(-not[Environment]::Is64BitProcess){throw 'Offline release preparation requires a 64-bit PowerShell process.'}
     $root=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($ArtifactsDirectory))
     $volumeRoot=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetPathRoot($root))
     if($root.Equals($volumeRoot,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts directory must not be a volume root: $root"}
@@ -928,36 +929,27 @@ function Write-VllmOfflineRelease {
     try {
         if($FaultPoint-eq'AfterPrepareLock'){throw 'FAULT_INJECTED:AfterPrepareLock'}
         $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
-        $parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($parent)
+        try {
+            $parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($parent)
+        } catch {
+            $native=$_.Exception.InnerException
+            if($native -is [ComponentModel.Win32Exception] -and [int]$native.NativeErrorCode -eq 32){
+                throw "Another offline release preparation is active under parent directory '$parent'."
+            }
+            throw
+        }
         $parentGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($parentGuard))
         if(-not$parentGuardPhysical.Equals($parentExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){
             $parentGuard.Dispose();$parentGuard=$null
             throw "Release artifacts parent guard resolves outside expected directory: $parentGuardPhysical"
         }
-        $rootInitiallyExisted=Test-Path -LiteralPath $root;$rootInitialPhysical=$null
-        if($rootInitiallyExisted){
-            if(-not(Test-Path -LiteralPath $root -PathType Container)){throw "Release artifacts path is not a directory: $root"}
-            $rootEntry=Get-VllmPathEntryInfo -Path $root
-            if($rootEntry.IsReparsePoint){throw "Release artifacts directory must not be a reparse point: $root"}
-            $rootInitialPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
-            if(-not$rootInitialPhysical.Equals($root,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts directory resolves through a filesystem alias: $root -> $rootInitialPhysical"}
-            if(@(Get-ChildItem -LiteralPath $root -Force).Count-gt0){throw "Release artifacts directory is not empty: $root"}
-        }
+        if(Test-Path -LiteralPath $root){throw "Release artifacts final path already exists; Prepare requires an absent final path: $root"}
         $snapshot=Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
         $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath
         $wheel=Assert-VllmReleaseWheel -WheelPath $WheelPath -Context $context
         $finalWheel=Join-Path $root ([string]$wheel.Filename)
         if([IO.Path]::GetFullPath($wheel.Path).Equals([IO.Path]::GetFullPath($finalWheel),[StringComparison]::OrdinalIgnoreCase)){throw 'Source wheel must be outside the release artifacts directory during preparation.'}
-        if($rootInitiallyExisted){
-            if(-not(Test-Path -LiteralPath $root -PathType Container)){throw "Release artifacts directory changed while preparing release: $root"}
-            $rootEntry=Get-VllmPathEntryInfo -Path $root
-            if($rootEntry.IsReparsePoint){throw "Release artifacts directory became a reparse point while preparing release: $root"}
-            $rootCurrentPhysical=Get-VllmCanonicalExistingPath -Path $root -Format Dos
-            if(-not$rootCurrentPhysical.Equals($rootInitialPhysical,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts directory changed filesystem identity while preparing release: $root"}
-            if(@(Get-ChildItem -LiteralPath $root -Force).Count-gt0){throw "Release artifacts directory changed from empty while preparing release: $root"}
-            [IO.Directory]::Delete($root,$false)
-        }elseif(Test-Path -LiteralPath $root){throw "Release artifacts path appeared while preparing release: $root"}
-        if(Test-Path -LiteralPath $root){throw "Release artifacts path could not be reserved for atomic publication: $root"}
+        if(Test-Path -LiteralPath $root){throw "Release artifacts path appeared while preparing release: $root"}
         $stageLeaf='.'+$leaf+'.vllm-release-stage-'+[guid]::NewGuid().ToString('N')
         $stageRoot=[IO.Path]::Combine($parent,$stageLeaf)
         if(Test-Path -LiteralPath $stageRoot){throw "Private release staging path unexpectedly exists: $stageRoot"}

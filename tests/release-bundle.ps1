@@ -33,10 +33,12 @@ function Test-ExpectedFailure {
         'wheel-metadata-name-line'='Provided release wheel distribution name is not vllm.'
         'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
         'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
-        'nonempty-output-refusal'='Release artifacts directory is not empty'
+        'nonempty-output-refusal'='Release artifacts final path already exists; Prepare requires an absent final path:'
+        'empty-output-refusal'='Release artifacts final path already exists; Prepare requires an absent final path:'
         'artifacts-volume-root'='Release artifacts directory must not be a volume root'
         'directory-object-replacement'='changed filesystem object identity.'
         'prepare-concurrent-lock'='Another offline release preparation is active'
+        'prepare-parent-concurrent'='Another offline release preparation is active under parent directory'
         'prepare-fault-after-lock'='FAULT_INJECTED:AfterPrepareLock'
         'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
@@ -330,6 +332,11 @@ try {
     $badTagSnapshot=Get-VllmReleaseGitSnapshot -Repository $badTagRepo -Commit $badTagCommit
     try{$badTagContext=Get-VllmReleaseContext -Snapshot $badTagSnapshot -ReleaseManifestPath 'manifests/release/release.json';Test-ExpectedFailure {Assert-VllmReleaseWheel -WheelPath $badTagWheel -Context $badTagContext|Out-Null} 'wheel-tag-substring'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badTagSnapshot}
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out1 | Out-Null } 'nonempty-output-refusal'
+    $emptyOut=Join-Path $root 'existing-empty-output'
+    [void][IO.Directory]::CreateDirectory($emptyOut)
+    Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $emptyOut | Out-Null } 'empty-output-refusal'
+    if(-not(Test-Path -LiteralPath $emptyOut -PathType Container)-or@(Get-ChildItem -LiteralPath $emptyOut -Force).Count-ne0){throw 'Prepare modified an existing empty final output path.'}
+    Remove-Item -LiteralPath $emptyOut -Force
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory ([IO.Path]::GetPathRoot($root)) | Out-Null } 'artifacts-volume-root'
     $identityPath=Join-Path $root 'identity-object'
     $identityMoved=Join-Path $root 'identity-object-original'
@@ -344,18 +351,28 @@ try {
     Write-Host 'RELEASE_DIRECTORY_IDENTITY_OK'
 
     $concurrentOut=Join-Path $root 'concurrent-output'
-    New-Item -ItemType Directory -Path $concurrentOut -Force|Out-Null
     $heldPrepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $concurrentOut
     $heldLockPath=[string]$heldPrepareLock.Path
     try{
         Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $concurrentOut|Out-Null} 'prepare-concurrent-lock'
-        if(@(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne0){throw 'Losing concurrent preparation mutated the release artifacts directory.'}
+        if((Test-Path -LiteralPath $concurrentOut)-and@(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne0){throw 'Losing concurrent preparation mutated the release artifacts directory.'}
     }finally{Exit-VllmReleasePreparationLock -Lock $heldPrepareLock}
     $concurrentRetry=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $concurrentOut
     if($concurrentRetry.bundle_sha256-ne$r1.bundle_sha256){throw 'Serialized preparation retry produced a different bundle identity.'}
     if(@(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne4){throw 'Serialized preparation output does not contain exactly four assets.'}
     if(-not(Test-Path -LiteralPath $heldLockPath -PathType Leaf)){throw 'Release preparation coordination sidecar was not retained for safe reuse.'}
     Write-Host 'RELEASE_PREPARE_SERIALIZATION_OK'
+
+    $parentBusyOut=Join-Path $root 'parent-busy-output'
+    $heldParentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($root)
+    try{
+        Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $parentBusyOut|Out-Null} 'prepare-parent-concurrent'
+        if(Test-Path -LiteralPath $parentBusyOut){throw 'Parent-contention loser created the final output path.'}
+    }finally{$heldParentGuard.Dispose()}
+    $parentBusyRetry=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $parentBusyOut
+    if($parentBusyRetry.bundle_sha256-ne$r1.bundle_sha256){throw 'Retry after parent-level contention produced a different bundle identity.'}
+    Remove-Item -LiteralPath $parentBusyOut -Recurse -Force
+    Write-Host 'RELEASE_PREPARE_PARENT_SERIALIZATION_OK'
 
     $lockFaultOut=Join-Path $root 'lock-fault-output'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $lockFaultOut -FaultPoint AfterPrepareLock|Out-Null} 'prepare-fault-after-lock'
@@ -365,7 +382,7 @@ try {
     Write-Host 'RELEASE_PREPARE_LOCK_CLEANUP_OK'
 
     $guardStage=Join-Path $root 'guard-stage'
-    $guardFinal=Join-Path $root 'guard-final'
+    $guardFinal=Join-Path $root ('guard-final-'+[char]0x0416)
     [void][IO.Directory]::CreateDirectory($guardStage)
     [IO.File]::WriteAllText((Join-Path $guardStage 'marker.txt'),'marker',[Text.UTF8Encoding]::new($false))
     $guard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($guardStage)
@@ -428,6 +445,9 @@ try {
 
     $verified=Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $out1
     if($verified.bundle_sha256-ne$r1.bundle_sha256){throw 'Offline verifier returned a different bundle identity.'}
+    $trailingVerified=Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory ($out1+'\')
+    if($trailingVerified.bundle_sha256-ne$r1.bundle_sha256){throw 'Offline verifier trailing-separator normalization changed bundle identity.'}
+    Write-Host 'RELEASE_VERIFY_TRAILING_SEPARATOR_OK'
     Write-Host 'RELEASE_OFFLINE_VERIFY_OK'
 
     $tamperWheel=Join-Path $root 'tamper-wheel'
