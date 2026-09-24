@@ -216,7 +216,33 @@ Verify an existing offline set independently:
 .\release.ps1 -Mode Verify -ArtifactsDirectory '.\artifacts\release'
 ```
 
-Verification re-derives the release/runtime manifests and all distribution bytes from the selected Git commit, validates the wheel contract, requires canonical ZIP/index/checksum encoding, and rejects extra, missing, aliased, or drifted content. Signing and GitHub Release publication remain later SM-19 slices.
+Verification re-derives the release/runtime manifests and all distribution bytes from the selected Git commit, validates the wheel contract, requires canonical ZIP/index/checksum encoding, and rejects extra, missing, aliased, or drifted content.
+
+### Verify release authorization and a published immutable release
+
+SM-19B adds verification only; it does not create tags or mutate GitHub Releases. The repository versions the publication-side v1 signer policy in `config/release-allowed-signers`: exactly principal `vllm-windows-native-release` and the authorized ECDSA-SK key with fingerprint `SHA256:ga7J6BbUAgsSVju3a6RZU4Vw4/7wvn2xL/MTLWy77ng`.
+
+A consumer must obtain and pin the allowed-signers file independently of the release being verified. Do not bootstrap trust from the target release bundle. Pass that trusted copy explicitly:
+
+```powershell
+.\release.ps1 -Mode VerifySignedTag `
+  -ProjectCommit '<expected-project-commit>' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
+```
+
+`VerifySignedTag` requires the signed release tag object to exist in the local clone (fetch `refs/tags/release/...` before verification if necessary). It requires an annotated SSH-signed tag, resolves `<tag>^{commit}` to the expected commit, and invokes Git with explicit SSH-signing configuration rather than relying on the operator's global Git trust configuration.
+
+After downloading the four immutable release assets, compose offline verification, signed-tag authorization, and GitHub's release attestation. `VerifyPublished` has the same local-tag prerequisite and additionally requires an authenticated GitHub CLI (`gh auth status` must succeed):
+
+```powershell
+.\release.ps1 -Mode VerifyPublished `
+  -ProjectCommit '<expected-project-commit>' `
+  -ArtifactsDirectory 'C:\downloads\vllm-release' `
+  -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
+```
+
+`VerifyPublished` first performs the SM-19A exact-four local verification. It then verifies the signed tag and requires `gh release verify --format json` to bind the exact repository, annotated tag object, and exactly those four asset names/SHA-256 digests. The signed-tag check separately peels that authenticated tag object to the expected reviewed project commit. Finally it runs `gh release verify-asset` separately for the wheel, distribution ZIP, `release-index.json`, and `SHA256SUMS`. The immutable-release attestation proves release/asset integrity; it is not represented as build provenance for the prebuilt local GPU wheel.
 
 ## Run the accepted Windows runtime
 

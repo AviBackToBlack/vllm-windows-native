@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('ValidateRepository','Prepare','Verify')][string]$Mode = 'ValidateRepository',
+    [ValidateSet('ValidateRepository','Prepare','Verify','VerifySignedTag','VerifyPublished')][string]$Mode = 'ValidateRepository',
     [string]$ProjectCommit = 'HEAD',
     [string]$ReleaseManifestPath = 'manifests/release/v0.27.1-windows-x86_64.json',
     [string]$WheelPath = '',
     [string]$ArtifactsDirectory = 'artifacts/release',
+    [string]$Tag = '',
+    [string]$AllowedSignersPath = '',
     [switch]$Json
 )
 
@@ -14,6 +16,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
 . (Join-Path $PSScriptRoot 'scripts\release-bundle.ps1')
+. (Join-Path $PSScriptRoot 'scripts\release-verification.ps1')
 
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'release.ps1 supports native Windows x64 only.'
@@ -73,5 +76,34 @@ switch ($Mode) {
         $output = Resolve-ReleaseCliPath -Path $ArtifactsDirectory
         $result = Assert-VllmOfflineRelease -Repository $repository -ProjectCommit $resolvedCommit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $output
         Write-ReleaseCliResult -Result $result -Marker 'RELEASE_VERIFY_OK' -AsJson:$Json
+    }
+    'VerifySignedTag' {
+        if ([string]::IsNullOrWhiteSpace($Tag)) { throw 'VerifySignedTag mode requires -Tag.' }
+        if ([string]::IsNullOrWhiteSpace($AllowedSignersPath)) { throw 'VerifySignedTag mode requires an explicitly supplied -AllowedSignersPath.' }
+        $trustRoot = Resolve-ReleaseCliPath -Path $AllowedSignersPath
+        $result = Assert-VllmReleaseSignedTag -Repository $repository -Tag $Tag -ExpectedCommit $resolvedCommit -AllowedSignersPath $trustRoot
+        if ($Json) { $result | ConvertTo-Json -Depth 10 } else { Write-Host "RELEASE_SIGNED_TAG_OK tag=$($result.tag) commit=$($result.project_commit) principal=$($result.principal)" }
+    }
+    'VerifyPublished' {
+        if ([string]::IsNullOrWhiteSpace($AllowedSignersPath)) { throw 'VerifyPublished mode requires an explicitly supplied -AllowedSignersPath.' }
+        $output = Resolve-ReleaseCliPath -Path $ArtifactsDirectory
+        $offline = Assert-VllmOfflineRelease -Repository $repository -ProjectCommit $resolvedCommit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $output
+        $effectiveTag = if ([string]::IsNullOrWhiteSpace($Tag)) { [string]$offline.tag } else { $Tag }
+        if (-not $effectiveTag.Equals([string]$offline.tag,[StringComparison]::Ordinal)) { throw 'Requested release tag does not match the verified release index.' }
+        $trustRoot = Resolve-ReleaseCliPath -Path $AllowedSignersPath
+        $tagVerification = Assert-VllmReleaseSignedTag -Repository $repository -Tag $effectiveTag -ExpectedCommit $resolvedCommit -AllowedSignersPath $trustRoot
+        $assets = Get-VllmReleaseExpectedAssets -ArtifactsDirectory $output -OfflineVerification $offline
+        $attestation = Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $effectiveTag -ExpectedTagObject $tagVerification.tag_object -ArtifactsDirectory $output -ExpectedAssets $assets
+        $result = [pscustomobject][ordered]@{
+            schema_version=1
+            component='vllm-windows-native-published-release-verification'
+            release=[string]$offline.release
+            tag=$effectiveTag
+            project_commit=[string]$offline.project_commit
+            offline=$offline
+            signed_tag=$tagVerification
+            github_release=$attestation
+        }
+        Write-ReleaseCliResult -Result $result -Marker 'RELEASE_PUBLISHED_VERIFY_OK' -AsJson:$Json
     }
 }

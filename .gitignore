@@ -6,7 +6,8 @@ config.psd1
 /python/
 /tools/
 /cache/
-/config/
+/config/*
+!/config/release-allowed-signers
 /tmp/
 /models/
 /downloads/
