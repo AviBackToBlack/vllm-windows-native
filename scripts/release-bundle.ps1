@@ -165,12 +165,10 @@ function Invoke-VllmReleaseOwnedTempCleanup {
 function Get-VllmReleaseGitSnapshot {
     param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$Commit)
     $resolved = Resolve-VllmReleaseCommit -Repository $Repository -Commit $Commit
-    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-    if (-not $tar) { throw 'tar.exe is required for canonical Git snapshot materialization.' }
     $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-' + [guid]::NewGuid().ToString('N'))
     $snapshotRoot = Join-Path $tempRoot 'snapshot'
-    $archivePath = Join-Path $tempRoot 'snapshot.tar'
-    $tempRootPhysical=$null;$tempRootIdentity=$null;$snapshotRootGuard=$null;$snapshotRootExpectedGuid=$null;$snapshotRootIdentity=$null
+    $archivePath = Join-Path $tempRoot 'snapshot.zip'
+    $tempRootPhysical=$null;$tempRootIdentity=$null;$tempRootGuard=$null;$tempRootExpectedGuid=$null;$snapshotRootGuard=$null;$snapshotRootExpectedGuid=$null;$snapshotRootIdentity=$null
     [void][IO.Directory]::CreateDirectory($tempRoot)
     $tempEntry=Get-VllmPathEntryInfo -Path $tempRoot
     if(-not$tempEntry.Exists-or-not$tempEntry.IsDirectory-or$tempEntry.IsReparsePoint){throw "Release snapshot temp root is not a regular directory: $tempRoot"}
@@ -182,16 +180,24 @@ function Get-VllmReleaseGitSnapshot {
     $snapshotRootExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $snapshotRoot -Format Guid)
     $snapshotRootIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($snapshotRoot)
     try {
-        & git -C $Repository -c core.longpaths=true archive --format=tar --output=$archivePath $resolved
-        if ($LASTEXITCODE -ne 0) { throw "git archive failed for project commit $resolved." }
-        & $tar.Source -xf $archivePath -C $snapshotRoot
-        if ($LASTEXITCODE -ne 0) { throw "tar extraction failed for project commit $resolved." }
-        [IO.File]::Delete($archivePath)
+        $tempRootExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $tempRoot -Format Guid)
+        $tempRootGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($tempRoot)
+        $tempGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($tempRootGuard))
+        if(-not$tempGuardPhysical.Equals($tempRootExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot temp-root guard resolves outside expected directory: $tempGuardPhysical"}
+        $tempGuardIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($tempRootGuard)
+        if(-not[string]::Equals($tempGuardIdentity,$tempRootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot temp root changed filesystem object identity before materialization.'}
+
         $snapshotRootGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($snapshotRoot)
         $snapshotGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($snapshotRootGuard))
         if(-not$snapshotGuardPhysical.Equals($snapshotRootExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot root guard resolves outside expected directory: $snapshotGuardPhysical"}
         $guardIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($snapshotRootGuard)
-        if(-not[string]::Equals($guardIdentity,$snapshotRootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot root changed filesystem object identity during materialization.'}
+        if(-not[string]::Equals($guardIdentity,$snapshotRootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot root changed filesystem object identity before materialization.'}
+
+        & git -C $Repository -c core.longpaths=true archive --format=zip --output=$archivePath $resolved
+        if ($LASTEXITCODE -ne 0) { throw "git archive failed for project commit $resolved." }
+        [IO.Compression.ZipFile]::ExtractToDirectory($archivePath,$snapshotRoot)
+        [IO.File]::Delete($archivePath)
+
         return [pscustomobject][ordered]@{
             Repository=[IO.Path]::GetFullPath($Repository)
             Commit=$resolved
@@ -199,6 +205,8 @@ function Get-VllmReleaseGitSnapshot {
             TempRoot=$tempRoot
             TempRootPhysical=$tempRootPhysical
             TempRootIdentity=$tempRootIdentity
+            TempRootGuard=$tempRootGuard
+            TempRootExpectedGuid=$tempRootExpectedGuid
             RootGuard=$snapshotRootGuard
             RootExpectedGuid=$snapshotRootExpectedGuid
             RootIdentity=$snapshotRootIdentity
@@ -207,6 +215,7 @@ function Get-VllmReleaseGitSnapshot {
     } catch {
         $originalError=$_
         if($null-ne$snapshotRootGuard){$snapshotRootGuard.Dispose();$snapshotRootGuard=$null}
+        if($null-ne$tempRootGuard){$tempRootGuard.Dispose();$tempRootGuard=$null}
         if($null-ne$tempRootPhysical-and$null-ne$tempRootIdentity){
             try{Invoke-VllmReleaseOwnedTempCleanup -Path $tempRoot -ExpectedPhysical $tempRootPhysical -ExpectedIdentity $tempRootIdentity}catch{Write-Warning "Release snapshot cleanup after materialization failure was skipped or incomplete: $($_.Exception.Message)"}
         }
@@ -221,6 +230,7 @@ function Close-VllmReleaseGitSnapshot {
         $Snapshot.MemberGuards.Clear()
     }
     if(($Snapshot.PSObject.Properties.Name -contains 'RootGuard')-and$null-ne$Snapshot.RootGuard){$Snapshot.RootGuard.Dispose();$Snapshot.RootGuard=$null}
+    if(($Snapshot.PSObject.Properties.Name -contains 'TempRootGuard')-and$null-ne$Snapshot.TempRootGuard){$Snapshot.TempRootGuard.Dispose();$Snapshot.TempRootGuard=$null}
     if($Snapshot.TempRoot-and(Test-Path -LiteralPath ([string]$Snapshot.TempRoot))){
         try{Invoke-VllmReleaseOwnedTempCleanup -Path ([string]$Snapshot.TempRoot) -ExpectedPhysical ([string]$Snapshot.TempRootPhysical) -ExpectedIdentity ([string]$Snapshot.TempRootIdentity)}catch{Write-Warning "Release snapshot cleanup was skipped or incomplete: $($_.Exception.Message)"}
     }
@@ -273,6 +283,27 @@ function Get-VllmReleaseSnapshotFile {
         Identity=(Get-VllmReleaseFileIdentity -Path $path)
     }
 }
+function Assert-VllmReleasePublicProvenance {
+    param([Parameter(Mandatory)]$Upstream,[Parameter(Mandatory)]$WindowsPatchset)
+    $repository=[string]$Upstream.repository
+    $uri=$null
+    if(-not[Uri]::TryCreate($repository,[UriKind]::Absolute,[ref]$uri)-or-not[string]::Equals($uri.Scheme,'https',[StringComparison]::OrdinalIgnoreCase)){
+        throw 'Release upstream repository must be an absolute HTTPS URL.'
+    }
+    if(-not[string]::IsNullOrEmpty($uri.UserInfo)-or-not[string]::IsNullOrEmpty($uri.Query)-or-not[string]::IsNullOrEmpty($uri.Fragment)){
+        throw 'Release upstream repository must not contain credentials, query parameters, or a fragment.'
+    }
+    if(-not[string]::Equals($uri.Host,'github.com',[StringComparison]::OrdinalIgnoreCase)-or$uri.AbsolutePath-notmatch '^/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'){
+        throw 'Release upstream repository must use the supported public GitHub owner/repository HTTPS form.'
+    }
+    if([string]$Upstream.tag -notmatch '^[A-Za-z0-9][A-Za-z0-9._/+:-]{0,127}$'){throw 'Release upstream tag is invalid for public provenance.'}
+    if([string]$Upstream.commit -notmatch '^[0-9A-Fa-f]{40,64}$'){throw 'Release upstream commit is not a Git object id.'}
+    foreach($name in @('implementation_commit','tree')){
+        if([string]$WindowsPatchset.$name -notmatch '^[0-9A-Fa-f]{40,64}$'){throw "Release Windows patchset $name is not a Git object id."}
+    }
+    if([string]$WindowsPatchset.patch_sha256 -notmatch '^[0-9A-Fa-f]{64}$'){throw 'Release Windows patchset patch_sha256 is invalid.'}
+}
+
 function Get-VllmReleaseContext {
     param([Parameter(Mandatory)]$Snapshot,[Parameter(Mandatory)][string]$ReleaseManifestPath)
 
@@ -290,6 +321,7 @@ function Get-VllmReleaseContext {
     if ([int]$release.schema_version -ne 1 -or -not (Test-VllmReleaseOrdinalEqual ([string]$release.component) 'runtime-release') -or -not (Test-VllmReleaseOrdinalEqual ([string]$release.platform) 'windows-x86_64')) {
         throw 'Release manifest has unsupported schema/component/platform.'
     }
+    Assert-VllmReleasePublicProvenance -Upstream $release.upstream -WindowsPatchset $release.windows_patchset
     if ([string]::IsNullOrWhiteSpace([string]$release.release) -or [string]$release.release -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') {
         throw 'Release identifier is invalid for publication.'
     }

@@ -33,6 +33,7 @@ function Test-ExpectedFailure {
         'wheel-metadata-name-line'='Provided release wheel distribution name is not vllm.'
         'wheel-metadata-version-line'='Provided release wheel version does not match runtime manifest.'
         'wheel-tag-substring'='Provided release wheel compatibility tag is missing'
+        'provenance-credential-url'='Release upstream repository must not contain credentials, query parameters, or a fragment.'
         'nonempty-output-refusal'='Release artifacts final path already exists; Prepare requires an absent final path:'
         'empty-output-refusal'='Release artifacts final path already exists; Prepare requires an absent final path:'
         'artifacts-volume-root'='Release artifacts directory must not be a volume root'
@@ -138,7 +139,7 @@ function Write-TestWheel {
     }
 }
 function Initialize-FixtureRepo {
-    param([string]$Root,[string]$WheelPath)
+    param([string]$Root,[string]$WheelPath,[string]$UpstreamRepository='https://github.com/example/upstream.git')
     New-Item -ItemType Directory -Path $Root -Force|Out-Null
     & git -C $Root init --initial-branch=main | Out-Null
     if($LASTEXITCODE-ne0){throw 'fixture git init failed'}
@@ -185,7 +186,7 @@ function Initialize-FixtureRepo {
         release='test-release'
         platform='windows-x86_64'
         self_path='manifests/release/release.json'
-        upstream=[ordered]@{repository='https://example.invalid/upstream.git';tag='v1.2.3';commit='1111111111111111111111111111111111111111'}
+        upstream=[ordered]@{repository=$UpstreamRepository;tag='v1.2.3';commit='1111111111111111111111111111111111111111'}
         windows_patchset=[ordered]@{implementation_commit='2222222222222222222222222222222222222222';tree='3333333333333333333333333333333333333333';patch_sha256=('44'*32)}
         wheel=[ordered]@{filename='vllm-1.2.3-cp313-cp313-win_amd64.whl';version='1.2.3';size_bytes=[int64]$wheel.Size;sha256=[string]$wheel.Sha256}
         orchestration=[ordered]@{
@@ -241,6 +242,11 @@ try {
 
     $snapshot=Get-VllmReleaseGitSnapshot -Repository $fixture -Commit $commit
     try{
+        $snapshotMoveBlocked=$false;$tempMoveBlocked=$false
+        try{[IO.Directory]::Move($snapshot.Root,$snapshot.Root+'-moved')}catch [IO.IOException]{$snapshotMoveBlocked=$true}
+        try{[IO.Directory]::Move($snapshot.TempRoot,$snapshot.TempRoot+'-moved')}catch [IO.IOException]{$tempMoveBlocked=$true}
+        if(-not$snapshotMoveBlocked-or-not$tempMoveBlocked){throw 'Release snapshot materialization roots were not pinned against external rename.'}
+        Write-Host 'RELEASE_SNAPSHOT_MATERIALIZATION_GUARDS_OK'
         $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath 'manifests/release/release.json'
         $wheelTemp=Join-Path $root 'wheel-case-temp.whl'
         $caseWheelPath=Join-Path $root 'VLLM-1.2.3-cp313-cp313-win_amd64.whl'
@@ -254,6 +260,12 @@ try {
         }
     }finally{Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
 
+    $badProvenanceRoot=Join-Path $root 'bad-provenance'
+    $badProvenanceRepo=Join-Path $badProvenanceRoot 'repo'
+    $badProvenanceCommit=Initialize-FixtureRepo -Root $badProvenanceRepo -WheelPath $wheelPath -UpstreamRepository 'https://user:token@github.com/example/upstream.git'
+    $badProvenanceSnapshot=Get-VllmReleaseGitSnapshot -Repository $badProvenanceRepo -Commit $badProvenanceCommit
+    try{Test-ExpectedFailure {Get-VllmReleaseContext -Snapshot $badProvenanceSnapshot -ReleaseManifestPath 'manifests/release/release.json'|Out-Null} 'provenance-credential-url'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badProvenanceSnapshot}
+    Write-Host 'RELEASE_PUBLIC_PROVENANCE_GUARD_OK'
     $caseNativeRoot=Join-Path $root 'case-native'
     $caseNativeWheel=Join-Path $caseNativeRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
     Write-TestWheel -Path $caseNativeWheel -NativePath 'vllm/_TEST.pyd'
