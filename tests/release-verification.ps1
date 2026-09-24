@@ -65,6 +65,18 @@ try {
     $wrongKey=Join-Path $root 'wrong-key-signers'
     [IO.File]::WriteAllText($wrongKey,"fixture-release $($pub2[0]) $($pub2[1])"+[char]10,[Text.UTF8Encoding]::new($false))
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit1 -AllowedSignersPath $wrongKey -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'fingerprint mismatch'
+    $foreignFingerprint=Get-VllmReleaseSigningKeyFingerprint -Path $wrongKey
+    Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit1 -AllowedSignersPath $wrongKey -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $foreignFingerprint } 'signature verification failed'
+
+    $tagObject=(& git -C $repo cat-file tag 'refs/tags/release/fixture') -join [char]10
+    $fakePgp=$tagObject.Replace('-----BEGIN SSH SIGNATURE-----','-----BEGIN PGP SIGNATURE-----').Replace('-----END SSH SIGNATURE-----','-----END PGP SIGNATURE-----')
+    $fakePgpPath=Join-Path $root 'fake-pgp-tag.txt'
+    [IO.File]::WriteAllText($fakePgpPath,$fakePgp+[char]10,[Text.UTF8Encoding]::new($false))
+    $fakePgpOid=(& git -C $repo hash-object -t tag -w $fakePgpPath).Trim()
+    if($LASTEXITCODE-ne0){throw 'fake PGP tag object creation failed.'}
+    & git -C $repo update-ref 'refs/tags/release/fake-pgp' $fakePgpOid
+    if($LASTEXITCODE-ne0){throw 'fake PGP tag ref creation failed.'}
+    Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fake-pgp' -ExpectedCommit $commit1 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'must contain an SSH signature'
 
     & git -C $repo tag unsigned $commit1
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag unsigned -ExpectedCommit $commit1 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'annotated tag'

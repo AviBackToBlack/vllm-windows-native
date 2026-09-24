@@ -54,6 +54,11 @@ function Assert-VllmReleaseSignedTag {
     $type = (Invoke-Git -Repository $Repository -Arguments @('cat-file','-t',"refs/tags/$Tag") -Capture).Trim()
     if (-not $type.Equals('tag',[StringComparison]::Ordinal)) { throw "Release tag must be an annotated tag object: $Tag" }
     $resolved = (Invoke-Git -Repository $Repository -Arguments @('rev-parse',"$Tag^{commit}") -Capture).Trim()
+    $signature = (Invoke-Git -Repository $Repository -Arguments @('for-each-ref','--format=%(contents:signature)',"refs/tags/$Tag") -Capture).Trim()
+    if (-not $signature.StartsWith('-----BEGIN SSH SIGNATURE-----',[StringComparison]::Ordinal) -or
+        -not $signature.EndsWith('-----END SSH SIGNATURE-----',[StringComparison]::Ordinal)) {
+        throw 'Release tag must contain an SSH signature; OpenPGP, X.509, unsigned, or unknown signature formats are not authorized.'
+    }
     if (-not $resolved.Equals($ExpectedCommit,[StringComparison]::OrdinalIgnoreCase)) { throw "Release tag commit mismatch: expected $ExpectedCommit, got $resolved" }
     $oldNoSystem=$env:GIT_CONFIG_NOSYSTEM
     $oldGlobal=$env:GIT_CONFIG_GLOBAL
