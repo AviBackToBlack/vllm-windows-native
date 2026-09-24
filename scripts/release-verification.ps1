@@ -255,6 +255,21 @@ function Invoke-VllmGhJsonCommand {
     $stdout -join [char]10
 }
 
+function Invoke-VllmBoundedRetry {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [ValidateRange(1,20)][int]$Attempts=4,
+        [ValidateRange(0,60000)][int]$DelayMilliseconds=1500
+    )
+    for($attempt=1;$attempt-le$Attempts;$attempt++){
+        try {
+            return (& $Action)
+        } catch {
+            if($attempt-ge$Attempts){throw}
+            if($DelayMilliseconds-gt0){Start-Sleep -Milliseconds $DelayMilliseconds}
+        }
+    }
+}
 function Invoke-VllmGitHubReleaseVerification {
     param(
         [Parameter(Mandatory)][string]$RepositorySlug,

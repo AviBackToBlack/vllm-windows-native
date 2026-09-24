@@ -159,7 +159,9 @@ switch ($Mode) {
         if(-not$PSCmdlet.ShouldProcess($target,'Publish exact guarded draft as immutable prerelease')){return}
         $published=Invoke-VllmPublishGitHubRelease -RepositorySlug $script:VllmReleaseRepository -Release $inputs.release -Tag $inputs.tag -ProjectCommit $resolvedCommit -TagObject $inputs.signed_tag.tag_object -AssetPlan $inputs.assets -GhExecutable $GhExecutable
         $attestationAssets=Get-VllmReleaseExpectedAssets -ArtifactsDirectory $inputs.artifacts_directory -OfflineVerification $inputs.offline
-        $attestation=Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $inputs.tag -ExpectedTagObject $inputs.signed_tag.tag_object -ArtifactsDirectory $inputs.artifacts_directory -ExpectedAssets $attestationAssets -GhExecutable $GhExecutable
+        $attestation=Invoke-VllmBoundedRetry -Attempts 5 -DelayMilliseconds 1500 -Action {
+            Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $inputs.tag -ExpectedTagObject $inputs.signed_tag.tag_object -ArtifactsDirectory $inputs.artifacts_directory -ExpectedAssets $attestationAssets -GhExecutable $GhExecutable
+        }
         $result=[pscustomobject][ordered]@{
             schema_version=1;component='vllm-windows-native-release-publish-and-verify'
             release=$inputs.release;tag=$inputs.tag;project_commit=$resolvedCommit

@@ -72,8 +72,19 @@ function Get-VllmPublicationApiArguments {
 }
 function Assert-VllmGitHubReleaseImmutability {
     param([Parameter(Mandatory)][string]$RepositorySlug,[string]$GhExecutable='gh')
-    $state=Invoke-VllmPublicationGhJson -Arguments (Get-VllmPublicationApiArguments -Endpoint "repos/$RepositorySlug/immutable-releases") -FailureLabel 'Unable to read GitHub immutable-release state' -Executable $GhExecutable
-    if ($null -eq $state.PSObject.Properties['enabled'] -or $state.enabled -ne $true) { throw 'Repository immutable releases must be enabled before any release mutation.' }
+    try {
+        $state=Invoke-VllmPublicationGhJson -Arguments (Get-VllmPublicationApiArguments -Endpoint "repos/$RepositorySlug/immutable-releases") -FailureLabel 'Unable to read GitHub immutable-release state' -Executable $GhExecutable
+    } catch {
+        if ($_.Exception.Message -match '(?i)(HTTP 404|Not Found)') {
+            throw 'Repository immutable releases are not enabled.'
+        }
+        throw
+    }
+    # GitHub documents disabled state as 404, but tolerate an explicit enabled=false
+    # response as the same fail-closed precondition in case API behavior varies.
+    if ($null -eq $state.PSObject.Properties['enabled'] -or $state.enabled -ne $true) {
+        throw 'Repository immutable releases are not enabled.'
+    }
     [pscustomobject][ordered]@{enabled=$true;enforced_by_owner=($state.enforced_by_owner -eq $true)}
 }
 
@@ -327,7 +338,7 @@ function Invoke-VllmResetOwnedDraftRelease {
     }
     $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
     if($remote.draft-ne$true){throw 'Published releases are never reset or repaired by the release tooling.'}
-    if($remote.prerelease-ne$true){throw 'Only an owned prerelease draft may be reset.'}
+
     $id=[int64]$remote.id
     $apiArguments=@('api','-X','DELETE','-H','Accept: application/vnd.github+json','-H',('X-GitHub-Api-Version: '+$script:VllmReleaseApiVersion),"repos/$RepositorySlug/releases/$id")
     $null=Invoke-VllmPublicationGhCommand -Arguments $apiArguments -FailureLabel 'Unable to delete owned failed GitHub release draft' -Executable $GhExecutable

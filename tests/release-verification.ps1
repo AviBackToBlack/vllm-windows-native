@@ -185,6 +185,25 @@ try {
     [IO.File]::WriteAllLines($fakeGhFail,@('@echo off','echo bad gh diagnostic 1>&2','exit /b 7'),[Text.Encoding]::ASCII)
     Assert-Fails { Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'fake gh failed' -Executable $fakeGhFail } 'bad gh diagnostic'
 
+    $retryState=[pscustomobject]@{Count=0}
+    $retryResult=Invoke-VllmBoundedRetry -Attempts 3 -DelayMilliseconds 0 -Action {
+        $retryState.Count++
+        if($retryState.Count-lt3){throw "transient attestation failure $($retryState.Count)"}
+        'retry-ok'
+    }
+    if(-not([string]$retryResult).Equals('retry-ok',[StringComparison]::Ordinal)-or$retryState.Count-ne3){
+        throw 'Bounded retry did not retry transient verification failures exactly as configured.'
+    }
+
+    $exhaustState=[pscustomobject]@{Count=0}
+    Assert-Fails {
+        Invoke-VllmBoundedRetry -Attempts 2 -DelayMilliseconds 0 -Action {
+            $exhaustState.Count++
+            throw 'permanent attestation failure'
+        }
+    } 'permanent attestation failure'
+    if($exhaustState.Count-ne2){throw 'Bounded retry did not stop at the configured attempt limit.'}
+
     Write-Host 'RELEASE_VERIFICATION_CONTRACT_OK'
 }
 finally {

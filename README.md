@@ -272,6 +272,8 @@ Publishing is a separate explicit operator action:
 
 `PublishDraft` re-proves the same local and remote identities, requires the exact four-asset owned draft, rechecks the local asset bytes immediately before publication, and publishes it as a prerelease with `latest=false`. It then requires GitHub to report the release as immutable and runs the full `VerifyPublished` release-attestation and per-asset attestation chain. Retrying an already published exact-match immutable release is idempotent; a later metadata-only promotion from prerelease to stable does not change its ownership or asset identity.
 
+Immediate post-publish attestation verification uses five bounded attempts with a 1.5-second delay to tolerate GitHub attestation propagation; ordinary VerifyPublished calls remain single-pass.
+
 A failed owned draft can be removed only through the separate recovery operation:
 
 ```powershell
@@ -282,6 +284,8 @@ A failed owned draft can be removed only through the separate recovery operation
 ```
 
 `ResetDraft` is `ShouldProcess`-guarded and deletes only a draft whose ownership marker exactly matches the requested release transaction. Published releases are never deleted, reset, or repaired by this tooling. Use `-WhatIf` on any mutation mode to inspect the operator action without performing it.
+
+Recovery authority is the exact ownership marker plus draft state. Reset therefore remains available even if prerelease metadata was edited externally; published releases are still never deleted or repaired.
 
 ## Run the accepted Windows runtime
 

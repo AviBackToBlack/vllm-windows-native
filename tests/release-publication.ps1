@@ -25,7 +25,7 @@ try{
     $tag='release/v0.27.1-native-windows-single-gpu-sm120'
     $commit='1111111111111111111111111111111111111111'
     $tagObject='2222222222222222222222222222222222222222'
-    $script:FakeImmutable=$false
+    $script:FakeImmutableMode='404'
     $script:FakeMain=$commit
     $script:FakeTagObject=$tagObject
     $script:FakeMainReadCount=0
@@ -64,7 +64,9 @@ try{
         if($Arguments[0]-eq'api'){
             $joined=$Arguments -join ' '
             if($joined.Contains("/immutable-releases")){
-                return (@{enabled=$script:FakeImmutable;enforced_by_owner=$false}|ConvertTo-Json -Compress)
+                if($script:FakeImmutableMode-eq'404'){throw 'Unable to read GitHub immutable-release state: gh: Not Found (HTTP 404)'}
+                if($script:FakeImmutableMode-eq'false'){return (@{enabled=$false;enforced_by_owner=$false}|ConvertTo-Json -Compress)}
+                return (@{enabled=$true;enforced_by_owner=$false}|ConvertTo-Json -Compress)
             }
             if($joined.Contains('/git/ref/heads/main')){
                 $script:FakeMainReadCount++
@@ -119,14 +121,24 @@ try{
     $plan=[object[]]$assetPlan
     Assert-Fails {
         Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
-    } 'immutable releases must be enabled'
+    } 'immutable releases are not enabled'
     if(@($script:FakeCommands|Where-Object{$_ -like 'release create*'}).Count-ne0){throw 'Disabled immutability reached release creation.'}
 
-    $script:FakeImmutable=$true
+    $script:FakeImmutableMode='false'
+    Assert-Fails {
+        Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
+    } 'immutable releases are not enabled'
+    if(@($script:FakeCommands|Where-Object{$_ -like 'release create*'}).Count-ne0){throw 'Explicit enabled=false reached release creation.'}
+
+    $script:FakeImmutableMode='true'
     $script:FakeCommands.Clear()
     $stage=Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
     if($stage.state-ne'draft' -or $stage.asset_count-ne4){throw 'Fresh draft staging did not produce exact four-asset draft.'}
     if(@($script:FakeCommands|Where-Object{$_ -like 'release create*'}).Count-ne1){throw 'Fresh staging did not create exactly one draft.'}
+    $createCommand=[string]@($script:FakeCommands|Where-Object{$_ -like 'release create*'})[0]
+    foreach($flag in @('--draft','--prerelease','--latest=false','--verify-tag')){
+        if($createCommand.IndexOf($flag,[StringComparison]::Ordinal)-lt0){throw "Fresh staging create command is missing required flag: $flag"}
+    }
     if(@($script:FakeCommands|Where-Object{$_ -like 'release upload*'}).Count-ne4){throw 'Fresh staging did not upload exactly four assets.'}
     if(@($script:FakeCommands|Where-Object{$_ -like '*--clobber*'}).Count-ne0){throw 'Fresh staging unexpectedly used --clobber.'}
     $expectedMarker=Get-VllmReleaseOwnershipMarker -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
@@ -193,6 +205,10 @@ try{
     $published=Invoke-VllmPublishGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
     if($published.state-ne'published' -or $script:FakeRelease.draft-ne$false -or $script:FakeRelease.immutable-ne$true){throw 'Publication did not cross immutable boundary.'}
     if(@($script:FakeCommands|Where-Object{$_ -like 'release edit*'}).Count-ne1){throw 'Publication did not perform exactly one release edit.'}
+    $editCommand=[string]@($script:FakeCommands|Where-Object{$_ -like 'release edit*'})[0]
+    foreach($flag in @('--draft=false','--prerelease','--latest=false','--verify-tag')){
+        if($editCommand.IndexOf($flag,[StringComparison]::Ordinal)-lt0){throw "Publication edit command is missing required flag: $flag"}
+    }
 
     $script:FakeCommands.Clear()
     $publishedRetry=Invoke-VllmPublishGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
@@ -214,6 +230,7 @@ try{
     } 'never reset'
 
     $script:FakeRelease=Get-FakeReleaseObject -Body (Get-VllmReleaseDraftBody -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit) -Draft $true
+    $script:FakeRelease.prerelease=$false
     $reset=Invoke-VllmResetOwnedDraftRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
     if($reset.state-ne'reset' -or $null-ne$script:FakeRelease){throw 'Owned draft reset failed.'}
 

@@ -89,7 +89,11 @@ Draft discovery uses the authenticated releases list rather than the by-tag rele
 
 `PublishDraft` is a separate `ShouldProcess`-guarded operator action. It repeats local offline verification, signed-tag verification, GitHub immutable/main/tag-object preflights, exact remote four-asset verification, and local asset size/digest checks immediately before publishing the draft as a prerelease. After the draft flag is cleared, success additionally requires GitHub to report the release immutable and the existing `VerifyPublished` release-attestation plus per-asset attestation chain to pass. An exact already-published immutable release is idempotently complete; later prerelease/latest metadata promotion does not alter asset/tag ownership.
 
-`ResetDraft` is a separate `ShouldProcess`-guarded recovery action. It rediscovers the release, reproves the exact ownership marker, and deletes only an owned prerelease draft. Published releases are never reset, deleted, or repaired by this tooling.
+The immediate post-publish attestation proof uses a short bounded retry window for GitHub propagation. Ordinary verification stays single-pass so eventual consistency is not hidden outside the publication transition.
+
+`ResetDraft` is a separate `ShouldProcess`-guarded recovery action. It rediscovers the release, reproves the exact ownership marker, and deletes only an exact marker-owned draft. Published releases are never reset, deleted, or repaired by this tooling.
+
+Reset authority is exact schema-v1 ownership plus draft state, not mutable prerelease metadata, so an externally edited owned draft remains recoverable while any published release remains untouchable.
 
 SM-19C tests use an injected fake `gh` state machine and perform no GitHub mutation. Production signing, repository-setting mutation, and real publication remain outside the implementation PR and are exercised only after review in the trusted SM-19D/operator flow.
 
