@@ -821,6 +821,35 @@ function Assert-VllmOfflineRelease {
     } finally { Close-VllmReleaseGitSnapshot -Snapshot $snapshot }
 }
 
+function Assert-VllmReleasePreparationLockOwnership {
+    param(
+        [Parameter(Mandatory)][IO.FileStream]$Stream,
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Path
+    )
+    if($Stream.Length-le0-or$Stream.Length-gt4096){throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    $Stream.Position=0
+    $bytes=New-Object byte[] ([int]$Stream.Length)
+    $offset=0
+    while($offset-lt$bytes.Length){$read=$Stream.Read($bytes,$offset,$bytes.Length-$offset);if($read-le0){throw "Release preparation lock could not be read completely: $Path"};$offset+=$read}
+    if($bytes.Length-ge3-and$bytes[0]-eq0xEF-and$bytes[1]-eq0xBB-and$bytes[2]-eq0xBF){throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    $utf8=New-Object Text.UTF8Encoding($false,$true)
+    try{$text=$utf8.GetString($bytes)}catch{throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    $normalized=$text.Replace("`r`n","`n")
+    if($normalized.Contains("`r")-or-not$normalized.EndsWith("`n",[StringComparison]::Ordinal)){throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    $lines=@($normalized.Substring(0,$normalized.Length-1).Split([char]10))
+    if($lines.Count-eq5-and[string]::Equals($lines[0],'schema=1',[StringComparison]::Ordinal)){$base=1}
+    elseif($lines.Count-eq4-and[string]::Equals($lines[0],'operation=release-prepare',[StringComparison]::Ordinal)){$base=0}
+    else{throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    if(-not[string]::Equals($lines[$base],'operation=release-prepare',[StringComparison]::Ordinal)){throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    $expectedRoot='root='+$Root
+    if(-not[string]::Equals($lines[$base+1],$expectedRoot,[StringComparison]::OrdinalIgnoreCase)){throw "Release preparation lock belongs to a different release root: $Path"}
+    if($lines[$base+2]-notmatch '^pid=[0-9]+$'){throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    $started=$lines[$base+3]
+    if(-not$started.StartsWith('started=',[StringComparison]::Ordinal)){throw "Release preparation lock is not recognized as tool-owned: $Path"}
+    try{[void][DateTimeOffset]::Parse($started.Substring(8),[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)}catch{throw "Release preparation lock is not recognized as tool-owned: $Path"}
+}
+
 function Enter-VllmReleasePreparationLock {
     param([Parameter(Mandatory)][string]$ArtifactsDirectory)
 
@@ -836,14 +865,23 @@ function Enter-VllmReleasePreparationLock {
 
     $lockName = '.' + $leaf + '.vllm-release-prepare.lock'
     $lockPath = [IO.Path]::Combine($parent,$lockName)
+    $created = $false
+    $stream = $null
     try {
-        $stream = [IO.File]::Open($lockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
-    } catch [IO.IOException] {
-        if (($_.Exception.HResult -band 0xFFFF) -eq 32) { throw "Another offline release preparation is active for '$root'." }
-        throw "Release preparation lock cannot be opened safely: $lockPath ($($_.Exception.Message))"
-    } catch [UnauthorizedAccessException] {
-        throw "Release preparation lock cannot be acquired safely: $lockPath"
-    }
+        $stream = [IO.File]::Open($lockPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+            $created = $true
+        } catch [IO.IOException] {
+            try {
+                $stream = [IO.File]::Open($lockPath,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+            } catch [IO.IOException] {
+                if (($_.Exception.HResult -band 0xFFFF) -eq 32) { throw "Another offline release preparation is active for '$root'." }
+                throw "Release preparation lock cannot be opened safely: $lockPath ($($_.Exception.Message))"
+            } catch [UnauthorizedAccessException] {
+                throw "Release preparation lock cannot be acquired safely: $lockPath"
+            }
+        } catch [UnauthorizedAccessException] {
+            throw "Release preparation lock cannot be acquired safely: $lockPath"
+        }
 
     try {
         $parentPhysical = Get-VllmPhysicalCandidatePath -Path $parent -Format Guid
@@ -857,16 +895,14 @@ function Enter-VllmReleasePreparationLock {
             throw "Release preparation lock has unexpected hard-link count $linkCount; refusing to use it: $lockPath"
         }
 
+        if(-not$created){Assert-VllmReleasePreparationLockOwnership -Stream $stream -Root $root -Path $lockPath}
+        $started=(Get-Date).ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+        $payload="schema=1`noperation=release-prepare`nroot=$root`npid=$PID`nstarted=$started`n"
+        $payloadBytes=(New-Object Text.UTF8Encoding($false)).GetBytes($payload)
         $stream.SetLength(0)
-        $writer = New-Object IO.StreamWriter($stream,(New-Object Text.UTF8Encoding($false)),1024,$true)
-        try {
-            $writer.WriteLine('operation=release-prepare')
-            $writer.WriteLine("root=$root")
-            $writer.WriteLine("pid=$PID")
-            $writer.WriteLine("started=$((Get-Date).ToString('o'))")
-            $writer.Flush()
-            $stream.Flush()
-        } finally { $writer.Dispose() }
+        $stream.Position=0
+        $stream.Write($payloadBytes,0,$payloadBytes.Length)
+        $stream.Flush()
 
         return [pscustomobject][ordered]@{
             Stream=$stream
@@ -923,12 +959,10 @@ function Write-VllmOfflineRelease {
     $parentPhysical=Get-VllmCanonicalExistingPath -Path $parent -Format Dos
     if(-not$parentPhysical.Equals($parent,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts parent resolves through a filesystem alias: $parent -> $parentPhysical"}
     $parentIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($parent)
-    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null
+    $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
+    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null;$prepareLock=$null
     $destWheel=$null;$bundlePath=$null;$indexPath=$null;$sumPath=$null
-    $prepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $root
     try {
-        if($FaultPoint-eq'AfterPrepareLock'){throw 'FAULT_INJECTED:AfterPrepareLock'}
-        $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
         try {
             $parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($parent)
         } catch {
@@ -943,6 +977,8 @@ function Write-VllmOfflineRelease {
             $parentGuard.Dispose();$parentGuard=$null
             throw "Release artifacts parent guard resolves outside expected directory: $parentGuardPhysical"
         }
+        $prepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $root
+        if($FaultPoint-eq'AfterPrepareLock'){throw 'FAULT_INJECTED:AfterPrepareLock'}
         if(Test-Path -LiteralPath $root){throw "Release artifacts final path already exists; Prepare requires an absent final path: $root"}
         $snapshot=Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
         $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath
@@ -1026,6 +1062,6 @@ function Write-VllmOfflineRelease {
         if($null-ne$stageGuard){$stageGuard.Dispose();$stageGuard=$null}
         if($null-ne$snapshot){Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
         if($null-ne$parentGuard){$parentGuard.Dispose();$parentGuard=$null}
-        Exit-VllmReleasePreparationLock -Lock $prepareLock
+        if($null-ne$prepareLock){Exit-VllmReleasePreparationLock -Lock $prepareLock;$prepareLock=$null}
     }
 }

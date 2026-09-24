@@ -38,6 +38,7 @@ function Test-ExpectedFailure {
         'artifacts-volume-root'='Release artifacts directory must not be a volume root'
         'directory-object-replacement'='changed filesystem object identity.'
         'prepare-concurrent-lock'='Another offline release preparation is active'
+        'prepare-foreign-lock'='Release preparation lock is not recognized as tool-owned:'
         'prepare-parent-concurrent'='Another offline release preparation is active under parent directory'
         'prepare-fault-after-lock'='FAULT_INJECTED:AfterPrepareLock'
         'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
@@ -362,6 +363,26 @@ try {
     if(@(Get-ChildItem -LiteralPath $concurrentOut -Force).Count-ne4){throw 'Serialized preparation output does not contain exactly four assets.'}
     if(-not(Test-Path -LiteralPath $heldLockPath -PathType Leaf)){throw 'Release preparation coordination sidecar was not retained for safe reuse.'}
     Write-Host 'RELEASE_PREPARE_SERIALIZATION_OK'
+
+    $foreignLockOut=Join-Path $root 'foreign-lock-output'
+    $foreignLockPath=Join-Path $root '.foreign-lock-output.vllm-release-prepare.lock'
+    [IO.File]::WriteAllText($foreignLockPath,'foreign-sidecar',[Text.UTF8Encoding]::new($false))
+    $foreignBefore=[IO.File]::ReadAllBytes($foreignLockPath)
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $foreignLockOut|Out-Null} 'prepare-foreign-lock'
+    $foreignAfter=[IO.File]::ReadAllBytes($foreignLockPath)
+    if(-not[Convert]::ToBase64String($foreignBefore).Equals([Convert]::ToBase64String($foreignAfter),[StringComparison]::Ordinal)){throw 'Foreign release preparation sidecar was modified.'}
+    if(Test-Path -LiteralPath $foreignLockOut){throw 'Foreign sidecar refusal created the final output path.'}
+    Remove-Item -LiteralPath $foreignLockPath -Force
+
+    $legacyStarted=[DateTimeOffset]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    $legacyPayload="operation=release-prepare`r`nroot=$foreignLockOut`r`npid=12345`r`nstarted=$legacyStarted`r`n"
+    [IO.File]::WriteAllText($foreignLockPath,$legacyPayload,[Text.UTF8Encoding]::new($false))
+    $legacyResult=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $foreignLockOut
+    if($legacyResult.bundle_sha256-ne$r1.bundle_sha256){throw 'Recognized legacy sidecar retry produced a different bundle identity.'}
+    $upgradedLock=[IO.File]::ReadAllText($foreignLockPath,[Text.Encoding]::UTF8)
+    if(-not$upgradedLock.StartsWith("schema=1`noperation=release-prepare`n",[StringComparison]::Ordinal)){throw 'Recognized legacy sidecar was not upgraded to canonical schema v1.'}
+    Remove-Item -LiteralPath $foreignLockOut -Recurse -Force
+    Write-Host 'RELEASE_PREPARE_LOCK_OWNERSHIP_OK'
 
     $parentBusyOut=Join-Path $root 'parent-busy-output'
     $heldParentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($root)
