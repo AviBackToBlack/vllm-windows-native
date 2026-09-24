@@ -21,6 +21,7 @@ namespace VllmWindowsNative {
         private const uint BackupSemantics=0x02000000;
         private const uint OpenReparsePoint=0x00200000;
         private const int FileRenameInfo=3;
+        private const int FileDispositionInfo=4;
         [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
         private static extern SafeFileHandle CreateFile(string path,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
         [DllImport("kernel32.dll",SetLastError=true)]
@@ -34,6 +35,13 @@ namespace VllmWindowsNative {
             var handle=CreateFile(path,GenericRead|FileReadAttributes,FileShareRead,IntPtr.Zero,OpenExisting,OpenReparsePoint,IntPtr.Zero);
             if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
             return handle;
+        }
+        public static void Delete(SafeFileHandle handle) {
+            var buffer=Marshal.AllocHGlobal(4);
+            try {
+                Marshal.WriteInt32(buffer,1);
+                if(!SetFileInformationByHandle(handle,FileDispositionInfo,buffer,4)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            } finally { Marshal.FreeHGlobal(buffer); }
         }
         public static void Rename(SafeFileHandle handle,string destination) {
             var bytes=Encoding.Unicode.GetBytes(destination+"\0");
@@ -125,43 +133,64 @@ function Resolve-VllmReleaseCommit {
     return ([string]$resolved).ToLowerInvariant()
 }
 
-function Invoke-VllmReleaseTreeCleanupNoFollow {
-    param([Parameter(Mandatory)][string]$Path)
-    $entry=Get-VllmPathEntryInfo -Path $Path
-    if(-not$entry.Exists){return}
-    if($entry.IsReparsePoint){
-        if($entry.IsDirectory){[IO.Directory]::Delete($entry.Path,$false)}else{[IO.File]::Delete($entry.Path)}
-        return
-    }
-    if($entry.IsDirectory){
-        foreach($child in @(Get-ChildItem -LiteralPath $entry.Path -Force)){
-            Invoke-VllmReleaseTreeCleanupNoFollow -Path $child.FullName
+function Invoke-VllmReleaseGuardedEntryCleanup {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ExpectedGuidPath,
+        [AllowNull()]$ExistingGuard=$null,
+        [AllowNull()][string]$ExpectedIdentity=$null
+    )
+    $guard=$ExistingGuard;$ownsGuard=$false
+    try{
+        if($null-eq$guard){$guard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($Path);$ownsGuard=$true}
+        $actualGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($guard))
+        $expectedGuid=Get-VllmPathWithoutTrailingSeparator $ExpectedGuidPath
+        if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Guarded cleanup entry resolves outside expected path '$Path': $actualGuid"}
+        if(-not[string]::IsNullOrWhiteSpace($ExpectedIdentity)){
+            $actualIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($guard)
+            if(-not[string]::Equals($actualIdentity,$ExpectedIdentity,[StringComparison]::Ordinal)){throw "Guarded cleanup entry changed filesystem object identity: $Path"}
         }
-        [IO.Directory]::Delete($entry.Path,$false)
-        return
+        $entry=Get-VllmPathEntryInfo -Path $Path
+        if(-not$entry.Exists){throw "Guarded cleanup entry disappeared: $Path"}
+        if($entry.IsDirectory-and-not$entry.IsReparsePoint){
+            foreach($child in @(Get-ChildItem -LiteralPath $Path -Force)){
+                $childExpected=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($actualGuid,$child.Name))
+                Invoke-VllmReleaseGuardedEntryCleanup -Path $child.FullName -ExpectedGuidPath $childExpected
+            }
+        }elseif((-not$entry.IsDirectory)-and(([IO.File]::GetAttributes($Path)-band[IO.FileAttributes]::ReadOnly)-ne0)){
+            [IO.File]::SetAttributes($Path,([IO.File]::GetAttributes($Path)-band(-bnot[IO.FileAttributes]::ReadOnly)))
+        }
+        [VllmWindowsNative.ReleaseDirectoryGuard]::Delete($guard)
+    }finally{
+        if($ownsGuard-and$null-ne$guard){$guard.Dispose()}
     }
-    if(([IO.File]::GetAttributes($entry.Path)-band[IO.FileAttributes]::ReadOnly)-ne0){
-        [IO.File]::SetAttributes($entry.Path,([IO.File]::GetAttributes($entry.Path)-band(-bnot[IO.FileAttributes]::ReadOnly)))
-    }
-    [IO.File]::Delete($entry.Path)
 }
 
 function Invoke-VllmReleaseOwnedTempCleanup {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$ExpectedPhysical,
-        [Parameter(Mandatory)][string]$ExpectedIdentity
+        [Parameter(Mandatory)][string]$ExpectedIdentity,
+        [AllowNull()]$ExistingRootGuard=$null
     )
-    $entry=Get-VllmPathEntryInfo -Path $Path
-    if(-not$entry.Exists){return}
-    if(-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "Release snapshot temp root changed type or became a reparse point: $Path"}
-    $physical=Get-VllmCanonicalExistingPath -Path $Path -Format Dos
-    if(-not$physical.Equals($ExpectedPhysical,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot temp root changed physical path: $Path"}
-    $identity=[VllmWindowsNative.NativePath]::GetFileIdentity($Path)
-    if(-not[string]::Equals($identity,$ExpectedIdentity,[StringComparison]::Ordinal)){throw "Release snapshot temp root changed filesystem object identity: $Path"}
-    Invoke-VllmReleaseTreeCleanupNoFollow -Path $Path
+    if(-not(Test-Path -LiteralPath $Path)){return}
+    $guard=$ExistingRootGuard;$ownsGuard=$false
+    try{
+        if($null-eq$guard){$guard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($Path);$ownsGuard=$true}
+        $entry=Get-VllmPathEntryInfo -Path $Path
+        if(-not$entry.Exists-or-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "Release snapshot temp root changed type or became a reparse point: $Path"}
+        $guardGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($guard))
+        $expectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $Path -Format Guid)
+        if(-not$guardGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot temp root guard resolves outside expected path: $guardGuid"}
+        $physical=Get-VllmCanonicalExistingPath -Path $Path -Format Dos
+        if(-not$physical.Equals($ExpectedPhysical,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot temp root changed physical path: $Path"}
+        $identity=[VllmWindowsNative.NativePath]::GetFileIdentity($guard)
+        if(-not[string]::Equals($identity,$ExpectedIdentity,[StringComparison]::Ordinal)){throw "Release snapshot temp root changed filesystem object identity: $Path"}
+        Invoke-VllmReleaseGuardedEntryCleanup -Path $Path -ExpectedGuidPath $guardGuid -ExistingGuard $guard
+    }finally{
+        if($ownsGuard-and$null-ne$guard){$guard.Dispose()}
+    }
 }
-
 function Get-VllmReleaseGitSnapshot {
     param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$Commit)
     $resolved = Resolve-VllmReleaseCommit -Repository $Repository -Commit $Commit
@@ -215,10 +244,10 @@ function Get-VllmReleaseGitSnapshot {
     } catch {
         $originalError=$_
         if($null-ne$snapshotRootGuard){$snapshotRootGuard.Dispose();$snapshotRootGuard=$null}
-        if($null-ne$tempRootGuard){$tempRootGuard.Dispose();$tempRootGuard=$null}
         if($null-ne$tempRootPhysical-and$null-ne$tempRootIdentity){
-            try{Invoke-VllmReleaseOwnedTempCleanup -Path $tempRoot -ExpectedPhysical $tempRootPhysical -ExpectedIdentity $tempRootIdentity}catch{Write-Warning "Release snapshot cleanup after materialization failure was skipped or incomplete: $($_.Exception.Message)"}
+            try{Invoke-VllmReleaseOwnedTempCleanup -Path $tempRoot -ExpectedPhysical $tempRootPhysical -ExpectedIdentity $tempRootIdentity -ExistingRootGuard $tempRootGuard}catch{Write-Warning "Release snapshot cleanup after materialization failure was skipped or incomplete: $($_.Exception.Message)"}
         }
+        if($null-ne$tempRootGuard){$tempRootGuard.Dispose();$tempRootGuard=$null}
         throw $originalError
     }
 }
@@ -230,10 +259,10 @@ function Close-VllmReleaseGitSnapshot {
         $Snapshot.MemberGuards.Clear()
     }
     if(($Snapshot.PSObject.Properties.Name -contains 'RootGuard')-and$null-ne$Snapshot.RootGuard){$Snapshot.RootGuard.Dispose();$Snapshot.RootGuard=$null}
-    if(($Snapshot.PSObject.Properties.Name -contains 'TempRootGuard')-and$null-ne$Snapshot.TempRootGuard){$Snapshot.TempRootGuard.Dispose();$Snapshot.TempRootGuard=$null}
     if($Snapshot.TempRoot-and(Test-Path -LiteralPath ([string]$Snapshot.TempRoot))){
-        try{Invoke-VllmReleaseOwnedTempCleanup -Path ([string]$Snapshot.TempRoot) -ExpectedPhysical ([string]$Snapshot.TempRootPhysical) -ExpectedIdentity ([string]$Snapshot.TempRootIdentity)}catch{Write-Warning "Release snapshot cleanup was skipped or incomplete: $($_.Exception.Message)"}
+        try{Invoke-VllmReleaseOwnedTempCleanup -Path ([string]$Snapshot.TempRoot) -ExpectedPhysical ([string]$Snapshot.TempRootPhysical) -ExpectedIdentity ([string]$Snapshot.TempRootIdentity) -ExistingRootGuard $Snapshot.TempRootGuard}catch{Write-Warning "Release snapshot cleanup was skipped or incomplete: $($_.Exception.Message)"}
     }
+    if(($Snapshot.PSObject.Properties.Name -contains 'TempRootGuard')-and$null-ne$Snapshot.TempRootGuard){$Snapshot.TempRootGuard.Dispose();$Snapshot.TempRootGuard=$null}
 }
 
 function Assert-VllmReleaseGitRegularBlob {
@@ -1207,21 +1236,9 @@ function Write-VllmOfflineRelease {
     } catch {
         if($null-ne$stageRoot-and(Test-Path -LiteralPath $stageRoot)){
             try {
-                if($null-ne$stageGuard){
-                    $guardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stageGuard))
-                    if($null-eq$stageExpectedGuid-or-not$guardPhysical.Equals($stageExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw 'Private release staging guard no longer resolves to the owned staging directory.'}
-                }else{
-                    [void](Assert-VllmReleaseDirectoryIdentity -Path $stageRoot -ExpectedPhysical $stageExpectedPhysical -ExpectedIdentity $stageIdentity -Label 'Private release staging path')
-                }
-                foreach($candidate in @($sumPath,$indexPath,$bundlePath,$destWheel)){
-                    if(-not[string]::IsNullOrWhiteSpace([string]$candidate)-and(Test-Path -LiteralPath $candidate -PathType Leaf)){
-                        $candidateEntry=Get-VllmPathEntryInfo -Path $candidate
-                        if($candidateEntry.IsReparsePoint){throw "Release staging cleanup refuses reparse-point asset: $candidate"}
-                        Remove-Item -LiteralPath $candidate -Force
-                    }
-                }
+                if($null-eq$stageExpectedGuid-or[string]::IsNullOrWhiteSpace([string]$stageIdentity)){throw 'Private release staging ownership metadata is incomplete; cleanup is refused.'}
+                Invoke-VllmReleaseGuardedEntryCleanup -Path $stageRoot -ExpectedGuidPath $stageExpectedGuid -ExistingGuard $stageGuard -ExpectedIdentity ([string]$stageIdentity)
                 if($null-ne$stageGuard){$stageGuard.Dispose();$stageGuard=$null}
-                if(Test-Path -LiteralPath $stageRoot){[IO.Directory]::Delete($stageRoot,$false)}
             }catch{
                 Write-Warning "Release staging cleanup was skipped or incomplete because staging ownership could not be handled safely: $($_.Exception.Message)"
             }
