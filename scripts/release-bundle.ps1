@@ -7,6 +7,7 @@ if (-not ('VllmWindowsNative.ReleaseDirectoryGuard' -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -15,8 +16,10 @@ namespace VllmWindowsNative {
         private const uint DeleteAccess=0x00010000;
         private const uint FileReadAttributes=0x00000080;
         private const uint GenericRead=0x80000000;
+        private const uint GenericWrite=0x40000000;
         private const uint FileShareRead=0x00000001;
         private const uint FileShareWrite=0x00000002;
+        private const uint CreateNew=1;
         private const uint OpenExisting=3;
         private const uint BackupSemantics=0x02000000;
         private const uint OpenReparsePoint=0x00200000;
@@ -33,6 +36,16 @@ namespace VllmWindowsNative {
         }
         public static SafeFileHandle OpenRead(string path) {
             var handle=CreateFile(path,GenericRead|FileReadAttributes,FileShareRead,IntPtr.Zero,OpenExisting,OpenReparsePoint,IntPtr.Zero);
+            if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return handle;
+        }
+        public static FileStream CreateNewFileStream(string path) {
+            var handle=CreateFile(path,GenericRead|GenericWrite|FileReadAttributes,FileShareRead|FileShareWrite,IntPtr.Zero,CreateNew,OpenReparsePoint,IntPtr.Zero);
+            if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return new FileStream(handle,FileAccess.ReadWrite,65536,false);
+        }
+        public static SafeFileHandle OpenReadTransition(string path) {
+            var handle=CreateFile(path,GenericRead|FileReadAttributes,FileShareRead|FileShareWrite,IntPtr.Zero,OpenExisting,OpenReparsePoint,IntPtr.Zero);
             if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
             return handle;
         }
@@ -74,6 +87,32 @@ function Get-VllmReleaseFileIdentity {
     }
 }
 
+function Write-VllmReleasePinnedFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ExpectedParentGuid,
+        [Parameter(Mandatory)][scriptblock]$WriteAction
+    )
+    $writer=[VllmWindowsNative.ReleaseDirectoryGuard]::CreateNewFileStream($Path)
+    try{
+        $entry=Get-VllmPathEntryInfo -Path $Path
+        if(-not$entry.Exists-or$entry.IsDirectory-or$entry.IsReparsePoint){throw "Pinned release file is not a regular non-reparse file: $Path"}
+        if([VllmWindowsNative.NativePath]::GetLinkCount($writer.SafeFileHandle)-ne1){throw "Pinned release file has unexpected hard-link count: $Path"}
+        $expectedGuid=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($ExpectedParentGuid,[IO.Path]::GetFileName($Path)))
+        $actualGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($writer.SafeFileHandle))
+        if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Pinned release file resolves outside expected parent: $Path"}
+        & $WriteAction $writer
+        $writer.Flush();$writer.Position=0
+        $guard=[VllmWindowsNative.ReleaseDirectoryGuard]::OpenReadTransition($Path)
+        try{
+            $guardGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($guard))
+            if(-not$guardGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Pinned release transition handle resolves outside expected parent: $Path"}
+            if([VllmWindowsNative.NativePath]::GetLinkCount($guard)-ne1){throw "Pinned release transition handle has unexpected hard-link count: $Path"}
+            $writer.Dispose();$writer=$null
+            return $guard
+        }finally{if($null-ne$guard){$guard.Dispose()}}
+    }finally{if($null-ne$writer){$writer.Dispose()}}
+}
 function Get-VllmReleaseStreamSha256 {
     param([Parameter(Mandatory)][IO.Stream]$Stream)
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -191,72 +230,120 @@ function Invoke-VllmReleaseOwnedTempCleanup {
         if($ownsGuard-and$null-ne$guard){$guard.Dispose()}
     }
 }
+function Write-VllmGitBlobToStream {
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$ObjectId,
+        [Parameter(Mandatory)][IO.Stream]$Stream
+    )
+    if($ObjectId-notmatch'^[0-9a-fA-F]{40,64}$'){throw "Git blob object id is invalid: $ObjectId"}
+    $git=(Get-Command git -ErrorAction Stop).Source
+    $psi=New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName=$git
+    $psi.WorkingDirectory=[IO.Path]::GetFullPath($Repository)
+    $psi.Arguments='cat-file blob '+$ObjectId
+    $psi.UseShellExecute=$false
+    $psi.RedirectStandardOutput=$true
+    $psi.RedirectStandardError=$true
+    $psi.CreateNoWindow=$true
+    $proc=New-Object Diagnostics.Process
+    $proc.StartInfo=$psi
+    [void]$proc.Start()
+    try{
+        $proc.StandardOutput.BaseStream.CopyTo($Stream)
+        $stderr=$proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        if($proc.ExitCode-ne0){throw "git cat-file failed for blob $ObjectId`: $stderr"}
+        $Stream.Flush()
+        $Stream.Position=0
+    }finally{
+        if(-not$proc.HasExited){try{$proc.Kill()}catch{Write-Verbose "Failed to stop git cat-file process after stream failure: $($_.Exception.Message)"}}
+        $proc.Dispose()
+    }
+}
+
+function Get-VllmReleaseSnapshotParentDirectory {
+    param([Parameter(Mandatory)]$Snapshot,[Parameter(Mandatory)][string]$RelativePath)
+    $parts=@($RelativePath -split '/')
+    $currentPath=[string]$Snapshot.Root
+    $currentGuid=[string]$Snapshot.RootExpectedGuid
+    $prefix=New-Object System.Collections.Generic.List[string]
+    for($i=0;$i-lt$parts.Count-1;$i++){
+        $segment=[string]$parts[$i]
+        $prefix.Add($segment)
+        $key=($prefix.ToArray()-join '/').ToLowerInvariant()
+        if(-not$Snapshot.DirectoryGuards.ContainsKey($key)){
+            $candidate=Join-Path $currentPath $segment
+            if(-not(Test-Path -LiteralPath $candidate)){[void][IO.Directory]::CreateDirectory($candidate)}
+            $guard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($candidate)
+            try{
+                $entry=Get-VllmPathEntryInfo -Path $candidate
+                if(-not$entry.Exists-or-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "Snapshot parent is not a regular directory: $candidate"}
+                $actualGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($guard))
+                $expectedGuid=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($currentGuid,$segment))
+                if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Snapshot parent handle resolves outside the owned snapshot root: $candidate"}
+                $Snapshot.DirectoryGuards[$key]=[pscustomobject][ordered]@{Path=$candidate;Guid=$actualGuid;Handle=$guard}
+                $guard=$null
+            }finally{if($null-ne$guard){$guard.Dispose()}}
+        }
+        $item=$Snapshot.DirectoryGuards[$key]
+        $currentPath=[string]$item.Path
+        $currentGuid=[string]$item.Guid
+    }
+    return [pscustomobject][ordered]@{Path=$currentPath;Guid=$currentGuid}
+}
 function Get-VllmReleaseGitSnapshot {
     param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$Commit)
-    $resolved = Resolve-VllmReleaseCommit -Repository $Repository -Commit $Commit
-    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-' + [guid]::NewGuid().ToString('N'))
-    $snapshotRoot = Join-Path $tempRoot 'snapshot'
-    $archivePath = Join-Path $tempRoot 'snapshot.zip'
-    $tempRootPhysical=$null;$tempRootIdentity=$null;$tempRootGuard=$null;$tempRootExpectedGuid=$null;$snapshotRootGuard=$null;$snapshotRootExpectedGuid=$null;$snapshotRootIdentity=$null
-    [void][IO.Directory]::CreateDirectory($tempRoot)
-    $tempEntry=Get-VllmPathEntryInfo -Path $tempRoot
-    if(-not$tempEntry.Exists-or-not$tempEntry.IsDirectory-or$tempEntry.IsReparsePoint){throw "Release snapshot temp root is not a regular directory: $tempRoot"}
-    $tempRootPhysical=Get-VllmCanonicalExistingPath -Path $tempRoot -Format Dos
-    $tempRootIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($tempRoot)
-    [void][IO.Directory]::CreateDirectory($snapshotRoot)
-    $snapshotEntry=Get-VllmPathEntryInfo -Path $snapshotRoot
-    if(-not$snapshotEntry.Exists-or-not$snapshotEntry.IsDirectory-or$snapshotEntry.IsReparsePoint){throw "Release snapshot root is not a regular directory: $snapshotRoot"}
-    $snapshotRootExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $snapshotRoot -Format Guid)
-    $snapshotRootIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($snapshotRoot)
-    try {
+    $resolved=Resolve-VllmReleaseCommit -Repository $Repository -Commit $Commit
+    $tempRoot=Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-'+[guid]::NewGuid().ToString('N'))
+    $snapshotRoot=Join-Path $tempRoot 'snapshot'
+    $tempRootGuard=$null;$snapshotRootGuard=$null
+    $tempRootPhysical=$null;$tempRootIdentity=$null;$tempRootExpectedGuid=$null;$snapshotRootExpectedGuid=$null;$snapshotRootIdentity=$null
+    try{
+        [void][IO.Directory]::CreateDirectory($tempRoot)
+        $tempEntry=Get-VllmPathEntryInfo -Path $tempRoot
+        if(-not$tempEntry.Exists-or-not$tempEntry.IsDirectory-or$tempEntry.IsReparsePoint){throw "Release snapshot temp root is not a regular directory: $tempRoot"}
+        $tempRootPhysical=Get-VllmCanonicalExistingPath -Path $tempRoot -Format Dos
+        $tempRootIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($tempRoot)
         $tempRootExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $tempRoot -Format Guid)
         $tempRootGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($tempRoot)
         $tempGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($tempRootGuard))
         if(-not$tempGuardPhysical.Equals($tempRootExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot temp-root guard resolves outside expected directory: $tempGuardPhysical"}
-        $tempGuardIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($tempRootGuard)
-        if(-not[string]::Equals($tempGuardIdentity,$tempRootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot temp root changed filesystem object identity before materialization.'}
-
+        if(-not[string]::Equals([VllmWindowsNative.NativePath]::GetFileIdentity($tempRootGuard),$tempRootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot temp root changed filesystem object identity during setup.'}        [void][IO.Directory]::CreateDirectory($snapshotRoot)
+        $snapshotEntry=Get-VllmPathEntryInfo -Path $snapshotRoot
+        if(-not$snapshotEntry.Exists-or-not$snapshotEntry.IsDirectory-or$snapshotEntry.IsReparsePoint){throw "Release snapshot root is not a regular directory: $snapshotRoot"}
+        $snapshotRootExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $snapshotRoot -Format Guid)
+        $snapshotRootIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($snapshotRoot)
         $snapshotRootGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($snapshotRoot)
         $snapshotGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($snapshotRootGuard))
         if(-not$snapshotGuardPhysical.Equals($snapshotRootExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot root guard resolves outside expected directory: $snapshotGuardPhysical"}
-        $guardIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($snapshotRootGuard)
-        if(-not[string]::Equals($guardIdentity,$snapshotRootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot root changed filesystem object identity before materialization.'}
-
-        & git -C $Repository -c core.longpaths=true archive --format=zip --output=$archivePath $resolved
-        if ($LASTEXITCODE -ne 0) { throw "git archive failed for project commit $resolved." }
-        [IO.Compression.ZipFile]::ExtractToDirectory($archivePath,$snapshotRoot)
-        [IO.File]::Delete($archivePath)
+        if(-not[string]::Equals([VllmWindowsNative.NativePath]::GetFileIdentity($snapshotRootGuard),$snapshotRootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot root changed filesystem object identity during setup.'}
 
         return [pscustomobject][ordered]@{
-            Repository=[IO.Path]::GetFullPath($Repository)
-            Commit=$resolved
-            Root=$snapshotRoot
-            TempRoot=$tempRoot
-            TempRootPhysical=$tempRootPhysical
-            TempRootIdentity=$tempRootIdentity
-            TempRootGuard=$tempRootGuard
-            TempRootExpectedGuid=$tempRootExpectedGuid
-            RootGuard=$snapshotRootGuard
-            RootExpectedGuid=$snapshotRootExpectedGuid
-            RootIdentity=$snapshotRootIdentity
-            MemberGuards=@{}
+            Repository=[IO.Path]::GetFullPath($Repository);Commit=$resolved;Root=$snapshotRoot;TempRoot=$tempRoot
+            TempRootPhysical=$tempRootPhysical;TempRootIdentity=$tempRootIdentity;TempRootGuard=$tempRootGuard;TempRootExpectedGuid=$tempRootExpectedGuid
+            RootGuard=$snapshotRootGuard;RootExpectedGuid=$snapshotRootExpectedGuid;RootIdentity=$snapshotRootIdentity
+            DirectoryGuards=@{};MemberGuards=@{}
         }
-    } catch {
+    }catch{
         $originalError=$_
         if($null-ne$snapshotRootGuard){$snapshotRootGuard.Dispose();$snapshotRootGuard=$null}
-        if($null-ne$tempRootPhysical-and$null-ne$tempRootIdentity){
-            try{Invoke-VllmReleaseOwnedTempCleanup -Path $tempRoot -ExpectedPhysical $tempRootPhysical -ExpectedIdentity $tempRootIdentity -ExistingRootGuard $tempRootGuard}catch{Write-Warning "Release snapshot cleanup after materialization failure was skipped or incomplete: $($_.Exception.Message)"}
+        if($null-ne$tempRootPhysical-and$null-ne$tempRootIdentity-and$null-ne$tempRootGuard){
+            try{Invoke-VllmReleaseOwnedTempCleanup -Path $tempRoot -ExpectedPhysical $tempRootPhysical -ExpectedIdentity $tempRootIdentity -ExistingRootGuard $tempRootGuard}catch{Write-Warning "Release snapshot setup cleanup was skipped or incomplete: $($_.Exception.Message)"}
         }
         if($null-ne$tempRootGuard){$tempRootGuard.Dispose();$tempRootGuard=$null}
         throw $originalError
     }
 }
-
 function Close-VllmReleaseGitSnapshot {
     param([Parameter(Mandatory)]$Snapshot)
     if($Snapshot.PSObject.Properties.Name -contains 'MemberGuards'){
         foreach($guard in @($Snapshot.MemberGuards.Values)){if($null-ne$guard){$guard.Dispose()}}
         $Snapshot.MemberGuards.Clear()
+    }
+    if($Snapshot.PSObject.Properties.Name -contains 'DirectoryGuards'){
+        foreach($item in @($Snapshot.DirectoryGuards.Values)){if($null-ne$item.Handle){$item.Handle.Dispose()}}
+        $Snapshot.DirectoryGuards.Clear()
     }
     if(($Snapshot.PSObject.Properties.Name -contains 'RootGuard')-and$null-ne$Snapshot.RootGuard){$Snapshot.RootGuard.Dispose();$Snapshot.RootGuard=$null}
     if($Snapshot.TempRoot-and(Test-Path -LiteralPath ([string]$Snapshot.TempRoot))){
@@ -288,29 +375,33 @@ function Get-VllmReleaseSnapshotFile {
     if(-not[string]::Equals($rootIdentity,[string]$Snapshot.RootIdentity,[StringComparison]::Ordinal)){throw 'Release snapshot root filesystem object identity changed.'}
 
     $blob=Assert-VllmReleaseGitRegularBlob -Repository $Snapshot.Repository -Commit $Snapshot.Commit -RelativePath $relative
-    $path=Join-Path $Snapshot.Root ($relative.Replace('/','\'))
+    $parent=Get-VllmReleaseSnapshotParentDirectory -Snapshot $Snapshot -RelativePath $relative
+    $leaf=($relative -split '/')[-1]
+    $path=Join-Path ([string]$parent.Path) $leaf
     if(-not$Snapshot.MemberGuards.ContainsKey($relative)){
-        if(-not(Test-Path -LiteralPath $path)){throw "Snapshot release member is missing after git archive: $relative"}
-        $entry=Get-VllmPathEntryInfo -Path $path
-        if(-not$entry.Exists-or$entry.IsDirectory-or$entry.IsReparsePoint){throw "Snapshot release member is not a regular non-reparse file: $relative"}
-        $guard=[VllmWindowsNative.ReleaseDirectoryGuard]::OpenRead($path)
+        $stream=[VllmWindowsNative.ReleaseDirectoryGuard]::CreateNewFileStream($path)
         try{
             $entry=Get-VllmPathEntryInfo -Path $path
             if(-not$entry.Exists-or$entry.IsDirectory-or$entry.IsReparsePoint){throw "Snapshot release member is not a regular non-reparse file: $relative"}
-            if([VllmWindowsNative.NativePath]::GetLinkCount($guard)-ne1){throw "Snapshot release member has unexpected hard-link count: $relative"}            $memberGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($guard))
-            $expectedGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine([string]$Snapshot.RootExpectedGuid,$relative.Replace('/','\')))
-            if(-not$memberGuardPhysical.Equals($expectedGuardPhysical,[StringComparison]::OrdinalIgnoreCase)){throw "Snapshot release member handle resolves outside the owned snapshot root: $relative"}
-            $Snapshot.MemberGuards[$relative]=$guard
-            $guard=$null
-        }finally{if($null-ne$guard){$guard.Dispose()}}
+            if([VllmWindowsNative.NativePath]::GetLinkCount($stream.SafeFileHandle)-ne1){throw "Snapshot release member has unexpected hard-link count: $relative"}
+            $actualGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stream.SafeFileHandle))
+            $expectedGuid=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine([string]$parent.Guid,$leaf))
+            if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Snapshot release member handle resolves outside the owned snapshot root: $relative"}
+            Write-VllmGitBlobToStream -Repository $Snapshot.Repository -ObjectId ([string]$blob.ObjectId) -Stream $stream
+            $readGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::OpenReadTransition($path)
+            try{
+                $readGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($readGuard))
+                if(-not$readGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Snapshot release member transition handle resolves outside the owned snapshot root: $relative"}
+                if([VllmWindowsNative.NativePath]::GetLinkCount($readGuard)-ne1){throw "Snapshot release member transition handle has unexpected hard-link count: $relative"}
+                $stream.Dispose();$stream=$null
+                $Snapshot.MemberGuards[$relative]=$readGuard
+                $readGuard=$null
+            }finally{if($null-ne$readGuard){$readGuard.Dispose()}}
+        }finally{if($null-ne$stream){$stream.Dispose()}}
     }
     $materializedObject=Invoke-Git -Repository $Snapshot.Repository -Arguments @('hash-object','--no-filters',$path) -Capture
     if(-not(Test-VllmReleaseOrdinalEqual ([string]$materializedObject) ([string]$blob.ObjectId))){throw "Materialized release member bytes differ from the tagged Git blob: $relative"}
-    return [pscustomobject][ordered]@{
-        RelativePath=$relative
-        Path=$path
-        Identity=(Get-VllmReleaseFileIdentity -Path $path)
-    }
+    return [pscustomobject][ordered]@{RelativePath=$relative;Path=$path;Identity=(Get-VllmReleaseFileIdentity -Path $path)}
 }
 function Assert-VllmReleasePublicProvenance {
     param([Parameter(Mandatory)]$Upstream,[Parameter(Mandatory)]$WindowsPatchset)
@@ -368,6 +459,7 @@ function Get-VllmReleaseContext {
         Assert-VllmReleaseExactProperties -Value $entry -Expected @('path','size_bytes','sha256') -Label 'Release distribution entry'
         $relative = Assert-VllmReleaseCanonicalPath -RelativePath ([string]$entry.path) -Label 'Release distribution path'
         if ($relative.Equals($releaseRelative,[StringComparison]::OrdinalIgnoreCase)) { throw 'Release manifest self_path must not also appear in release files.' }
+        if ($relative.Equals([string]$release.wheel.filename,[StringComparison]::OrdinalIgnoreCase)) { throw 'Release distribution files must not duplicate the accepted wheel asset.' }
         $key = $relative.ToLowerInvariant()
         if ($membersByKey.ContainsKey($key)) { throw "Release distribution paths collide by Windows identity: $relative" }
         if ([int64]$entry.size_bytes -lt 0 -or [string]$entry.sha256 -notmatch '^[0-9A-Fa-f]{64}$') { throw "Release distribution identity is invalid: $relative" }
@@ -600,13 +692,22 @@ function Get-VllmReleaseFileCrc32 {
 }
 
 function Write-VllmReleaseStoredZip {
-    param([Parameter(Mandatory)]$Context,[Parameter(Mandatory)][string]$Path)
-    if (Test-Path -LiteralPath $Path) { throw "Release ZIP already exists: $Path" }
+    param([Parameter(Mandatory)]$Context,[string]$Path,[AllowNull()][IO.Stream]$OutputStream=$null)
     if (@($Context.Members).Count -gt [uint16]::MaxValue) { throw 'Release ZIP has too many members for canonical ZIP v1.' }
 
+    $ownsStream=$false
+    if($null-eq$OutputStream){
+        if([string]::IsNullOrWhiteSpace($Path)){throw 'Release ZIP path is required when no output stream is supplied.'}
+        if(Test-Path -LiteralPath $Path){throw "Release ZIP already exists: $Path"}
+        $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $ownsStream=$true
+    }else{
+        $stream=$OutputStream
+        if(-not$stream.CanWrite-or-not$stream.CanSeek){throw 'Release ZIP output stream must be writable and seekable.'}
+        $stream.SetLength(0);$stream.Position=0
+    }
     $utf8 = New-Object Text.UTF8Encoding($false)
     $records = New-Object System.Collections.Generic.List[object]
-    $stream = [IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     $writer = New-Object IO.BinaryWriter($stream,$utf8,$true)
     try {
         foreach ($member in @($Context.Members)) {
@@ -678,7 +779,7 @@ function Write-VllmReleaseStoredZip {
         $writer.Flush()
     } finally {
         $writer.Dispose()
-        $stream.Dispose()
+        if($ownsStream){$stream.Dispose()}else{$stream.Flush();$stream.Position=0}
     }
 }
 
@@ -717,20 +818,20 @@ function Assert-VllmReleaseCanonicalZip {
     param([Parameter(Mandatory)]$Context,[Parameter(Mandatory)][string]$Path)
     $canonicalRoot=Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-canonical-'+[guid]::NewGuid().ToString('N'))
     $canonicalGuard=$null;$canonicalPhysical=$null;$canonicalIdentity=$null
-    [void][IO.Directory]::CreateDirectory($canonicalRoot)
-    $canonicalEntry=Get-VllmPathEntryInfo -Path $canonicalRoot
-    if(-not$canonicalEntry.Exists-or-not$canonicalEntry.IsDirectory-or$canonicalEntry.IsReparsePoint){throw "Canonical ZIP temp root is not a regular directory: $canonicalRoot"}
-    $canonicalPhysical=Get-VllmCanonicalExistingPath -Path $canonicalRoot -Format Dos
-    $canonicalIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($canonicalRoot)
-    $canonicalGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($canonicalRoot)
-    $canonicalTemp=Join-Path $canonicalRoot 'canonical.zip'
     try {
+        [void][IO.Directory]::CreateDirectory($canonicalRoot)
+        $canonicalEntry=Get-VllmPathEntryInfo -Path $canonicalRoot
+        if(-not$canonicalEntry.Exists-or-not$canonicalEntry.IsDirectory-or$canonicalEntry.IsReparsePoint){throw "Canonical ZIP temp root is not a regular directory: $canonicalRoot"}
+        $canonicalPhysical=Get-VllmCanonicalExistingPath -Path $canonicalRoot -Format Dos
+        $canonicalIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($canonicalRoot)
+        $canonicalGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($canonicalRoot)
+        $canonicalTemp=Join-Path $canonicalRoot 'canonical.zip'
         Write-VllmReleaseStoredZip -Context $Context -Path $canonicalTemp
         $expectedIdentity=Get-VllmReleaseFileIdentity -Path $canonicalTemp
         $actualIdentity=Get-VllmReleaseFileIdentity -Path $Path
         if ($actualIdentity.Size -ne $expectedIdentity.Size -or $actualIdentity.Sha256 -ne $expectedIdentity.Sha256) { throw 'Release ZIP bytes are not the exact canonical tagged-commit bundle.' }
     } finally {
-        try{Invoke-VllmReleaseOwnedTempCleanup -Path $canonicalRoot -ExpectedPhysical $canonicalPhysical -ExpectedIdentity $canonicalIdentity -ExistingRootGuard $canonicalGuard}catch{Write-Warning "Canonical ZIP temp cleanup was skipped or incomplete: $($_.Exception.Message)"}
+        if($null-ne$canonicalPhysical-and$null-ne$canonicalIdentity){try{Invoke-VllmReleaseOwnedTempCleanup -Path $canonicalRoot -ExpectedPhysical $canonicalPhysical -ExpectedIdentity $canonicalIdentity -ExistingRootGuard $canonicalGuard}catch{Write-Warning "Canonical ZIP temp cleanup was skipped or incomplete: $($_.Exception.Message)"}}
         if($null-ne$canonicalGuard){$canonicalGuard.Dispose();$canonicalGuard=$null}
     }
     Assert-VllmReleaseRawZipProfile -Context $Context -Path $Path
@@ -1169,7 +1270,9 @@ function Write-VllmOfflineRelease {
     if(-not$parentPhysical.Equals($parent,[StringComparison]::OrdinalIgnoreCase)){throw "Release artifacts parent resolves through a filesystem alias: $parent -> $parentPhysical"}
     $parentIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($parent)
     $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
-    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null;$prepareLock=$null;$publishedRoot=$null
+
+    $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null;$prepareLock=$null;$publishedRoot=$null;$wheelSourceGuard=$null
+    $stageAssetGuards=New-Object System.Collections.Generic.List[object]
     $destWheel=$null;$bundlePath=$null;$indexPath=$null;$sumPath=$null
     try {
         try {
@@ -1191,7 +1294,15 @@ function Write-VllmOfflineRelease {
         if(Test-Path -LiteralPath $root){throw "Release artifacts final path already exists; Prepare requires an absent final path: $root"}
         $snapshot=Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
         $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath
-        $wheel=Assert-VllmReleaseWheel -WheelPath $WheelPath -Context $context
+        $wheelSourceFull=[IO.Path]::GetFullPath($WheelPath)
+        $wheelSourceEntry=Get-VllmPathEntryInfo -Path $wheelSourceFull
+        if(-not$wheelSourceEntry.Exists-or$wheelSourceEntry.IsDirectory-or$wheelSourceEntry.IsReparsePoint){throw "Source wheel must be a regular non-reparse file: $wheelSourceFull"}
+        $wheelSourceExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $wheelSourceFull -Format Guid)
+        $wheelSourceGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::OpenRead($wheelSourceFull)
+        $wheelSourceGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($wheelSourceGuard))
+        if(-not$wheelSourceGuid.Equals($wheelSourceExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Source wheel guard resolves outside expected path: $wheelSourceGuid"}
+        if([VllmWindowsNative.NativePath]::GetLinkCount($wheelSourceGuard)-ne1){throw 'Source wheel has unexpected hard-link count.'}
+        $wheel=Assert-VllmReleaseWheel -WheelPath $wheelSourceFull -Context $context
         $finalWheel=Join-Path $root ([string]$wheel.Filename)
         if([IO.Path]::GetFullPath($wheel.Path).Equals([IO.Path]::GetFullPath($finalWheel),[StringComparison]::OrdinalIgnoreCase)){throw 'Source wheel must be outside the release artifacts directory during preparation.'}
         if(Test-Path -LiteralPath $root){throw "Release artifacts path appeared while preparing release: $root"}
@@ -1210,33 +1321,47 @@ function Write-VllmOfflineRelease {
         $guardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($stageGuard))
         if(-not$guardPhysical.Equals($stageExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Private release staging guard resolves outside expected directory: $guardPhysical"}
         $destWheel=Join-Path $stageRoot ([string]$wheel.Filename)
-        if($FaultPoint-eq'DuringWheelCopy'){
-            [IO.File]::WriteAllBytes($destWheel,[byte[]](1,2,3,4));throw 'FAULT_INJECTED:DuringWheelCopy'
+        $wheelGuard=Write-VllmReleasePinnedFile -Path $destWheel -ExpectedParentGuid $stageExpectedGuid -WriteAction {
+            param($dest)
+            if($FaultPoint-eq'DuringWheelCopy'){$bytes=[byte[]](1,2,3,4);$dest.Write($bytes,0,$bytes.Length);throw 'FAULT_INJECTED:DuringWheelCopy'}
+            $source=[IO.File]::OpenRead([string]$wheel.Path)
+            try{$source.CopyTo($dest)}finally{$source.Dispose()}
         }
-        Copy-Item -LiteralPath $wheel.Path -Destination $destWheel
+        $stageAssetGuards.Add($wheelGuard)
         $copiedWheel=Assert-VllmReleaseWheel -WheelPath $destWheel -Context $context
         if($FaultPoint-eq'AfterWheelCopy'){throw 'FAULT_INJECTED:AfterWheelCopy'}
+
         $bundlePath=Join-Path $stageRoot ([string]$context.BundleFilename)
-        $bundle=Write-VllmReleaseCanonicalZip -Context $context -Path $bundlePath
+        $bundleGuard=Write-VllmReleasePinnedFile -Path $bundlePath -ExpectedParentGuid $stageExpectedGuid -WriteAction {param($dest) Write-VllmReleaseStoredZip -Context $context -OutputStream $dest}
+        $stageAssetGuards.Add($bundleGuard)
+        Assert-VllmReleaseCanonicalZip -Context $context -Path $bundlePath
+        $bundle=Get-VllmReleaseFileIdentity -Path $bundlePath
         if($FaultPoint-eq'AfterBundle'){throw 'FAULT_INJECTED:AfterBundle'}
+
         $index=Get-VllmReleaseIndex -Context $context -Wheel $copiedWheel -Bundle $bundle
         $indexPath=Join-Path $stageRoot 'release-index.json'
-        Write-VllmReleaseCanonicalJson -Value $index -Path $indexPath
+        $indexText=(ConvertTo-VllmReleaseCanonicalJsonValue -Value $index)+[char]10
+        $indexBytes=(New-Object Text.UTF8Encoding($false)).GetBytes($indexText)
+        $indexGuard=Write-VllmReleasePinnedFile -Path $indexPath -ExpectedParentGuid $stageExpectedGuid -WriteAction {param($dest)$dest.Write($indexBytes,0,$indexBytes.Length)}
+        $stageAssetGuards.Add($indexGuard)
         $indexIdentity=Get-VllmReleaseFileIdentity -Path $indexPath
+
         $sumPath=Join-Path $stageRoot 'SHA256SUMS'
-        $identities=@{
-            ([string]$copiedWheel.Filename)=[string]$copiedWheel.Sha256
-            ([string]$context.BundleFilename)=[string]$bundle.Sha256
-            'release-index.json'=[string]$indexIdentity.Sha256
-        }
-        Write-VllmReleaseChecksums -Identities $identities -Path $sumPath
+        $identities=@{([string]$copiedWheel.Filename)=[string]$copiedWheel.Sha256;([string]$context.BundleFilename)=[string]$bundle.Sha256;'release-index.json'=[string]$indexIdentity.Sha256}
+        $sumNames=Get-VllmReleaseOrdinalStrings -Values @($identities.Keys)
+        $sumLines=New-Object System.Collections.Generic.List[string]
+        foreach($name in $sumNames){$sumLines.Add(([string]$identities[$name])+'  '+[string]$name)}
+        $sumText=($sumLines.ToArray()-join[char]10)+[char]10
+        $sumBytes=(New-Object Text.UTF8Encoding($false)).GetBytes($sumText)
+        $sumGuard=Write-VllmReleasePinnedFile -Path $sumPath -ExpectedParentGuid $stageExpectedGuid -WriteAction {param($dest)$dest.Write($sumBytes,0,$sumBytes.Length)}
+        $stageAssetGuards.Add($sumGuard)
         [void](Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit $snapshot.Commit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $stageRoot -ExistingRootGuard $stageGuard)
         $prePublishIdentities=@{}
         foreach($name in @([string]$copiedWheel.Filename,[string]$context.BundleFilename,'release-index.json','SHA256SUMS')){
             $prePublishIdentities[$name.ToLowerInvariant()]=[VllmWindowsNative.NativePath]::GetFileIdentity((Join-Path $stageRoot $name))
         }
         if($FaultPoint-eq'AfterPrePublishVerifyTamper'){
-            $tamperStream=[IO.File]::Open($destWheel,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::None)
+            $tamperStream=[IO.File]::Open($destWheel,[IO.FileMode]::Append,[IO.FileAccess]::Write,[IO.FileShare]::Read)
             try{$tamperStream.WriteByte(0x5A)}finally{$tamperStream.Dispose()}
         }
         [void](Assert-VllmReleaseDirectoryIdentity -Path $parent -ExpectedPhysical $parentPhysical -ExpectedIdentity $parentIdentity -Label 'Release artifacts parent')
@@ -1263,6 +1388,8 @@ function Write-VllmOfflineRelease {
         return $postVerify
     } catch {
         $originalError=$_
+        foreach($guard in $stageAssetGuards){if($null-ne$guard){$guard.Dispose()}}
+        $stageAssetGuards.Clear()
         if($null-ne$publishedRoot-and$null-ne$stageGuard-and(Test-Path -LiteralPath $publishedRoot -PathType Container)){
             try{
                 $quarantine=Join-Path $parent ('.'+$leaf+'.vllm-release-rejected-'+[guid]::NewGuid().ToString('N'))
@@ -1286,6 +1413,9 @@ function Write-VllmOfflineRelease {
         }
         throw $originalError
     } finally {
+        foreach($guard in $stageAssetGuards){if($null-ne$guard){$guard.Dispose()}}
+        $stageAssetGuards.Clear()
+        if($null-ne$wheelSourceGuard){$wheelSourceGuard.Dispose();$wheelSourceGuard=$null}
         if($null-ne$stageGuard){$stageGuard.Dispose();$stageGuard=$null}
         if($null-ne$snapshot){Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
         if($null-ne$parentGuard){$parentGuard.Dispose();$parentGuard=$null}

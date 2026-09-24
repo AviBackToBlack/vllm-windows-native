@@ -26,6 +26,7 @@ function Test-ExpectedFailure {
     param([scriptblock]$Action,[string]$Label)
     $expected=@{
         'wheel-filename-case'='Provided release wheel filename mismatch.'
+        'wheel-asset-in-bundle'='Release distribution files must not duplicate the accepted wheel asset.'
         'wheel-native-extension-case'='Provided release wheel native extension set mismatch'
         'wheel-extra-native-extension-case'='Provided release wheel native extension count does not match runtime manifest.'
         'wheel-unsafe-member'='Provided release wheel member contains an unsafe path segment'
@@ -63,7 +64,7 @@ function Test-ExpectedFailure {
         'zip-non-store-method'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'zip-local-header-name'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'manifest-blob-drift'='Tagged-commit blob does not match release manifest identity'
-        'snapshot-reparse-parent'='Snapshot release member handle resolves outside the owned snapshot root:'
+        'snapshot-reparse-parent'='Snapshot parent is not a regular directory:'
         'unsafe-release-path'='Release distribution path contains an unsafe path segment'
         'case-colliding-release-path'='Release distribution paths collide by Windows identity'
     }
@@ -241,6 +242,28 @@ try {
     }
     Write-Host 'RELEASE_DETERMINISM_OK'
 
+    $stagePinRoot=Join-Path $root 'stage-pin-probe'
+    $stagePinExternal=Join-Path $root 'stage-pin-external'
+    [void][IO.Directory]::CreateDirectory($stagePinRoot)
+    [void][IO.Directory]::CreateDirectory($stagePinExternal)
+    $stagePinMarker=Join-Path $stagePinExternal 'marker.txt'
+    [IO.File]::WriteAllText($stagePinMarker,"external-safe`n",[Text.UTF8Encoding]::new($false))
+    $stagePinExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $stagePinRoot -Format Guid)
+    $stagePinGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($stagePinRoot)
+    $stagePinPath=Join-Path $stagePinRoot 'asset.bin'
+    [void](New-Item -ItemType Junction -Path $stagePinPath -Target $stagePinExternal)
+    $stagePinFailed=$false
+    try{
+        $unexpectedGuard=Write-VllmReleasePinnedFile -Path $stagePinPath -ExpectedParentGuid $stagePinExpectedGuid -WriteAction {param($dest)$bytes=[Text.Encoding]::UTF8.GetBytes('owned');$dest.Write($bytes,0,$bytes.Length)}
+        if($null-ne$unexpectedGuard){$unexpectedGuard.Dispose()}
+    }catch{$stagePinFailed=$true}
+    finally{$stagePinGuard.Dispose()}
+    if(-not$stagePinFailed){throw 'Pinned staging writer followed or replaced a pre-existing junction target.'}
+    if([IO.File]::ReadAllText($stagePinMarker)-ne"external-safe`n"){throw 'Pinned staging writer modified external junction target content.'}
+    [IO.Directory]::Delete($stagePinPath,$false)
+    Remove-Item -LiteralPath $stagePinRoot,$stagePinExternal -Recurse -Force
+    Write-Host 'RELEASE_STAGE_ASSET_PIN_GUARD_OK'
+
     $snapshot=Get-VllmReleaseGitSnapshot -Repository $fixture -Commit $commit
     try{
         $snapshotMoveBlocked=$false;$tempMoveBlocked=$false
@@ -267,6 +290,25 @@ try {
     $badProvenanceSnapshot=Get-VllmReleaseGitSnapshot -Repository $badProvenanceRepo -Commit $badProvenanceCommit
     try{Test-ExpectedFailure {Get-VllmReleaseContext -Snapshot $badProvenanceSnapshot -ReleaseManifestPath 'manifests/release/release.json'|Out-Null} 'provenance-credential-url'}finally{Close-VllmReleaseGitSnapshot -Snapshot $badProvenanceSnapshot}
     Write-Host 'RELEASE_PUBLIC_PROVENANCE_GUARD_OK'
+
+    $wheelBundleRoot=Join-Path $root 'wheel-in-bundle'
+    $wheelBundleRepo=Join-Path $wheelBundleRoot 'repo'
+    [void](Initialize-FixtureRepo -Root $wheelBundleRepo -WheelPath $wheelPath)
+    $wheelBundleName='vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    $wheelBundleRepoWheel=Join-Path $wheelBundleRepo $wheelBundleName
+    Copy-Item -LiteralPath $wheelPath -Destination $wheelBundleRepoWheel
+    $wheelBundleIdentity=Get-VllmReleaseFileIdentity -Path $wheelBundleRepoWheel
+    $wheelBundleManifestPath=Join-Path $wheelBundleRepo 'manifests\release\release.json'
+    $wheelBundleManifest=Get-Content $wheelBundleManifestPath -Raw|ConvertFrom-Json
+    $wheelBundleManifest.files=@($wheelBundleManifest.files)+[pscustomobject][ordered]@{path=$wheelBundleName;size_bytes=[int64]$wheelBundleIdentity.Size;sha256=[string]$wheelBundleIdentity.Sha256}
+    Write-VllmReleaseCanonicalJson -Value $wheelBundleManifest -Path $wheelBundleManifestPath
+    & git -C $wheelBundleRepo add . | Out-Null
+    & git -C $wheelBundleRepo commit -m 'add wheel to bundle manifest' | Out-Null
+    if($LASTEXITCODE-ne0){throw 'wheel-in-bundle fixture commit failed'}
+    $wheelBundleCommit=Invoke-Git -Repository $wheelBundleRepo -Arguments @('rev-parse','HEAD') -Capture
+    $wheelBundleSnapshot=Get-VllmReleaseGitSnapshot -Repository $wheelBundleRepo -Commit $wheelBundleCommit
+    try{Test-ExpectedFailure {Get-VllmReleaseContext -Snapshot $wheelBundleSnapshot -ReleaseManifestPath 'manifests/release/release.json'|Out-Null} 'wheel-asset-in-bundle'}finally{Close-VllmReleaseGitSnapshot -Snapshot $wheelBundleSnapshot}
+    Write-Host 'RELEASE_WHEEL_NOT_IN_BUNDLE_OK'
     $caseNativeRoot=Join-Path $root 'case-native'
     $caseNativeWheel=Join-Path $caseNativeRoot 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
     Write-TestWheel -Path $caseNativeWheel -NativePath 'vllm/_TEST.pyd'
@@ -473,17 +515,16 @@ try {
     $reparseSnapshot=Get-VllmReleaseGitSnapshot -Repository $fixture -Commit $commit
     $externalPayload=Join-Path $root 'external-snapshot-payload'
     [void][IO.Directory]::CreateDirectory($externalPayload)
+    $externalMarker=Join-Path $externalPayload 'a.txt'
+    [IO.File]::WriteAllText($externalMarker,"external-safe`n",[Text.UTF8Encoding]::new($false))
     $snapshotPayload=Join-Path $reparseSnapshot.Root 'payload'
-    Copy-Item -LiteralPath (Join-Path $snapshotPayload 'a.txt') -Destination (Join-Path $externalPayload 'a.txt')
-    Remove-Item -LiteralPath $snapshotPayload -Recurse -Force
     [void](New-Item -ItemType Junction -Path $snapshotPayload -Target $externalPayload)
     try{
         Test-ExpectedFailure {Get-VllmReleaseSnapshotFile -Snapshot $reparseSnapshot -RelativePath 'payload/a.txt'|Out-Null} 'snapshot-reparse-parent'
     }finally{
         Close-VllmReleaseGitSnapshot -Snapshot $reparseSnapshot
     }
-    $externalMarker=Join-Path $externalPayload 'a.txt'
-    if(-not(Test-Path -LiteralPath $externalMarker -PathType Leaf)-or[IO.File]::ReadAllText($externalMarker)-ne"alpha`n"){throw 'Snapshot no-follow cleanup traversed the junction and modified external target content.'}
+    if(-not(Test-Path -LiteralPath $externalMarker -PathType Leaf)-or[IO.File]::ReadAllText($externalMarker)-ne"external-safe`n"){throw 'Snapshot materialization/cleanup traversed the junction and modified external target content.'}
     if(Test-Path -LiteralPath $reparseSnapshot.TempRoot){throw 'Snapshot no-follow cleanup left the owned temp root behind.'}
     Write-Host 'RELEASE_SNAPSHOT_REPARSE_GUARD_OK'
 
