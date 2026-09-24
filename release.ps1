@@ -93,7 +93,7 @@ switch ($Mode) {
         $trustRoot = Resolve-ReleaseCliPath -Path $AllowedSignersPath
         $tagVerification = Assert-VllmReleaseSignedTag -Repository $repository -Tag $effectiveTag -ExpectedCommit $resolvedCommit -AllowedSignersPath $trustRoot
         $assets = Get-VllmReleaseExpectedAssets -ArtifactsDirectory $output -OfflineVerification $offline
-        $attestation = Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $effectiveTag -ExpectedCommit $resolvedCommit -ArtifactsDirectory $output -ExpectedAssets $assets
+        $attestation = Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $effectiveTag -ExpectedTagObject $tagVerification.tag_object -ArtifactsDirectory $output -ExpectedAssets $assets
         $result = [pscustomobject][ordered]@{
             schema_version=1
             component='vllm-windows-native-published-release-verification'

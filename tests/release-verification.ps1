@@ -5,10 +5,13 @@ $ErrorActionPreference='Stop'
 
 function Assert-Fails {
     param([Parameter(Mandatory)][scriptblock]$Action,[Parameter(Mandatory)][string]$Contains)
-    try { & $Action; throw "Expected failure containing: $Contains" }
+    $failed=$false
+    try { & $Action }
     catch {
+        $failed=$true
         if ($_.Exception.Message.IndexOf($Contains,[StringComparison]::OrdinalIgnoreCase) -lt 0) { throw "Unexpected failure: $($_.Exception.Message)" }
     }
+    if(-not$failed){throw "Expected failure containing: $Contains"}
 }
 
 function Get-FixtureSshKey {
@@ -48,12 +51,31 @@ try {
     $pubFields=@($pub -split ' ')
     $allowed=Join-Path $root 'allowed_signers'
     [IO.File]::WriteAllText($allowed,"fixture-release $($pubFields[0]) $($pubFields[1])"+[char]10,[Text.UTF8Encoding]::new($false))
-    $fingerprint=Get-VllmReleaseSigningKeyFingerprint -Path $allowed
+    $fingerprint=Get-VllmReleaseSigningKeyFingerprint -KeyType $pubFields[0] -KeyData $pubFields[1]
 
     & git -C $repo -c 'gpg.format=ssh' -c "user.signingkey=$key" tag -s -a release/fixture -m fixture $commit1
     if($LASTEXITCODE-ne0){throw 'fixture signed tag creation failed.'}
+    $tagObjectId=(& git -C $repo rev-parse 'refs/tags/release/fixture').Trim()
+    if($tagObjectId.Equals($commit1,[StringComparison]::OrdinalIgnoreCase)){throw 'annotated tag object must differ from its peeled commit in the fixture.'}
     $ok=Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit1 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint
     if($ok.project_commit-ne$commit1){throw 'signed tag verifier returned wrong commit.'}
+    if($ok.tag_object-ne$tagObjectId){throw 'signed tag verifier returned wrong tag object.'}
+
+    $oldCount=$env:GIT_CONFIG_COUNT
+    $oldKey0=$env:GIT_CONFIG_KEY_0
+    $oldValue0=$env:GIT_CONFIG_VALUE_0
+    try {
+        $env:GIT_CONFIG_COUNT='1'
+        $env:GIT_CONFIG_KEY_0='gpg.ssh.program'
+        $env:GIT_CONFIG_VALUE_0='definitely-not-a-real-ssh-program'
+        $isolated=Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit1 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint
+        if($isolated.tag_object-ne$tagObjectId){throw 'GIT_CONFIG isolation changed tag identity.'}
+        if($env:GIT_CONFIG_COUNT-ne'1' -or $env:GIT_CONFIG_KEY_0-ne'gpg.ssh.program' -or $env:GIT_CONFIG_VALUE_0-ne'definitely-not-a-real-ssh-program'){throw 'GIT_CONFIG isolation did not restore caller environment.'}
+    } finally {
+        if($null-eq$oldCount){Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_COUNT=$oldCount}
+        if($null-eq$oldKey0){Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_KEY_0=$oldKey0}
+        if($null-eq$oldValue0){Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_VALUE_0=$oldValue0}
+    }
 
     $wrongPrincipal=Join-Path $root 'wrong-principal'
     [IO.File]::WriteAllText($wrongPrincipal,"wrong-release $($pubFields[0]) $($pubFields[1])"+[char]10,[Text.UTF8Encoding]::new($false))
@@ -65,7 +87,7 @@ try {
     $wrongKey=Join-Path $root 'wrong-key-signers'
     [IO.File]::WriteAllText($wrongKey,"fixture-release $($pub2[0]) $($pub2[1])"+[char]10,[Text.UTF8Encoding]::new($false))
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit1 -AllowedSignersPath $wrongKey -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'fingerprint mismatch'
-    $foreignFingerprint=Get-VllmReleaseSigningKeyFingerprint -Path $wrongKey
+    $foreignFingerprint=Get-VllmReleaseSigningKeyFingerprint -KeyType $pub2[0] -KeyData $pub2[1]
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit1 -AllowedSignersPath $wrongKey -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $foreignFingerprint } 'signature verification failed'
 
     $tagObject=(& git -C $repo cat-file tag 'refs/tags/release/fixture') -join [char]10
@@ -94,9 +116,9 @@ try {
         'SHA256SUMS'=('D'*64)
     }
     function Get-FixtureAttestation {
-        param([string]$Repository='AviBackToBlack/vllm-windows-native',[string]$Tag='release/test',[string]$Commit=$commit1,[System.Collections.IDictionary]$AssetMap=$assets)
+        param([string]$Repository='AviBackToBlack/vllm-windows-native',[string]$Tag='release/test',[string]$TagObject=$tagObjectId,[System.Collections.IDictionary]$AssetMap=$assets)
         $subjects=New-Object System.Collections.Generic.List[object]
-        $subjects.Add([ordered]@{uri="pkg:github/$Repository@$Tag";digest=[ordered]@{sha1=$Commit}})
+        $subjects.Add([ordered]@{uri="pkg:github/$Repository@$Tag";digest=[ordered]@{sha1=$TagObject}})
         foreach($name in $AssetMap.Keys){$subjects.Add([ordered]@{name=[string]$name;digest=[ordered]@{sha256=[string]$AssetMap[$name]}})}
         [ordered]@{verificationResult=[ordered]@{statement=[ordered]@{
             _type='https://in-toto.io/Statement/v1'
@@ -107,25 +129,37 @@ try {
     }
 
     $json=Get-FixtureAttestation
-    $a=Assert-VllmReleaseAttestationJson -Json $json -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets
+    $a=Assert-VllmReleaseAttestationJson -Json $json -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets
     if($a.asset_count-ne4){throw 'attestation verifier returned wrong asset count.'}
 
-    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -Repository 'Other/repo') -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets } 'repository/tag'
-    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -Tag 'release/other') -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets } 'repository/tag'
-    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -Commit ('0'*40)) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets } 'commit mismatch'
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -Repository 'Other/repo') -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'repository/tag'
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -Tag 'release/other') -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'repository/tag'
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -TagObject ('0'*40)) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'tag-object mismatch'
 
     $caseAsset=[ordered]@{}; foreach($k in $assets.Keys){$caseAsset[$k]=$assets[$k]}
     $caseJson=(Get-FixtureAttestation -AssetMap $caseAsset).Replace('"wheel.whl"','"WHEEL.WHL"')
-    Assert-Fails { Assert-VllmReleaseAttestationJson -Json $caseJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets } 'unexpected asset'
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json $caseJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'unexpected asset'
 
     $wrong=[ordered]@{}; foreach($k in $assets.Keys){$wrong[$k]=$assets[$k]}; $wrong['wheel.whl']='E'*64
-    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -AssetMap $wrong) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets } 'digest mismatch'
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -AssetMap $wrong) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'digest mismatch'
 
     $missing=[ordered]@{}; foreach($k in $assets.Keys|Where-Object{$_-ne'SHA256SUMS'}){$missing[$k]=$assets[$k]}
-    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -AssetMap $missing) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets } 'asset count mismatch'
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -AssetMap $missing) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'subject count mismatch'
 
     $extra=[ordered]@{}; foreach($k in $assets.Keys){$extra[$k]=$assets[$k]}; $extra['extra.bin']='F'*64
-    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -AssetMap $extra) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedCommit $commit1 -ExpectedAssets $assets } 'asset count mismatch'
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json (Get-FixtureAttestation -AssetMap $extra) -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'subject count mismatch'
+
+    $overlapDoc=(Get-FixtureAttestation | ConvertFrom-Json)
+    $overlapDoc.verificationResult.statement.subject[0] | Add-Member -NotePropertyName name -NotePropertyValue 'wheel.whl'
+    $overlapDoc.verificationResult.statement.subject[0].digest | Add-Member -NotePropertyName sha256 -NotePropertyValue ('A'*64)
+    $overlapDoc.verificationResult.statement.subject[4]=[pscustomobject]@{other='ignored-before-fix'}
+    $overlapJson=$overlapDoc|ConvertTo-Json -Depth 10 -Compress
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json $overlapJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'subject schema'
+
+    $badDigestDoc=(Get-FixtureAttestation | ConvertFrom-Json)
+    $badDigestDoc.verificationResult.statement.subject[1].digest | Add-Member -NotePropertyName sha1 -NotePropertyValue ('0'*40)
+    $badDigestJson=$badDigestDoc|ConvertTo-Json -Depth 10 -Compress
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json $badDigestJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'asset digest schema'
 
     Write-Host 'RELEASE_VERIFICATION_CONTRACT_OK'
 }

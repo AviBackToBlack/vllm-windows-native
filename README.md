@@ -242,7 +242,7 @@ After downloading the four immutable release assets, compose offline verificatio
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
 
-`VerifyPublished` first performs the SM-19A exact-four local verification. It then verifies the signed tag and requires `gh release verify --format json` to bind the exact repository, tag, project commit, and exactly those four asset names/SHA-256 digests. Finally it runs `gh release verify-asset` separately for the wheel, distribution ZIP, `release-index.json`, and `SHA256SUMS`. The immutable-release attestation proves release/asset integrity; it is not represented as build provenance for the prebuilt local GPU wheel.
+`VerifyPublished` first performs the SM-19A exact-four local verification. It then verifies the signed tag and requires `gh release verify --format json` to bind the exact repository, annotated tag object, and exactly those four asset names/SHA-256 digests. The signed-tag check separately peels that authenticated tag object to the expected reviewed project commit. Finally it runs `gh release verify-asset` separately for the wheel, distribution ZIP, `release-index.json`, and `SHA256SUMS`. The immutable-release attestation proves release/asset integrity; it is not represented as build provenance for the prebuilt local GPU wheel.
 
 ## Run the accepted Windows runtime
 
