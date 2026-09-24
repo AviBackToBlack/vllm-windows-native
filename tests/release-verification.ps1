@@ -64,17 +64,21 @@ try {
     $oldCount=$env:GIT_CONFIG_COUNT
     $oldKey0=$env:GIT_CONFIG_KEY_0
     $oldValue0=$env:GIT_CONFIG_VALUE_0
+    $oldGitDir=$env:GIT_DIR
     try {
         $env:GIT_CONFIG_COUNT='1'
         $env:GIT_CONFIG_KEY_0='gpg.ssh.program'
         $env:GIT_CONFIG_VALUE_0='definitely-not-a-real-ssh-program'
+        $env:GIT_DIR=Join-Path $root 'ambient-not-target.git'
         $isolated=Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit1 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint
         if($isolated.tag_object-ne$tagObjectId){throw 'GIT_CONFIG isolation changed tag identity.'}
         if($env:GIT_CONFIG_COUNT-ne'1' -or $env:GIT_CONFIG_KEY_0-ne'gpg.ssh.program' -or $env:GIT_CONFIG_VALUE_0-ne'definitely-not-a-real-ssh-program'){throw 'GIT_CONFIG isolation did not restore caller environment.'}
+        if(-not$env:GIT_DIR.Equals((Join-Path $root 'ambient-not-target.git'),[StringComparison]::OrdinalIgnoreCase)){throw 'GIT_DIR isolation did not restore caller environment.'}
     } finally {
         if($null-eq$oldCount){Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_COUNT=$oldCount}
         if($null-eq$oldKey0){Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_KEY_0=$oldKey0}
         if($null-eq$oldValue0){Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue}else{$env:GIT_CONFIG_VALUE_0=$oldValue0}
+        if($null-eq$oldGitDir){Remove-Item Env:GIT_DIR -ErrorAction SilentlyContinue}else{$env:GIT_DIR=$oldGitDir}
     }
 
     $wrongPrincipal=Join-Path $root 'wrong-principal'
@@ -109,6 +113,11 @@ try {
     $commit2=(& git -C $repo rev-parse HEAD).Trim()
     Assert-Fails { Assert-VllmReleaseSignedTag -Repository $repo -Tag 'release/fixture' -ExpectedCommit $commit2 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint } 'commit mismatch'
 
+    & git -C $repo -c tag.gpgSign=false -c 'gpg.format=ssh' -c "user.signingkey=$key" tag -s -a FETCH_HEAD -m pseudo-ref-collision $commit2
+    if($LASTEXITCODE-ne0){throw 'pseudo-ref collision tag creation failed.'}
+    [IO.File]::WriteAllText((Join-Path $repo '.git\FETCH_HEAD'),$commit1+[char]10,[Text.UTF8Encoding]::new($false))
+    $qualifiedTag=Assert-VllmReleaseSignedTag -Repository $repo -Tag 'FETCH_HEAD' -ExpectedCommit $commit2 -AllowedSignersPath $allowed -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint
+    if(-not$qualifiedTag.project_commit.Equals($commit2,[StringComparison]::OrdinalIgnoreCase)){throw 'qualified tag verification resolved the pseudo-ref instead of refs/tags/FETCH_HEAD.'}
     $assets=[ordered]@{
         'wheel.whl'=('A'*64)
         'bundle.zip'=('B'*64)

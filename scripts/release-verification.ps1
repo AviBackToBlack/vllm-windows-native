@@ -60,34 +60,39 @@ function Assert-VllmReleaseSignedTag {
         [string]$ExpectedFingerprint = $script:VllmReleaseKeyFingerprint
     )
     $trust = Assert-VllmReleaseAllowedSigners -Path $AllowedSignersPath -ExpectedPrincipal $ExpectedPrincipal -ExpectedFingerprint $ExpectedFingerprint
-    $tagRef = "refs/tags/$Tag"
-    $type = (Invoke-Git -Repository $Repository -Arguments @('cat-file','-t',$tagRef) -Capture).Trim()
-    if (-not $type.Equals('tag',[StringComparison]::Ordinal)) { throw "Release tag must be an annotated tag object: $Tag" }
-    $tagObject = (Invoke-Git -Repository $Repository -Arguments @('rev-parse',$tagRef) -Capture).Trim()
-    $resolved = (Invoke-Git -Repository $Repository -Arguments @('rev-parse',"$Tag^{commit}") -Capture).Trim()
-    $signature = (Invoke-Git -Repository $Repository -Arguments @('for-each-ref','--format=%(contents:signature)',$tagRef) -Capture).Trim()
-    if (-not $signature.StartsWith('-----BEGIN SSH SIGNATURE-----',[StringComparison]::Ordinal) -or
-        -not $signature.EndsWith('-----END SSH SIGNATURE-----',[StringComparison]::Ordinal)) {
-        throw 'Release tag must contain an SSH signature; OpenPGP, X.509, unsigned, or unknown signature formats are not authorized.'
-    }
-    if (-not $resolved.Equals($ExpectedCommit,[StringComparison]::OrdinalIgnoreCase)) { throw "Release tag commit mismatch: expected $ExpectedCommit, got $resolved" }
-
-    $gitConfigEnvironment = @{}
-    $gitConfigNames = @(Get-ChildItem Env: | Where-Object {
-        $_.Name.Equals('GIT_CONFIG',[StringComparison]::Ordinal) -or
-        $_.Name.StartsWith('GIT_CONFIG_',[StringComparison]::Ordinal)
+    $gitEnvironment = @{}
+    $gitEnvironmentNames = @(Get-ChildItem Env: | Where-Object {
+        $_.Name.Equals('GIT_CONFIG',[StringComparison]::OrdinalIgnoreCase) -or
+        $_.Name.StartsWith('GIT_CONFIG_',[StringComparison]::OrdinalIgnoreCase) -or
+        $_.Name.Equals('GIT_DIR',[StringComparison]::OrdinalIgnoreCase) -or
+        $_.Name.Equals('GIT_WORK_TREE',[StringComparison]::OrdinalIgnoreCase) -or
+        $_.Name.Equals('GIT_COMMON_DIR',[StringComparison]::OrdinalIgnoreCase) -or
+        $_.Name.Equals('GIT_OBJECT_DIRECTORY',[StringComparison]::OrdinalIgnoreCase) -or
+        $_.Name.Equals('GIT_ALTERNATE_OBJECT_DIRECTORIES',[StringComparison]::OrdinalIgnoreCase) -or
+        $_.Name.Equals('GIT_NAMESPACE',[StringComparison]::OrdinalIgnoreCase)
     } | Select-Object -ExpandProperty Name)
-    foreach ($name in $gitConfigNames) {
-        $gitConfigEnvironment[$name] = (Get-Item -LiteralPath "Env:$name").Value
+    foreach ($name in $gitEnvironmentNames) {
+        $gitEnvironment[$name] = (Get-Item -LiteralPath "Env:$name").Value
         Remove-Item -LiteralPath "Env:$name"
     }
-
     $oldErrorActionPreference=$ErrorActionPreference
     $nullConfig=if($env:OS -eq 'Windows_NT'){'NUL'}else{'/dev/null'}
     $revocationPath=[IO.Path]::GetTempFileName()
     try {
         $env:GIT_CONFIG_NOSYSTEM='1'
         $env:GIT_CONFIG_GLOBAL=$nullConfig
+        $tagRef = "refs/tags/$Tag"
+        $type = (Invoke-Git -Repository $Repository -Arguments @('cat-file','-t',$tagRef) -Capture).Trim()
+        if (-not $type.Equals('tag',[StringComparison]::Ordinal)) { throw "Release tag must be an annotated tag object: $Tag" }
+        $tagObject = (Invoke-Git -Repository $Repository -Arguments @('rev-parse',$tagRef) -Capture).Trim()
+        $resolved = (Invoke-Git -Repository $Repository -Arguments @('rev-parse',"$tagObject^{commit}") -Capture).Trim()
+        $signature = (Invoke-Git -Repository $Repository -Arguments @('for-each-ref','--format=%(contents:signature)',$tagRef) -Capture).Trim()
+        if (-not $signature.StartsWith('-----BEGIN SSH SIGNATURE-----',[StringComparison]::Ordinal) -or
+            -not $signature.EndsWith('-----END SSH SIGNATURE-----',[StringComparison]::Ordinal)) {
+            throw 'Release tag must contain an SSH signature; OpenPGP, X.509, unsigned, or unknown signature formats are not authorized.'
+        }
+        if (-not $resolved.Equals($ExpectedCommit,[StringComparison]::OrdinalIgnoreCase)) { throw "Release tag commit mismatch: expected $ExpectedCommit, got $resolved" }
+
         $ErrorActionPreference='Continue'
         $gitArgs=@(
             '-C',$Repository,
@@ -96,20 +101,26 @@ function Assert-VllmReleaseSignedTag {
             '-c',('gpg.ssh.allowedSignersFile='+$trust.path),
             '-c',('gpg.ssh.revocationFile='+$revocationPath),
             '-c','gpg.minTrustLevel=fully',
-            'verify-tag',$Tag
+            'verify-tag',$tagRef
         )
         $verify=& git @gitArgs 2>&1
         $verifyExit=$LASTEXITCODE
     } finally {
         $ErrorActionPreference=$oldErrorActionPreference
         @(Get-ChildItem Env: | Where-Object {
-            $_.Name.Equals('GIT_CONFIG',[StringComparison]::Ordinal) -or
-            $_.Name.StartsWith('GIT_CONFIG_',[StringComparison]::Ordinal)
+            $_.Name.Equals('GIT_CONFIG',[StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.StartsWith('GIT_CONFIG_',[StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.Equals('GIT_DIR',[StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.Equals('GIT_WORK_TREE',[StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.Equals('GIT_COMMON_DIR',[StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.Equals('GIT_OBJECT_DIRECTORY',[StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.Equals('GIT_ALTERNATE_OBJECT_DIRECTORIES',[StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.Equals('GIT_NAMESPACE',[StringComparison]::OrdinalIgnoreCase)
         } | Select-Object -ExpandProperty Name) | ForEach-Object {
             Remove-Item -LiteralPath "Env:$_"
         }
-        foreach ($name in $gitConfigEnvironment.Keys) {
-            Set-Item -LiteralPath "Env:$name" -Value $gitConfigEnvironment[$name]
+        foreach ($name in $gitEnvironment.Keys) {
+            Set-Item -LiteralPath "Env:$name" -Value $gitEnvironment[$name]
         }
         Remove-Item -LiteralPath $revocationPath -Force -ErrorAction SilentlyContinue
     }
