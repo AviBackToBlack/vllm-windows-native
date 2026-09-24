@@ -119,6 +119,43 @@ function Resolve-VllmReleaseCommit {
     return ([string]$resolved).ToLowerInvariant()
 }
 
+function Invoke-VllmReleaseTreeCleanupNoFollow {
+    param([Parameter(Mandatory)][string]$Path)
+    $entry=Get-VllmPathEntryInfo -Path $Path
+    if(-not$entry.Exists){return}
+    if($entry.IsReparsePoint){
+        if($entry.IsDirectory){[IO.Directory]::Delete($entry.Path,$false)}else{[IO.File]::Delete($entry.Path)}
+        return
+    }
+    if($entry.IsDirectory){
+        foreach($child in @(Get-ChildItem -LiteralPath $entry.Path -Force)){
+            Invoke-VllmReleaseTreeCleanupNoFollow -Path $child.FullName
+        }
+        [IO.Directory]::Delete($entry.Path,$false)
+        return
+    }
+    if(([IO.File]::GetAttributes($entry.Path)-band[IO.FileAttributes]::ReadOnly)-ne0){
+        [IO.File]::SetAttributes($entry.Path,([IO.File]::GetAttributes($entry.Path)-band(-bnot[IO.FileAttributes]::ReadOnly)))
+    }
+    [IO.File]::Delete($entry.Path)
+}
+
+function Invoke-VllmReleaseOwnedTempCleanup {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$ExpectedPhysical,
+        [Parameter(Mandatory)][string]$ExpectedIdentity
+    )
+    $entry=Get-VllmPathEntryInfo -Path $Path
+    if(-not$entry.Exists){return}
+    if(-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "Release snapshot temp root changed type or became a reparse point: $Path"}
+    $physical=Get-VllmCanonicalExistingPath -Path $Path -Format Dos
+    if(-not$physical.Equals($ExpectedPhysical,[StringComparison]::OrdinalIgnoreCase)){throw "Release snapshot temp root changed physical path: $Path"}
+    $identity=[VllmWindowsNative.NativePath]::GetFileIdentity($Path)
+    if(-not[string]::Equals($identity,$ExpectedIdentity,[StringComparison]::Ordinal)){throw "Release snapshot temp root changed filesystem object identity: $Path"}
+    Invoke-VllmReleaseTreeCleanupNoFollow -Path $Path
+}
+
 function Get-VllmReleaseGitSnapshot {
     param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$Commit)
     $resolved = Resolve-VllmReleaseCommit -Repository $Repository -Commit $Commit
@@ -127,29 +164,40 @@ function Get-VllmReleaseGitSnapshot {
     $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('vllm-release-' + [guid]::NewGuid().ToString('N'))
     $snapshotRoot = Join-Path $tempRoot 'snapshot'
     $archivePath = Join-Path $tempRoot 'snapshot.tar'
-    New-Item -ItemType Directory -Path $snapshotRoot -Force | Out-Null
+    $tempRootPhysical=$null;$tempRootIdentity=$null
+    [void][IO.Directory]::CreateDirectory($tempRoot)
+    $tempEntry=Get-VllmPathEntryInfo -Path $tempRoot
+    if(-not$tempEntry.Exists-or-not$tempEntry.IsDirectory-or$tempEntry.IsReparsePoint){throw "Release snapshot temp root is not a regular directory: $tempRoot"}
+    $tempRootPhysical=Get-VllmCanonicalExistingPath -Path $tempRoot -Format Dos
+    $tempRootIdentity=[VllmWindowsNative.NativePath]::GetFileIdentity($tempRoot)
+    [void][IO.Directory]::CreateDirectory($snapshotRoot)
     try {
         & git -C $Repository -c core.longpaths=true archive --format=tar --output=$archivePath $resolved
         if ($LASTEXITCODE -ne 0) { throw "git archive failed for project commit $resolved." }
         & $tar.Source -xf $archivePath -C $snapshotRoot
         if ($LASTEXITCODE -ne 0) { throw "tar extraction failed for project commit $resolved." }
-        Remove-Item -LiteralPath $archivePath -Force
+        [IO.File]::Delete($archivePath)
         return [pscustomobject][ordered]@{
             Repository=[IO.Path]::GetFullPath($Repository)
             Commit=$resolved
             Root=$snapshotRoot
             TempRoot=$tempRoot
+            TempRootPhysical=$tempRootPhysical
+            TempRootIdentity=$tempRootIdentity
         }
     } catch {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
-        throw
+        $originalError=$_
+        if($null-ne$tempRootPhysical-and$null-ne$tempRootIdentity){
+            try{Invoke-VllmReleaseOwnedTempCleanup -Path $tempRoot -ExpectedPhysical $tempRootPhysical -ExpectedIdentity $tempRootIdentity}catch{Write-Warning "Release snapshot cleanup after materialization failure was skipped or incomplete: $($_.Exception.Message)"}
+        }
+        throw $originalError
     }
 }
 
 function Close-VllmReleaseGitSnapshot {
     param([Parameter(Mandatory)]$Snapshot)
-    if ($Snapshot.TempRoot -and (Test-Path -LiteralPath ([string]$Snapshot.TempRoot))) {
-        Remove-Item -LiteralPath ([string]$Snapshot.TempRoot) -Recurse -Force -ErrorAction SilentlyContinue
+    if($Snapshot.TempRoot-and(Test-Path -LiteralPath ([string]$Snapshot.TempRoot))){
+        try{Invoke-VllmReleaseOwnedTempCleanup -Path ([string]$Snapshot.TempRoot) -ExpectedPhysical ([string]$Snapshot.TempRootPhysical) -ExpectedIdentity ([string]$Snapshot.TempRootIdentity)}catch{Write-Warning "Release snapshot cleanup was skipped or incomplete: $($_.Exception.Message)"}
     }
 }
 

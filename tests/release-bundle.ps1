@@ -459,9 +459,11 @@ try {
     try{
         Test-ExpectedFailure {Get-VllmReleaseSnapshotFile -Snapshot $reparseSnapshot -RelativePath 'payload/a.txt'|Out-Null} 'snapshot-reparse-parent'
     }finally{
-        if(Test-Path -LiteralPath $snapshotPayload){[IO.Directory]::Delete($snapshotPayload,$false)}
         Close-VllmReleaseGitSnapshot -Snapshot $reparseSnapshot
     }
+    $externalMarker=Join-Path $externalPayload 'a.txt'
+    if(-not(Test-Path -LiteralPath $externalMarker -PathType Leaf)-or[IO.File]::ReadAllText($externalMarker)-ne"alpha`n"){throw 'Snapshot no-follow cleanup traversed the junction and modified external target content.'}
+    if(Test-Path -LiteralPath $reparseSnapshot.TempRoot){throw 'Snapshot no-follow cleanup left the owned temp root behind.'}
     Write-Host 'RELEASE_SNAPSHOT_REPARSE_GUARD_OK'
 
     $verified=Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $out1

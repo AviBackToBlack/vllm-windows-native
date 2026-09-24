@@ -63,6 +63,8 @@ The v1 public asset set is the accepted wheel, `vllm-windows-native-<release>.zi
 
 ### Deterministic bundle
 
+Temporary Git snapshots used to source canonical blob bytes are bound to the created temp-root physical/object identity and cleaned with explicit no-follow recursion, so Windows PowerShell 5.1 never traverses a junction/symlink target during cleanup.
+
 Bundle creation uses an explicit canonical ZIP profile rather than ambient `Compress-Archive` behavior. Entries are sorted with ordinal comparison, use canonical UTF-8 forward-slash relative names, are regular files only, and reject absolute paths, `..`, empty segments, ADS syntax, links/reparse points, and case-insensitive collisions. V1 uses ZIP STORE (method 0, no compression), fixed ZIP/DOS wall-clock fields for `1980-01-01 00:00:00` (DOS time `0`, DOS date `33`; ZIP carries no timezone), no file comments or extra fields beyond what the canonical writer requires, and fixed external attributes. Those choices avoid runtime-dependent Deflate output. The produced ZIP is reopened and every member is revalidated against the tagged-commit blob bytes. Fixture acceptance requires byte-identical archive SHA-256 for repeated builds and across the supported PS7/Windows PowerShell 5.1 builder paths before both are advertised as builders.
 
 ### Publication transaction and immutability

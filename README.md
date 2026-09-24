@@ -204,6 +204,8 @@ Prepare the four deterministic offline assets from the accepted caller-supplied 
 
 If you choose a custom `-ArtifactsDirectory` inside the repository, keep that path git-ignored; otherwise the clean-worktree gate will intentionally reject subsequent `Prepare` runs after artifacts or the retained coordination sidecar appear.
 
+If a hard process termination or power loss leaves a private sibling .<output-leaf>.vllm-release-stage-* directory, confirm no preparation is active, inspect it, and remove it manually before retrying; Prepare never guesses that an arbitrary stale-looking directory is safe to delete. Likewise, if the final output exists after an exceptional post-publish verification failure, preserve/inspect that evidence and remove the final directory explicitly before retrying.
+
 Verify an existing offline set independently:
 
 ```powershell
