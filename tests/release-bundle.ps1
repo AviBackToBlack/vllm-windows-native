@@ -37,6 +37,7 @@ function Test-ExpectedFailure {
         'provenance-credential-url'='Release upstream repository must not contain credentials, query parameters, or a fragment.'
         'nonempty-output-refusal'='Release artifacts final path already exists; Prepare requires an absent final path:'
         'empty-output-refusal'='Release artifacts final path already exists; Prepare requires an absent final path:'
+        'missing-artifacts-parent'='Release artifacts parent directory must already exist:'
         'artifacts-volume-root'='Release artifacts directory must not be a volume root'
         'directory-object-replacement'='changed filesystem object identity.'
         'prepare-concurrent-lock'='Another offline release preparation is active'
@@ -47,6 +48,7 @@ function Test-ExpectedFailure {
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
         'prepare-fault-after-bundle'='FAULT_INJECTED:AfterBundle'
         'prepare-postverify-tamper'='Provided release wheel size/SHA-256 mismatch.'
+        'prepare-postclose-tamper'='Provided release wheel size/SHA-256 mismatch.'
         'prepare-target-race'='Release artifacts path appeared before atomic publish:'
         'wheel-tamper'='Provided release wheel size/SHA-256 mismatch.'
         'index-tamper'='release-index.json does not exactly match the canonical index'
@@ -64,7 +66,7 @@ function Test-ExpectedFailure {
         'zip-non-store-method'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'zip-local-header-name'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'manifest-blob-drift'='Tagged-commit blob does not match release manifest identity'
-        'snapshot-reparse-parent'='Snapshot parent is not a regular directory:'
+        'snapshot-reparse-parent'='Snapshot parent already exists; refusing to adopt it:'
         'unsafe-release-path'='Release distribution path contains an unsafe path segment'
         'case-colliding-release-path'='Release distribution paths collide by Windows identity'
     }
@@ -264,6 +266,19 @@ try {
     Remove-Item -LiteralPath $stagePinRoot,$stagePinExternal -Recurse -Force
     Write-Host 'RELEASE_STAGE_ASSET_PIN_GUARD_OK'
 
+    $stageWriteRoot=Join-Path $root 'stage-write-deny'
+    [void][IO.Directory]::CreateDirectory($stageWriteRoot)
+    $stageWriteGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $stageWriteRoot -Format Guid)
+    $stageWritePath=Join-Path $stageWriteRoot 'asset.bin'
+    $stageWriteStream=Write-VllmReleasePinnedFile -Path $stageWritePath -ExpectedParentGuid $stageWriteGuid -WriteAction {param($dest)$bytes=[Text.Encoding]::UTF8.GetBytes('owned');$dest.Write($bytes,0,$bytes.Length)}
+    try{
+        $writeBlocked=$false
+        try{$externalWriter=[IO.File]::Open($stageWritePath,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite);$externalWriter.Dispose()}catch [IO.IOException]{$writeBlocked=$true}
+        if(-not$writeBlocked){throw 'Pinned staging writer allowed a concurrent external writer.'}
+    }finally{$stageWriteStream.Dispose()}
+    Remove-Item -LiteralPath $stageWriteRoot -Recurse -Force
+    Write-Host 'RELEASE_STAGE_ASSET_WRITE_DENY_OK'
+
     $snapshot=Get-VllmReleaseGitSnapshot -Repository $fixture -Commit $commit
     try{
         $snapshotMoveBlocked=$false;$tempMoveBlocked=$false
@@ -393,6 +408,12 @@ try {
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $emptyOut | Out-Null } 'empty-output-refusal'
     if(-not(Test-Path -LiteralPath $emptyOut -PathType Container)-or@(Get-ChildItem -LiteralPath $emptyOut -Force).Count-ne0){throw 'Prepare modified an existing empty final output path.'}
     Remove-Item -LiteralPath $emptyOut -Force
+    $missingParentRoot=Join-Path $root 'missing-artifacts-parent'
+    $missingParentOut=Join-Path $missingParentRoot 'output'
+    if(Test-Path -LiteralPath $missingParentRoot){Remove-Item -LiteralPath $missingParentRoot -Recurse -Force}
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $missingParentOut|Out-Null} 'missing-artifacts-parent'
+    if(Test-Path -LiteralPath $missingParentRoot){throw 'Prepare created a missing artifacts parent before rejecting it.'}
+    Write-Host 'RELEASE_MISSING_PARENT_GUARD_OK'
     Test-ExpectedFailure { Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory ([IO.Path]::GetPathRoot($root)) | Out-Null } 'artifacts-volume-root'
     $identityPath=Join-Path $root 'identity-object'
     $identityMoved=Join-Path $root 'identity-object-original'
@@ -491,6 +512,14 @@ try {
         if(@(Get-ChildItem -LiteralPath $root -Force -Directory|Where-Object {$_.Name.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)}).Count-ne0){throw "Post-verify tamper rollback leaked private directory prefix: $prefix"}
     }
     Write-Host 'RELEASE_POSTVERIFY_ROLLBACK_OK'
+
+    $postCloseTamperOut=Join-Path $root 'postclose-tamper-output'
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $postCloseTamperOut -FaultPoint AfterStageHandlesClosedTamper|Out-Null} 'prepare-postclose-tamper'
+    if(Test-Path -LiteralPath $postCloseTamperOut){throw 'Post-close tamper rollback left the requested final output path.'}
+    foreach($prefix in @('.postclose-tamper-output.vllm-release-stage-','.postclose-tamper-output.vllm-release-rejected-')){
+        if(@(Get-ChildItem -LiteralPath $root -Force -Directory|Where-Object {$_.Name.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)}).Count-ne0){throw "Post-close tamper rollback leaked private directory prefix: $prefix"}
+    }
+    Write-Host 'RELEASE_POSTCLOSE_RACE_ROLLBACK_OK'
 
     $raceOut=Join-Path $root 'target-race-output'
     Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $raceOut -FaultPoint BeforePublishTargetAppears|Out-Null} 'prepare-target-race'
