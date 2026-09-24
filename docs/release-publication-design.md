@@ -79,6 +79,8 @@ GitHub release attestation is part of the published-release integrity chain. Ver
 
 Public PR CI remains source-only. Trusted release preparation/publishing runs only from reviewed `main` in a trusted isolated environment or protected workflow and never uses `pull_request_target` to execute attacker-controlled PR code. Actions remain full-SHA pinned and final publication remains an explicit operator decision.
 
+SM-19 release tooling is not a sandbox against a malicious or compromised process running with the same (or stronger) filesystem rights as the trusted release operator. The release workspace and its parent directory are prerequisites of the trust boundary: they must be isolated from untrusted local writers by the runner boundary and operating-system permissions. The handle/path/identity guards in SM-19A are fail-closed defenses against stale state, accidental interference, reparse/path surprises, and concurrency among cooperating release invocations; they do not claim perpetual immutability against an adversary that can create/delete/rename arbitrary entries in the workspace. Offline verification proves the observed four-asset set at its acceptance boundary; subsequent external mutation invalidates that verification and must be prevented by the trusted workspace or detected by a later verification/attestation step.
+
 ### Acquisition scope
 
 Automatic installer/updater download from Releases is not required for SM-19A through SM-19D. SM-19E is an explicit decision gate: either add release-index-driven acquisition with its own cache/provenance contract or defer it to SM-20.

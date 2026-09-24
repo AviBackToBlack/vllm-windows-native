@@ -204,6 +204,10 @@ Prepare the four deterministic offline assets from the accepted caller-supplied 
 
 If you choose a custom `-ArtifactsDirectory` inside the repository, keep that path git-ignored; otherwise the clean-worktree gate will intentionally reject subsequent `Prepare` runs after artifacts or the retained coordination sidecar appear.
 
+The release workspace is part of the trusted execution boundary. Prepare/Verify fail closed on stale state, path/reparse surprises, and cooperating concurrent release invocations, but they are not intended to sandbox a malicious same-user process that can create/delete/rename arbitrary files in the release parent directory. Run release preparation in an isolated trusted workspace with permissions that exclude untrusted local writers. The exact four-asset check is therefore a point-in-time verification boundary; mutate the directory afterwards and the previous verification is no longer authoritative.
+
+A retained zero-length preparation sidecar is treated as an interrupted tool-created lock and is recovered automatically on the next Prepare. A non-empty malformed/truncated/foreign sidecar is preserved and refused; after confirming no preparation is active, inspect and remove that sidecar explicitly before retrying.
+
 If a hard process termination or power loss leaves a private sibling .<output-leaf>.vllm-release-stage-* directory, confirm no preparation is active, inspect it, and remove it manually before retrying; Prepare never guesses that an arbitrary stale-looking directory is safe to delete. If post-publish verification fails, `Prepare` normally quarantines and removes the rejected directory before returning the error. If an external process prevents that rollback, preserve/inspect any remaining final or rejected directory as evidence and remove it explicitly before retrying.
 
 Verify an existing offline set independently:

@@ -1273,7 +1273,7 @@ function Enter-VllmReleasePreparationLock {
             throw "Release preparation lock has unexpected hard-link count $linkCount; refusing to use it: $lockPath"
         }
 
-        if(-not$created){Assert-VllmReleasePreparationLockOwnership -Stream $stream -Root $root -Path $lockPath}
+        if(-not$created-and$stream.Length-gt0){Assert-VllmReleasePreparationLockOwnership -Stream $stream -Root $root -Path $lockPath}
         $started=(Get-Date).ToString('o',[Globalization.CultureInfo]::InvariantCulture)
         $payload="schema=1`noperation=release-prepare`nroot=$root`npid=$PID`nstarted=$started`n"
         $payloadBytes=(New-Object Text.UTF8Encoding($false)).GetBytes($payload)

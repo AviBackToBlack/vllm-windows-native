@@ -458,6 +458,16 @@ try {
     $upgradedLock=[IO.File]::ReadAllText($foreignLockPath,[Text.Encoding]::UTF8)
     if(-not$upgradedLock.StartsWith("schema=1`noperation=release-prepare`n",[StringComparison]::Ordinal)){throw 'Recognized legacy sidecar was not upgraded to canonical schema v1.'}
     Remove-Item -LiteralPath $foreignLockOut -Recurse -Force
+
+    $zeroLockOut=Join-Path $root 'zero-lock-output'
+    $zeroLockPath=Join-Path $root '.zero-lock-output.vllm-release-prepare.lock'
+    [IO.File]::WriteAllBytes($zeroLockPath,[byte[]]@())
+    $zeroLockResult=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $zeroLockOut
+    if($zeroLockResult.bundle_sha256-ne$r1.bundle_sha256){throw 'Zero-length sidecar recovery produced a different bundle identity.'}
+    $recoveredLock=[IO.File]::ReadAllText($zeroLockPath,[Text.Encoding]::UTF8)
+    if(-not$recoveredLock.StartsWith("schema=1`noperation=release-prepare`n",[StringComparison]::Ordinal)){throw 'Zero-length sidecar was not recovered to canonical schema v1.'}
+    Remove-Item -LiteralPath $zeroLockOut -Recurse -Force
+    Write-Host 'RELEASE_PREPARE_ZERO_LOCK_RECOVERY_OK'
     Write-Host 'RELEASE_PREPARE_LOCK_OWNERSHIP_OK'
 
     $parentBusyOut=Join-Path $root 'parent-busy-output'

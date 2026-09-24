@@ -54,6 +54,7 @@ jobs:
         run: ./tests/release-manifest.ps1
 
       - name: Validate deterministic release bundle in PowerShell 7 and Windows PowerShell 5.1
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         run: |
           & pwsh.exe -NoLogo -NoProfile -File ./release.ps1 -Mode ValidateRepository
