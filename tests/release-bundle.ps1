@@ -37,6 +37,7 @@ function Test-ExpectedFailure {
         'artifacts-volume-root'='Release artifacts directory must not be a volume root'
         'directory-object-replacement'='changed filesystem object identity.'
         'prepare-concurrent-lock'='Another offline release preparation is active'
+        'prepare-fault-after-lock'='FAULT_INJECTED:AfterPrepareLock'
         'prepare-fault-during-wheel'='FAULT_INJECTED:DuringWheelCopy'
         'prepare-fault-after-wheel'='FAULT_INJECTED:AfterWheelCopy'
         'prepare-fault-after-bundle'='FAULT_INJECTED:AfterBundle'
@@ -57,6 +58,7 @@ function Test-ExpectedFailure {
         'zip-non-store-method'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'zip-local-header-name'='Release ZIP bytes are not the exact canonical tagged-commit bundle.'
         'manifest-blob-drift'='Tagged-commit blob does not match release manifest identity'
+        'snapshot-reparse-parent'='Snapshot release member resolves outside canonical snapshot root'
         'unsafe-release-path'='Release distribution path contains an unsafe path segment'
         'case-colliding-release-path'='Release distribution paths collide by Windows identity'
     }
@@ -355,6 +357,13 @@ try {
     if(-not(Test-Path -LiteralPath $heldLockPath -PathType Leaf)){throw 'Release preparation coordination sidecar was not retained for safe reuse.'}
     Write-Host 'RELEASE_PREPARE_SERIALIZATION_OK'
 
+    $lockFaultOut=Join-Path $root 'lock-fault-output'
+    Test-ExpectedFailure {Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $lockFaultOut -FaultPoint AfterPrepareLock|Out-Null} 'prepare-fault-after-lock'
+    $lockFaultRetry=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $lockFaultOut
+    if($lockFaultRetry.bundle_sha256-ne$r1.bundle_sha256){throw 'Retry after post-lock setup failure produced a different bundle identity.'}
+    Remove-Item -LiteralPath $lockFaultOut -Recurse -Force
+    Write-Host 'RELEASE_PREPARE_LOCK_CLEANUP_OK'
+
     $guardStage=Join-Path $root 'guard-stage'
     $guardFinal=Join-Path $root 'guard-final'
     [void][IO.Directory]::CreateDirectory($guardStage)
@@ -401,6 +410,21 @@ try {
     $r3=Write-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheelPath -ArtifactsDirectory $out3
     if($r3.bundle_sha256-ne$r1.bundle_sha256){throw 'Worktree drift changed a Git-object release bundle.'}
     Write-Host 'RELEASE_GIT_OBJECT_SOURCE_OK'
+
+    $reparseSnapshot=Get-VllmReleaseGitSnapshot -Repository $fixture -Commit $commit
+    $externalPayload=Join-Path $root 'external-snapshot-payload'
+    [void][IO.Directory]::CreateDirectory($externalPayload)
+    $snapshotPayload=Join-Path $reparseSnapshot.Root 'payload'
+    Copy-Item -LiteralPath (Join-Path $snapshotPayload 'a.txt') -Destination (Join-Path $externalPayload 'a.txt')
+    Remove-Item -LiteralPath $snapshotPayload -Recurse -Force
+    [void](New-Item -ItemType Junction -Path $snapshotPayload -Target $externalPayload)
+    try{
+        Test-ExpectedFailure {Get-VllmReleaseSnapshotFile -Snapshot $reparseSnapshot -RelativePath 'payload/a.txt'|Out-Null} 'snapshot-reparse-parent'
+    }finally{
+        if(Test-Path -LiteralPath $snapshotPayload){[IO.Directory]::Delete($snapshotPayload,$false)}
+        Close-VllmReleaseGitSnapshot -Snapshot $reparseSnapshot
+    }
+    Write-Host 'RELEASE_SNAPSHOT_REPARSE_GUARD_OK'
 
     $verified=Assert-VllmOfflineRelease -Repository $fixture -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -ArtifactsDirectory $out1
     if($verified.bundle_sha256-ne$r1.bundle_sha256){throw 'Offline verifier returned a different bundle identity.'}

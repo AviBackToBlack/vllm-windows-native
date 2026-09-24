@@ -171,11 +171,15 @@ function Get-VllmReleaseSnapshotFile {
     $relative = Assert-VllmReleaseCanonicalPath -RelativePath $RelativePath -Label 'Snapshot release member'
     $blob=Assert-VllmReleaseGitRegularBlob -Repository $Snapshot.Repository -Commit $Snapshot.Commit -RelativePath $relative
     $path = Join-Path $Snapshot.Root ($relative.Replace('/','\'))
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Snapshot release member is missing after git archive: $relative" }
+    if (-not (Test-Path -LiteralPath $path)) { throw "Snapshot release member is missing after git archive: $relative" }
+    $entry = Get-VllmPathEntryInfo -Path $path
+    if (-not$entry.Exists -or $entry.IsDirectory -or $entry.IsReparsePoint) { throw "Snapshot release member is not a regular non-reparse file: $relative" }
+    $snapshotPhysical=Get-VllmCanonicalExistingPath -Path $Snapshot.Root -Format Dos
+    $memberPhysical=Get-VllmCanonicalExistingPath -Path $path -Format Dos
+    $expectedPhysical=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($snapshotPhysical,$relative.Replace('/','\')))
+    if(-not$memberPhysical.Equals($expectedPhysical,[StringComparison]::OrdinalIgnoreCase)){throw "Snapshot release member resolves outside canonical snapshot root: $relative"}
     $materializedObject=Invoke-Git -Repository $Snapshot.Repository -Arguments @('hash-object','--no-filters',$path) -Capture
     if (-not (Test-VllmReleaseOrdinalEqual ([string]$materializedObject) ([string]$blob.ObjectId))) { throw "Materialized release member bytes differ from the tagged Git blob: $relative" }
-    $entry = Get-VllmPathEntryInfo -Path $path
-    if ($entry.IsDirectory -or $entry.IsReparsePoint) { throw "Snapshot release member is not a regular non-reparse file: $relative" }
     return [pscustomobject][ordered]@{
         RelativePath=$relative
         Path=$path
@@ -905,7 +909,7 @@ function Write-VllmOfflineRelease {
         [Parameter(Mandatory)][string]$ReleaseManifestPath,
         [Parameter(Mandatory)][string]$WheelPath,
         [Parameter(Mandatory)][string]$ArtifactsDirectory,
-        [ValidateSet('None','DuringWheelCopy','AfterWheelCopy','AfterBundle','BeforePublishTargetAppears')][string]$FaultPoint='None'
+        [ValidateSet('None','AfterPrepareLock','DuringWheelCopy','AfterWheelCopy','AfterBundle','BeforePublishTargetAppears')][string]$FaultPoint='None'
     )
     $root=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($ArtifactsDirectory))
     $volumeRoot=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetPathRoot($root))
@@ -921,15 +925,15 @@ function Write-VllmOfflineRelease {
     $snapshot=$null;$stageRoot=$null;$stageExpectedPhysical=$null;$stageExpectedGuid=$null;$stageGuard=$null;$parentGuard=$null
     $destWheel=$null;$bundlePath=$null;$indexPath=$null;$sumPath=$null
     $prepareLock=Enter-VllmReleasePreparationLock -ArtifactsDirectory $root
-    $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
-    $parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($parent)
-    $parentGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($parentGuard))
-    if(-not$parentGuardPhysical.Equals($parentExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){
-        $parentGuard.Dispose();$parentGuard=$null
-        Exit-VllmReleasePreparationLock -Lock $prepareLock
-        throw "Release artifacts parent guard resolves outside expected directory: $parentGuardPhysical"
-    }
     try {
+        if($FaultPoint-eq'AfterPrepareLock'){throw 'FAULT_INJECTED:AfterPrepareLock'}
+        $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $parent -Format Guid)
+        $parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($parent)
+        $parentGuardPhysical=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($parentGuard))
+        if(-not$parentGuardPhysical.Equals($parentExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){
+            $parentGuard.Dispose();$parentGuard=$null
+            throw "Release artifacts parent guard resolves outside expected directory: $parentGuardPhysical"
+        }
         $rootInitiallyExisted=Test-Path -LiteralPath $root;$rootInitialPhysical=$null
         if($rootInitiallyExisted){
             if(-not(Test-Path -LiteralPath $root -PathType Container)){throw "Release artifacts path is not a directory: $root"}
