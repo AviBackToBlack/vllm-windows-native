@@ -182,6 +182,42 @@ Run the same command without `-ValidateOnly`. Long CUDA builds should be run det
 
 The resulting wheel and `build-result.json` are written under the selected artifact directory (by default `artifacts/<milestone>`).
 
+## Prepare deterministic offline release assets
+
+`release.ps1` is the SM-19A offline preparation/verification surface. It performs no GitHub mutation, tag creation, signing, upload, or network acquisition. Release bytes are sourced from an explicit Git commit rather than the mutable worktree.
+
+Validate the current repository release contract without requiring the accepted wheel:
+
+```powershell
+.\release.ps1 -Mode ValidateRepository
+```
+
+Prepare the four deterministic offline assets from the accepted caller-supplied wheel:
+
+```powershell
+.\release.ps1 -Mode Prepare `
+  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl' `
+  -ArtifactsDirectory '.\artifacts\release'
+```
+
+`Prepare` requires a clean worktree and the selected project commit to be the checked-out `HEAD`. The final output path must not exist, and its parent directory must already exist as a regular canonical directory; `Prepare` never creates a missing parent, empties, or deletes a pre-existing final directory. Concurrent preparation into the same output directory is serialized by an exclusive persistent sibling `.\.<output-leaf>.vllm-release-prepare.lock` coordination file, which is outside the four release assets. An existing sidecar is reused only after its tool ownership schema/operation/root marker is validated; an unrecognized sidecar is refused without modification, and recognized legacy sidecars are upgraded to schema v1. The parent directory itself is also pinned by a non-delete-sharing handle, so preparations targeting different outputs under the same parent are intentionally serialized and report a retryable concurrency diagnostic. Canonical release-owned source files are materialized lazily from their exact Git blob object IDs, not by extracting an archive: each required parent directory is validated/pinned first and each blob is written through a CREATE_NEW, no-follow file handle before it becomes readable by path. Preparation builds and fully verifies the four assets in a unique sibling staging directory while DELETE-capable non-delete-sharing handles pin both the parent and staging directory objects against rename/replacement; each staged asset is likewise created through a pinned CREATE_NEW file stream that denies concurrent writers through the final pre-publication byte proof. Windows does not permit the staging directory itself to be renamed while child file handles remain open, so those four streams are closed only after their exact identities are re-proved; no further preparation write occurs after that boundary. Publication then renames the pinned staging directory to the final path through the still-open staging-directory handle and reruns full offline verification before `Prepare` can succeed. A mutation in the close-to-rename window therefore cannot redirect a write and is detected fail-closed by post-publication verification and guarded rollback. If that post-publish proof fails, the tool attempts to move the same directory object by handle into a private rejected quarantine and remove it with guarded object-bound cleanup; the requested final path is not considered valid until post-publish verification succeeds. If the final path appears before publication, preparation fails without cleaning or overwriting that foreign path. The generated set is exactly the wheel copied byte-for-byte, `vllm-windows-native-<release>.zip`, `release-index.json`, and `SHA256SUMS`. The ZIP uses the canonical STORE profile defined by the SM-19 design and is byte-identical across the supported PowerShell 7 / Windows PowerShell 5.1 preparation paths.
+
+If you choose a custom `-ArtifactsDirectory` inside the repository, keep that path git-ignored; otherwise the clean-worktree gate will intentionally reject subsequent `Prepare` runs after artifacts or the retained coordination sidecar appear.
+
+The release workspace is part of the trusted execution boundary. Prepare/Verify fail closed on stale state, path/reparse surprises, and cooperating concurrent release invocations, but they are not intended to sandbox a malicious same-user process that can create/delete/rename arbitrary files in the release parent directory. Run release preparation in an isolated trusted workspace with permissions that exclude untrusted local writers. The exact four-asset check is therefore a point-in-time verification boundary; mutate the directory afterwards and the previous verification is no longer authoritative.
+
+A retained zero-length preparation sidecar is treated as an interrupted tool-created lock and is recovered automatically on the next Prepare. A non-empty malformed/truncated/foreign sidecar is preserved and refused; after confirming no preparation is active, inspect and remove that sidecar explicitly before retrying.
+
+If a hard process termination or power loss leaves a private sibling .<output-leaf>.vllm-release-stage-* directory, confirm no preparation is active, inspect it, and remove it manually before retrying; Prepare never guesses that an arbitrary stale-looking directory is safe to delete. If post-publish verification fails, `Prepare` normally quarantines and removes the rejected directory before returning the error. If an external process prevents that rollback, preserve/inspect any remaining final or rejected directory as evidence and remove it explicitly before retrying.
+
+Verify an existing offline set independently:
+
+```powershell
+.\release.ps1 -Mode Verify -ArtifactsDirectory '.\artifacts\release'
+```
+
+Verification re-derives the release/runtime manifests and all distribution bytes from the selected Git commit, validates the wheel contract, requires canonical ZIP/index/checksum encoding, and rejects extra, missing, aliased, or drifted content. Signing and GitHub Release publication remain later SM-19 slices.
+
 ## Run the accepted Windows runtime
 
 `start.ps1` launches vLLM in the foreground and applies process-local containment before the server starts.

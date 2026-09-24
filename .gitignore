@@ -11,6 +11,7 @@ config.psd1
 /models/
 /downloads/
 /logs/
+/artifacts/
 /work/
 /forensic/
 /state/

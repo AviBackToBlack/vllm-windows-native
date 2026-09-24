@@ -285,6 +285,21 @@ namespace VllmWindowsNative {
             catch (Win32Exception) { return GetFinalPathWithFlags(handle, VOLUME_NAME_DOS); }
         }
 
+        public static string GetFileIdentity(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
+            ByHandleFileInformation info;
+            if (!GetFileInformationByHandle(handle, out info)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return info.VolumeSerialNumber.ToString("X8") + ":" + info.FileIndexHigh.ToString("X8") + info.FileIndexLow.ToString("X8");
+        }
+
+        public static string GetFileIdentity(string path) {
+            using (SafeFileHandle handle = OpenPath(path)) {
+                return GetFileIdentity(handle);
+            }
+        }
+
         public static uint GetLinkCount(SafeFileHandle handle) {
             if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
             ByHandleFileInformation info;
