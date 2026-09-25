@@ -4,6 +4,11 @@ $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '..\scripts\release-bundle.ps1')
 . (Join-Path $PSScriptRoot '..\scripts\release-verification.ps1')
 . (Join-Path $PSScriptRoot '..\scripts\release-publication.ps1')
+$script:VllmReleaseReadAttempts=5
+$script:VllmReleaseReadDelayMilliseconds=0
+$script:VllmResetPresenceConfirmAttempts=4
+$script:VllmResetPresenceConfirmDelayMilliseconds=0
+
 
 function Assert-Fails {
     param([Parameter(Mandatory)][scriptblock]$Action,[Parameter(Mandatory)][string]$Contains)
@@ -46,6 +51,19 @@ try{
     $script:FakeChangeMainOnRead=0
     $script:FakeReleaseReadCount=0
     $script:FakePublishOnReleaseRead=0
+    $script:FakeCreateVisibilityLagReads=0
+    $script:FakeReleaseInvisibleReadsRemaining=0
+    $script:FakePublishVisibilityLagReads=0
+    $script:FakePublishVisibilityReadsRemaining=0
+    $script:FakePendingPublish=$false
+    $script:FakeDeleteVisibilityLagReads=0
+    $script:FakeDeleteVisibilityReadsRemaining=0
+    $script:FakeDeletedRelease=$null
+    $script:FakeAssetFieldLagReads=0
+    $script:FakeAssetFieldLagReadsRemaining=0
+    $script:FakeAssetLagName=$null
+    $script:FakePublishedAssetLagReads=0
+    $script:FakePublishedAssetLagReadsRemaining=0
     $script:FakeRelease=$null
     $script:FakeNextReleaseId=7001
     $script:FakeCommands=New-Object System.Collections.Generic.List[string]
@@ -94,17 +112,63 @@ try{
             }
             if($joined -match 'repos/.+/releases\?per_page=100'){
                 $script:FakeReleaseReadCount++
+                if($null-eq$script:FakeRelease-and$null-ne$script:FakeDeletedRelease){
+                    if($script:FakeDeleteVisibilityReadsRemaining-gt0){
+                        $script:FakeDeleteVisibilityReadsRemaining--
+                        return '[['+($script:FakeDeletedRelease|ConvertTo-Json -Depth 8 -Compress)+']]'
+                    }
+                    $script:FakeDeletedRelease=$null
+                }
+                if($null-ne$script:FakeRelease-and$script:FakeReleaseInvisibleReadsRemaining-gt0){
+                    $script:FakeReleaseInvisibleReadsRemaining--
+                    return '[[]]'
+                }
+                if($null-ne$script:FakeRelease-and$script:FakePendingPublish){
+                    if($script:FakePublishVisibilityReadsRemaining-gt0){
+                        $script:FakePublishVisibilityReadsRemaining--
+                    }else{
+                        $script:FakeRelease.draft=$false
+                        $script:FakeRelease.prerelease=$true
+                        $script:FakeRelease.immutable=$true
+                        $script:FakePendingPublish=$false
+                    }
+                }
                 if($null-ne$script:FakeRelease-and$script:FakePublishOnReleaseRead-gt0-and$script:FakeReleaseReadCount-ge$script:FakePublishOnReleaseRead){
                     $script:FakeRelease.draft=$false
                     $script:FakeRelease.immutable=$true
                 }
                 if($null-eq$script:FakeRelease){return '[[]]'}
+                if($script:FakeAssetFieldLagReadsRemaining-gt0-and-not[string]::IsNullOrWhiteSpace([string]$script:FakeAssetLagName)){
+                    $lagged=($script:FakeRelease|ConvertTo-Json -Depth 8|ConvertFrom-Json)
+                    $laggedAsset=@($lagged.assets|Where-Object{$_.name-eq$script:FakeAssetLagName})
+                    if($laggedAsset.Count-eq1){
+                        $laggedAsset[0].state='starter'
+                        $laggedAsset[0].size=0
+                        $laggedAsset[0].digest=$null
+                    }
+                    $script:FakeAssetFieldLagReadsRemaining--
+                    return '[['+($lagged|ConvertTo-Json -Depth 8 -Compress)+']]'
+                }
+                if($script:FakeRelease.draft-ne$true-and$script:FakePublishedAssetLagReadsRemaining-gt0){
+                    $lagged=($script:FakeRelease|ConvertTo-Json -Depth 8|ConvertFrom-Json)
+                    $allAssets=@($lagged.assets)
+                    if($allAssets.Count-gt0){$lagged.assets=@($allAssets|Select-Object -First ($allAssets.Count-1))}
+                    $script:FakePublishedAssetLagReadsRemaining--
+                    return '[['+($lagged|ConvertTo-Json -Depth 8 -Compress)+']]'
+                }
                 return '[['+($script:FakeRelease|ConvertTo-Json -Depth 8 -Compress)+']]'
             }
             if($joined -match 'repos/.+$' -and -not$joined.Contains('/releases/')){
                 return (@{default_branch='main'}|ConvertTo-Json -Compress)
             }
             if($joined.Contains(' -X DELETE ') -or ($Arguments -contains 'DELETE')){
+                if($script:FakeDeleteVisibilityLagReads-gt0){
+                    $script:FakeDeletedRelease=$script:FakeRelease
+                    $script:FakeDeleteVisibilityReadsRemaining=$script:FakeDeleteVisibilityLagReads
+                }else{
+                    $script:FakeDeletedRelease=$null
+                    $script:FakeDeleteVisibilityReadsRemaining=0
+                }
                 $script:FakeRelease=$null
                 return ''
             }
@@ -115,6 +179,7 @@ try{
             $notesIndex=[Array]::IndexOf($Arguments,'--notes')
             if($notesIndex-lt0){throw 'fake create missing notes'}
             $script:FakeRelease=Get-FakeReleaseObject -Body $Arguments[$notesIndex+1] -Draft $true
+            $script:FakeReleaseInvisibleReadsRemaining=$script:FakeCreateVisibilityLagReads
             $script:FakeNextReleaseId++
             return 'https://example.invalid/release'
         }
@@ -128,13 +193,21 @@ try{
             $script:FakeRelease.assets=@($script:FakeRelease.assets)+[pscustomobject][ordered]@{
                 name=$name;size=[int64]$item.Length;digest=$digest;state='uploaded'
             }
+            $script:FakeAssetLagName=$name
+            $script:FakeAssetFieldLagReadsRemaining=$script:FakeAssetFieldLagReads
             return ''
         }
         if($Arguments[0]-eq'release' -and $Arguments[1]-eq'edit'){
+            $script:FakePublishedAssetLagReadsRemaining=$script:FakePublishedAssetLagReads
             if($null-eq$script:FakeRelease){throw 'fake edit missing release'}
-            $script:FakeRelease.draft=$false
-            $script:FakeRelease.prerelease=$true
-            $script:FakeRelease.immutable=$true
+            if($script:FakePublishVisibilityLagReads-gt0){
+                $script:FakePendingPublish=$true
+                $script:FakePublishVisibilityReadsRemaining=$script:FakePublishVisibilityLagReads
+            }else{
+                $script:FakeRelease.draft=$false
+                $script:FakeRelease.prerelease=$true
+                $script:FakeRelease.immutable=$true
+            }
             return ''
         }
         throw "Unhandled fake gh command: $($Arguments -join ' ')"
@@ -153,7 +226,11 @@ try{
 
     $script:FakeImmutableMode='true'
     $script:FakeCommands.Clear()
+    $script:FakeCreateVisibilityLagReads=2
+    $script:FakeAssetFieldLagReads=2
     $stage=Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
+    $script:FakeAssetFieldLagReads=0
+    $script:FakeCreateVisibilityLagReads=0
     if($stage.state-ne'draft' -or $stage.asset_count-ne4){throw 'Fresh draft staging did not produce exact four-asset draft.'}
     if(@($script:FakeCommands|Where-Object{$_ -like 'release create*'}).Count-ne1){throw 'Fresh staging did not create exactly one draft.'}
     $createCommand=[string]@($script:FakeCommands|Where-Object{$_ -like 'release create*'})[0]
@@ -165,6 +242,23 @@ try{
     $expectedMarker=Get-VllmReleaseOwnershipMarker -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
     if(-not([string]$script:FakeRelease.body).StartsWith($expectedMarker,[StringComparison]::Ordinal)){throw 'Draft ownership marker mismatch.'}
 
+    $script:FakeReleaseReadCount=0
+    Assert-Fails {
+        Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $repoSlug -Tag $tag -Validate { param($candidate) $null=$candidate; throw 'permanent convergence validation' }
+    } 'permanent convergence validation'
+    if($script:FakeReleaseReadCount-ne1){throw 'Permanent convergence validation was retried.'}
+
+    $savedRelease=$script:FakeRelease
+    $script:FakeRelease=$null
+    $script:FakeReleaseReadCount=0
+    Assert-Fails {
+        $null=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $repoSlug -Tag $tag
+    } 'after 5 attempts'
+    if($script:FakeReleaseReadCount-ne$script:VllmReleaseReadAttempts){throw 'Release convergence exhaustion did not consume exactly the configured attempt budget.'}
+    $script:FakeRelease=$savedRelease
+
+
+
     $script:FakeCommands.Clear()
     $retry=Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
     if($retry.state-ne'draft'){throw 'Exact draft retry changed state.'}
@@ -174,7 +268,7 @@ try{
     $script:FakePublishOnReleaseRead=2
     Assert-Fails {
         Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
-    } 'left draft state before final stage verification'
+    } 'left draft state'
     $script:FakePublishOnReleaseRead=0
     $script:FakeReleaseReadCount=0
     $script:FakeRelease.draft=$true
@@ -196,10 +290,21 @@ try{
     $script:FakeRelease.assets=@($script:FakeRelease.assets|Where-Object{$_.name-ne'unexpected.bin'})
     $originalDigest=[string]$script:FakeRelease.assets[0].digest
     $script:FakeRelease.assets[0].digest='sha256:'+('0'*64)
+    $script:FakeReleaseReadCount=0
     Assert-Fails {
         Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
     } 'digest mismatch'
+    if($script:FakeReleaseReadCount-ne2){throw 'Permanent uploaded-asset digest mismatch was retried.'}
     $script:FakeRelease.assets[0].digest=$originalDigest
+
+    $originalState=[string]$script:FakeRelease.assets[0].state
+    $script:FakeRelease.assets[0].state='mystery'
+    $script:FakeReleaseReadCount=0
+    Assert-Fails {
+        Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
+    } 'unexpected state'
+    if($script:FakeReleaseReadCount-ne2){throw 'Unknown release-asset state was retried.'}
+    $script:FakeRelease.assets[0].state=$originalState
 
     $savedBody=[string]$script:FakeRelease.body
     $script:FakeRelease.body='foreign draft'
@@ -233,7 +338,11 @@ try{
     $script:FakeMainReadCount=0
 
     $script:FakeCommands.Clear()
+    $script:FakePublishVisibilityLagReads=2
+    $script:FakePublishedAssetLagReads=2
     $published=Invoke-VllmPublishGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
+    $script:FakePublishedAssetLagReads=0
+    $script:FakePublishVisibilityLagReads=0
     if($published.state-ne'published' -or $script:FakeRelease.draft-ne$false -or $script:FakeRelease.immutable-ne$true){throw 'Publication did not cross immutable boundary.'}
     if(@($script:FakeCommands|Where-Object{$_ -like 'release edit*'}).Count-ne1){throw 'Publication did not perform exactly one release edit.'}
     $editCommand=[string]@($script:FakeCommands|Where-Object{$_ -like 'release edit*'})[0]
@@ -262,11 +371,21 @@ try{
 
     $script:FakeRelease=Get-FakeReleaseObject -Body (Get-VllmReleaseDraftBody -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit) -Draft $true
     $script:FakeRelease.prerelease=$false
+    $script:FakeReleaseInvisibleReadsRemaining=2
+    $script:FakeDeleteVisibilityLagReads=2
     $reset=Invoke-VllmResetOwnedDraftRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
+    $script:FakeDeleteVisibilityLagReads=0
+    if($null-ne$script:FakeDeletedRelease){throw 'Owned draft reset did not converge to remote absence.'}
     if($reset.state-ne'reset' -or $null-ne$script:FakeRelease){throw 'Owned draft reset failed.'}
 
+    $script:FakeReleaseReadCount=0
+    $null=Assert-VllmGitHubReleaseAbsentConvergence -RepositorySlug $repoSlug -Tag $tag
+    if($script:FakeReleaseReadCount-ne$script:VllmReleaseAbsentConfirmReads){throw 'Post-delete absence did not require consecutive absent reads.'}
+
+    $script:FakeReleaseReadCount=0
     $absent=Invoke-VllmResetOwnedDraftRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
     if($absent.state-ne'absent'){throw 'Absent reset was not idempotent.'}
+    if($script:FakeReleaseReadCount-ne$script:VllmResetPresenceConfirmAttempts){throw 'Absent reset did not perform the bounded presence-confirmation reads.'}
 
     Write-Host 'RELEASE_PUBLICATION_CONTRACT_OK'
 } finally {
