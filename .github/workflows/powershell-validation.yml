@@ -61,6 +61,13 @@ jobs:
           & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/release-verification.ps1
           if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 release verification contract failed with exit $LASTEXITCODE." }
 
+      - name: Validate guarded release publication contract in PowerShell 7 and Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          & pwsh.exe -NoLogo -NoProfile -File ./tests/release-publication.ps1
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 release publication contract failed with exit $LASTEXITCODE." }
+          & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/release-publication.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 release publication contract failed with exit $LASTEXITCODE." }
       - name: Validate deterministic release bundle in PowerShell 7 and Windows PowerShell 5.1
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh

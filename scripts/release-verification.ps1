@@ -71,14 +71,15 @@ function Assert-VllmReleaseSignedTag {
         $_.Name.Equals('GIT_ALTERNATE_OBJECT_DIRECTORIES',[StringComparison]::OrdinalIgnoreCase) -or
         $_.Name.Equals('GIT_NAMESPACE',[StringComparison]::OrdinalIgnoreCase)
     } | Select-Object -ExpandProperty Name)
-    foreach ($name in $gitEnvironmentNames) {
-        $gitEnvironment[$name] = (Get-Item -LiteralPath "Env:$name").Value
-        Remove-Item -LiteralPath "Env:$name"
-    }
     $oldErrorActionPreference=$ErrorActionPreference
     $nullConfig=if($env:OS -eq 'Windows_NT'){'NUL'}else{'/dev/null'}
-    $revocationPath=[IO.Path]::GetTempFileName()
+    $revocationPath=$null
     try {
+        foreach ($name in $gitEnvironmentNames) {
+            $gitEnvironment[$name] = (Get-Item -LiteralPath "Env:$name").Value
+            Remove-Item -LiteralPath "Env:$name"
+        }
+        $revocationPath=[IO.Path]::GetTempFileName()
         $env:GIT_CONFIG_NOSYSTEM='1'
         $env:GIT_CONFIG_GLOBAL=$nullConfig
         $tagRef = "refs/tags/$Tag"
@@ -122,7 +123,7 @@ function Assert-VllmReleaseSignedTag {
         foreach ($name in $gitEnvironment.Keys) {
             Set-Item -LiteralPath "Env:$name" -Value $gitEnvironment[$name]
         }
-        Remove-Item -LiteralPath $revocationPath -Force -ErrorAction SilentlyContinue
+        if($null-ne$revocationPath){Remove-Item -LiteralPath $revocationPath -Force -ErrorAction SilentlyContinue}
     }
     if ($verifyExit -ne 0) { throw "Release tag signature verification failed: $($verify -join ' ')" }
     $verifyLines=@($verify | ForEach-Object { $_.ToString().Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -235,6 +236,7 @@ function Invoke-VllmGhJsonCommand {
         [Parameter(Mandatory)][string]$FailureLabel,
         [string]$Executable = 'gh'
     )
+    if ($null -eq (Get-Command $Executable -ErrorAction SilentlyContinue)) { throw ($FailureLabel+': executable not found: '+$Executable) }
     $stderrPath=[IO.Path]::GetTempFileName()
     $oldErrorActionPreference=$ErrorActionPreference
     try {
@@ -253,19 +255,35 @@ function Invoke-VllmGhJsonCommand {
     $stdout -join [char]10
 }
 
+function Invoke-VllmBoundedRetry {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [ValidateRange(1,20)][int]$Attempts=4,
+        [ValidateRange(0,60000)][int]$DelayMilliseconds=1500
+    )
+    for($attempt=1;$attempt-le$Attempts;$attempt++){
+        try {
+            return (& $Action)
+        } catch {
+            if($attempt-ge$Attempts){throw ("Operation failed after $Attempts attempts: "+$_.Exception.Message)}
+            if($DelayMilliseconds-gt0){Start-Sleep -Milliseconds $DelayMilliseconds}
+        }
+    }
+}
 function Invoke-VllmGitHubReleaseVerification {
     param(
         [Parameter(Mandatory)][string]$RepositorySlug,
         [Parameter(Mandatory)][string]$Tag,
         [Parameter(Mandatory)][string]$ExpectedTagObject,
         [Parameter(Mandatory)][string]$ArtifactsDirectory,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedAssets
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedAssets,
+        [string]$GhExecutable = 'gh'
     )
-    $releaseJson=Invoke-VllmGhJsonCommand -Arguments @('release','verify',$Tag,'--repo',$RepositorySlug,'--format','json') -FailureLabel 'GitHub release attestation verification failed'
+    $releaseJson=Invoke-VllmGhJsonCommand -Arguments @('release','verify',$Tag,'--repo',$RepositorySlug,'--format','json') -FailureLabel 'GitHub release attestation verification failed' -Executable $GhExecutable
     $result=Assert-VllmReleaseAttestationJson -Json $releaseJson -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
     foreach($name in $ExpectedAssets.Keys){
         $path=Join-Path ([IO.Path]::GetFullPath($ArtifactsDirectory)) ([string]$name)
-        $assetJson=Invoke-VllmGhJsonCommand -Arguments @('release','verify-asset',$Tag,$path,'--repo',$RepositorySlug,'--format','json') -FailureLabel "GitHub release asset verification failed for $name"
+        $assetJson=Invoke-VllmGhJsonCommand -Arguments @('release','verify-asset',$Tag,$path,'--repo',$RepositorySlug,'--format','json') -FailureLabel "GitHub release asset verification failed for $name" -Executable $GhExecutable
         $null=Assert-VllmReleaseAttestationJson -Json $assetJson -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
     }
     [pscustomobject][ordered]@{

@@ -174,6 +174,8 @@ try {
     $badDigestJson=$badDigestDoc|ConvertTo-Json -Depth 10 -Compress
     Assert-Fails { Assert-VllmReleaseAttestationJson -Json $badDigestJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'asset digest schema'
 
+    Assert-Fails { Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'missing gh' -Executable 'definitely-not-a-vllm-gh-command' } 'executable not found'
+
     $fakeGh=Join-Path $root 'fake-gh-success.cmd'
     [IO.File]::WriteAllLines($fakeGh,@('@echo off','echo {"ok":true}','echo gh update notice 1>&2','exit /b 0'),[Text.Encoding]::ASCII)
     $capturedJson=Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'fake gh failed' -Executable $fakeGh
@@ -182,6 +184,31 @@ try {
     $fakeGhFail=Join-Path $root 'fake-gh-fail.cmd'
     [IO.File]::WriteAllLines($fakeGhFail,@('@echo off','echo bad gh diagnostic 1>&2','exit /b 7'),[Text.Encoding]::ASCII)
     Assert-Fails { Invoke-VllmGhJsonCommand -Arguments @('ignored') -FailureLabel 'fake gh failed' -Executable $fakeGhFail } 'bad gh diagnostic'
+
+    $retryState=[pscustomobject]@{Count=0}
+    $retryResult=Invoke-VllmBoundedRetry -Attempts 3 -DelayMilliseconds 0 -Action {
+        $retryState.Count++
+        if($retryState.Count-lt3){throw "transient attestation failure $($retryState.Count)"}
+        'retry-ok'
+    }
+    if(-not([string]$retryResult).Equals('retry-ok',[StringComparison]::Ordinal)-or$retryState.Count-ne3){
+        throw 'Bounded retry did not retry transient verification failures exactly as configured.'
+    }
+
+    $exhaustState=[pscustomobject]@{Count=0}
+    $exhaustMessage=$null
+    try {
+        Invoke-VllmBoundedRetry -Attempts 2 -DelayMilliseconds 0 -Action {
+            $exhaustState.Count++
+            throw 'permanent attestation failure'
+        }
+    } catch {
+        $exhaustMessage=$_.Exception.Message
+    }
+    if($null-eq$exhaustMessage-or$exhaustMessage.IndexOf('after 2 attempts',[StringComparison]::OrdinalIgnoreCase)-lt0-or$exhaustMessage.IndexOf('permanent attestation failure',[StringComparison]::OrdinalIgnoreCase)-lt0){
+        throw "Bounded retry exhaustion diagnostic is incomplete: $exhaustMessage"
+    }
+    if($exhaustState.Count-ne2){throw 'Bounded retry did not stop at the configured attempt limit.'}
 
     Write-Host 'RELEASE_VERIFICATION_CONTRACT_OK'
 }

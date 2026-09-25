@@ -1,12 +1,13 @@
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
-    [ValidateSet('ValidateRepository','Prepare','Verify','VerifySignedTag','VerifyPublished')][string]$Mode = 'ValidateRepository',
+    [ValidateSet('ValidateRepository','Prepare','Verify','VerifySignedTag','VerifyPublished','StageDraft','PublishDraft','ResetDraft')][string]$Mode = 'ValidateRepository',
     [string]$ProjectCommit = 'HEAD',
     [string]$ReleaseManifestPath = 'manifests/release/v0.27.1-windows-x86_64.json',
     [string]$WheelPath = '',
     [string]$ArtifactsDirectory = 'artifacts/release',
     [string]$Tag = '',
     [string]$AllowedSignersPath = '',
+    [string]$GhExecutable = 'gh',
     [switch]$Json
 )
 
@@ -17,6 +18,7 @@ $ProgressPreference = 'SilentlyContinue'
 . (Join-Path $PSScriptRoot 'scripts\common.ps1')
 . (Join-Path $PSScriptRoot 'scripts\release-bundle.ps1')
 . (Join-Path $PSScriptRoot 'scripts\release-verification.ps1')
+. (Join-Path $PSScriptRoot 'scripts\release-publication.ps1')
 
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) {
     throw 'release.ps1 supports native Windows x64 only.'
@@ -43,6 +45,44 @@ function Write-ReleaseCliResult {
     }
 }
 
+function Assert-ReleasePublicationWorkingTree {
+    $head=Resolve-VllmReleaseCommit -Repository $repository -Commit 'HEAD'
+    if(-not$head.Equals($resolvedCommit,[StringComparison]::OrdinalIgnoreCase)){throw 'Release publication requires -ProjectCommit to resolve to checked-out HEAD.'}
+    $branch=(Invoke-Git -Repository $repository -Arguments @('symbolic-ref','--quiet','--short','HEAD') -Capture).Trim()
+    if(-not$branch.Equals('main',[StringComparison]::Ordinal)){throw "Release publication requires checked-out branch main, got '$branch'."}
+    $status=Invoke-Git -Repository $repository -Arguments @('status','--porcelain=v1','--untracked-files=all') -Capture
+    if(-not[string]::IsNullOrWhiteSpace($status)){throw 'Release publication requires a clean project worktree.'}
+}
+
+function Get-ReleasePublicationInputs {
+    param([switch]$WithoutArtifacts)
+    if(-not$WithoutArtifacts){Assert-ReleasePublicationWorkingTree}
+    if([string]::IsNullOrWhiteSpace($AllowedSignersPath)){throw 'Release publication requires an explicitly supplied -AllowedSignersPath.'}
+    $trustRoot=Resolve-ReleaseCliPath -Path $AllowedSignersPath
+    if($WithoutArtifacts){
+        $snapshot=Get-VllmReleaseGitSnapshot -Repository $repository -Commit $resolvedCommit
+        try{$context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $ReleaseManifestPath}
+        finally{Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
+        $releaseId=[string]$context.Release.release
+        $expectedTag=[string]$context.Tag
+        $offline=$null
+        $assets=$null
+    }else{
+        $output=Resolve-ReleaseCliPath -Path $ArtifactsDirectory
+        $offline=Assert-VllmOfflineRelease -Repository $repository -ProjectCommit $resolvedCommit -ReleaseManifestPath $ReleaseManifestPath -ArtifactsDirectory $output
+        $releaseId=[string]$offline.release
+        $expectedTag=[string]$offline.tag
+        $assets=Get-VllmReleasePublicationAssetPlan -ArtifactsDirectory $output -OfflineVerification $offline
+    }
+    $effectiveTag=if([string]::IsNullOrWhiteSpace($Tag)){$expectedTag}else{$Tag}
+    if(-not$effectiveTag.Equals($expectedTag,[StringComparison]::Ordinal)){throw 'Requested release tag does not match the canonical release identity.'}
+    $signed=Assert-VllmReleaseSignedTag -Repository $repository -Tag $effectiveTag -ExpectedCommit $resolvedCommit -AllowedSignersPath $trustRoot
+    [pscustomobject][ordered]@{
+        release=$releaseId;tag=$effectiveTag;trust_root=$trustRoot;signed_tag=$signed
+        offline=$offline;assets=$assets
+        artifacts_directory=if($WithoutArtifacts){$null}else{$output}
+    }
+}
 switch ($Mode) {
     'ValidateRepository' {
         $snapshot = Get-VllmReleaseGitSnapshot -Repository $repository -Commit $resolvedCommit
@@ -93,7 +133,7 @@ switch ($Mode) {
         $trustRoot = Resolve-ReleaseCliPath -Path $AllowedSignersPath
         $tagVerification = Assert-VllmReleaseSignedTag -Repository $repository -Tag $effectiveTag -ExpectedCommit $resolvedCommit -AllowedSignersPath $trustRoot
         $assets = Get-VllmReleaseExpectedAssets -ArtifactsDirectory $output -OfflineVerification $offline
-        $attestation = Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $effectiveTag -ExpectedTagObject $tagVerification.tag_object -ArtifactsDirectory $output -ExpectedAssets $assets
+        $attestation = Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $effectiveTag -ExpectedTagObject $tagVerification.tag_object -ArtifactsDirectory $output -ExpectedAssets $assets -GhExecutable $GhExecutable
         $result = [pscustomobject][ordered]@{
             schema_version=1
             component='vllm-windows-native-published-release-verification'
@@ -105,5 +145,35 @@ switch ($Mode) {
             github_release=$attestation
         }
         Write-ReleaseCliResult -Result $result -Marker 'RELEASE_PUBLISHED_VERIFY_OK' -AsJson:$Json
+    }
+    'StageDraft' {
+        $inputs=Get-ReleasePublicationInputs
+        $target="$($script:VllmReleaseRepository) $($inputs.tag)"
+        if(-not$PSCmdlet.ShouldProcess($target,'Create/resume guarded draft prerelease and upload exact canonical assets')){return}
+        $result=Invoke-VllmStageGitHubRelease -RepositorySlug $script:VllmReleaseRepository -Release $inputs.release -Tag $inputs.tag -ProjectCommit $resolvedCommit -TagObject $inputs.signed_tag.tag_object -AssetPlan $inputs.assets -GhExecutable $GhExecutable
+        if($Json){$result|ConvertTo-Json -Depth 10}else{Write-Host "RELEASE_DRAFT_STAGE_OK state=$($result.state) release=$($inputs.release) tag=$($inputs.tag) assets=$($result.asset_count)"}
+    }
+    'PublishDraft' {
+        $inputs=Get-ReleasePublicationInputs
+        $target="$($script:VllmReleaseRepository) $($inputs.tag)"
+        if(-not$PSCmdlet.ShouldProcess($target,'Publish exact guarded draft as immutable prerelease')){return}
+        $published=Invoke-VllmPublishGitHubRelease -RepositorySlug $script:VllmReleaseRepository -Release $inputs.release -Tag $inputs.tag -ProjectCommit $resolvedCommit -TagObject $inputs.signed_tag.tag_object -AssetPlan $inputs.assets -GhExecutable $GhExecutable
+        $attestationAssets=Get-VllmReleaseExpectedAssets -ArtifactsDirectory $inputs.artifacts_directory -OfflineVerification $inputs.offline
+        $attestation=Invoke-VllmBoundedRetry -Attempts 5 -DelayMilliseconds 1500 -Action {
+            Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmReleaseRepository -Tag $inputs.tag -ExpectedTagObject $inputs.signed_tag.tag_object -ArtifactsDirectory $inputs.artifacts_directory -ExpectedAssets $attestationAssets -GhExecutable $GhExecutable
+        }
+        $result=[pscustomobject][ordered]@{
+            schema_version=1;component='vllm-windows-native-release-publish-and-verify'
+            release=$inputs.release;tag=$inputs.tag;project_commit=$resolvedCommit
+            publication=$published;github_release=$attestation
+        }
+        if($Json){$result|ConvertTo-Json -Depth 12}else{Write-Host "RELEASE_PUBLISH_OK release=$($inputs.release) tag=$($inputs.tag) commit=$resolvedCommit"}
+    }
+    'ResetDraft' {
+        $inputs=Get-ReleasePublicationInputs -WithoutArtifacts
+        $target="$($script:VllmReleaseRepository) $($inputs.tag)"
+        if(-not$PSCmdlet.ShouldProcess($target,'Delete exact owned failed draft release')){return}
+        $result=Invoke-VllmResetOwnedDraftRelease -RepositorySlug $script:VllmReleaseRepository -Release $inputs.release -Tag $inputs.tag -ProjectCommit $resolvedCommit -GhExecutable $GhExecutable
+        if($Json){$result|ConvertTo-Json -Depth 10}else{Write-Host "RELEASE_DRAFT_RESET_OK state=$($result.state) release=$($inputs.release) tag=$($inputs.tag)"}
     }
 }

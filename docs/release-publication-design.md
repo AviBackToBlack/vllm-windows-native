@@ -81,6 +81,22 @@ SM-19B is verification-only. It versions `config/release-allowed-signers` as the
 
 `VerifyPublished` composes the existing exact-four offline verifier with `VerifySignedTag`, `gh release verify <tag> --format json`, and one `gh release verify-asset` call per local asset. The verified release statement must be the GitHub release predicate `https://in-toto.io/attestation/release/v0.2`, bind repository `AviBackToBlack/vllm-windows-native`, the exact annotated release tag object, and contain exactly one package subject plus exactly the four expected case-sensitive asset names with their local verified SHA-256 digests. The signed-tag verifier separately peels that authenticated tag object to the exact reviewed project commit. This slice performs no production signing and no GitHub Release mutation.
 
+### SM-19C guarded publication surface
+
+Implementation rechecked GitHub's immutable-release contract on 2026-09-24. The publication client sends REST requests with API version `2026-03-10`. `StageDraft` and `PublishDraft` refuse all release mutation unless repository immutable releases are enabled, authenticated GitHub reports `main` at the exact reviewed project commit, and the remote release ref is the exact annotated tag object already authenticated by `VerifySignedTag`. The tooling never creates or signs the production tag and never changes the repository immutability setting.
+
+Draft discovery uses the authenticated releases list rather than the by-tag release endpoint so owned drafts are visible before publication. A new draft is created with `gh release create --draft --prerelease --latest=false --verify-tag` and a schema-v1 ownership marker as the first body line. Retry adoption requires exact repository/release/tag/project-commit marker identity. Remote assets are an exact-subset transaction: each present asset must match one canonical case-sensitive name, byte size, uploaded state, and `sha256:` digest; matching assets are preserved and only missing assets are uploaded. The default path never uses `--clobber`, deletes an asset, or repairs a published mismatch.
+
+`PublishDraft` is a separate `ShouldProcess`-guarded operator action. It repeats local offline verification, signed-tag verification, GitHub immutable/main/tag-object preflights, exact remote four-asset verification, and local asset size/digest checks immediately before publishing the draft as a prerelease. After the draft flag is cleared, success additionally requires GitHub to report the release immutable and the existing `VerifyPublished` release-attestation plus per-asset attestation chain to pass. An exact already-published immutable release is idempotently complete; later prerelease/latest metadata promotion does not alter asset/tag ownership.
+
+The immediate post-publish attestation proof uses a short bounded retry window for GitHub propagation. Ordinary verification stays single-pass so eventual consistency is not hidden outside the publication transition.
+
+`ResetDraft` is a separate `ShouldProcess`-guarded recovery action. It rediscovers the release, reproves the exact ownership marker, and deletes only an exact marker-owned draft. Published releases are never reset, deleted, or repaired by this tooling.
+
+Reset authority is exact schema-v1 ownership plus draft state, not mutable prerelease metadata, so an externally edited owned draft remains recoverable while any published release remains untouchable.
+
+SM-19C tests use an injected fake `gh` state machine and perform no GitHub mutation. Production signing, repository-setting mutation, and real publication remain outside the implementation PR and are exercised only after review in the trusted SM-19D/operator flow.
+
 ### Trust boundary
 
 Public PR CI remains source-only. Trusted release preparation/publishing runs only from reviewed `main` in a trusted isolated environment or protected workflow and never uses `pull_request_target` to execute attacker-controlled PR code. Actions remain full-SHA pinned and final publication remains an explicit operator decision.

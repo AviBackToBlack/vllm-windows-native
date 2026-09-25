@@ -244,6 +244,49 @@ After downloading the four immutable release assets, compose offline verificatio
 
 `VerifyPublished` first performs the SM-19A exact-four local verification. It then verifies the signed tag and requires `gh release verify --format json` to bind the exact repository, annotated tag object, and exactly those four asset names/SHA-256 digests. The signed-tag check separately peels that authenticated tag object to the expected reviewed project commit. Finally it runs `gh release verify-asset` separately for the wheel, distribution ZIP, `release-index.json`, and `SHA256SUMS`. The immutable-release attestation proves release/asset integrity; it is not represented as build provenance for the prebuilt local GPU wheel.
 
+### Stage and publish the guarded GitHub Release
+
+SM-19C adds the mutation surface, but it deliberately does not create or sign the release tag and does not enable repository release immutability. Before staging, the repository must already have immutable releases enabled, the reviewed project commit must still be the remote `main` tip, and the canonical annotated SSH-signed release tag must already exist both locally and on GitHub. Run the commands from a clean checkout of `main` at that exact commit with an authenticated `gh` CLI and an independently pinned allowed-signers file.
+
+Stage or resume the owned draft prerelease and upload only missing canonical assets:
+
+```powershell
+.\release.ps1 -Mode StageDraft `
+  -ProjectCommit '<reviewed-main-commit>' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -ArtifactsDirectory 'C:\trusted\vllm-release' `
+  -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
+```
+
+`StageDraft` reruns the complete offline four-asset verification and signed-tag verification before any GitHub mutation. It then rechecks repository immutability, remote `main`, and the remote annotated tag-object identity. A new draft receives a schema-v1 ownership marker binding repository, release id, tag, and project commit. Retries adopt only that exact owned draft. Existing remote assets must be a subset of the canonical four and must match their case-sensitive names, byte sizes, and `sha256:` digests; matching assets are retained and only missing assets are uploaded. Extra, duplicate, incomplete, or mismatched assets fail closed. The normal path never uses `--clobber`, deletes an asset, or repairs a published mismatch.
+
+Publishing is a separate explicit operator action:
+
+```powershell
+.\release.ps1 -Mode PublishDraft `
+  -ProjectCommit '<reviewed-main-commit>' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -ArtifactsDirectory 'C:\trusted\vllm-release' `
+  -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
+```
+
+`PublishDraft` re-proves the same local and remote identities, requires the exact four-asset owned draft, rechecks the local asset bytes immediately before publication, and publishes it as a prerelease with `latest=false`. It then requires GitHub to report the release as immutable and runs the full `VerifyPublished` release-attestation and per-asset attestation chain. Retrying an already published exact-match immutable release is idempotent; a later metadata-only promotion from prerelease to stable does not change its ownership or asset identity.
+
+Immediate post-publish attestation verification uses five bounded attempts with a 1.5-second delay to tolerate GitHub attestation propagation; ordinary VerifyPublished calls remain single-pass.
+
+A failed owned draft can be removed only through the separate recovery operation:
+
+```powershell
+.\release.ps1 -Mode ResetDraft `
+  -ProjectCommit '<reviewed-main-commit>' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
+```
+
+`ResetDraft` is `ShouldProcess`-guarded and deletes only a draft whose ownership marker exactly matches the requested release transaction. Published releases are never deleted, reset, or repaired by this tooling. Use `-WhatIf` on any mutation mode to inspect the operator action without performing it.
+
+Recovery authority is the exact ownership marker plus draft state. Reset therefore remains available even if prerelease metadata was edited externally; published releases are still never deleted or repaired.
+
 ## Run the accepted Windows runtime
 
 `start.ps1` launches vLLM in the foreground and applies process-local containment before the server starts.
