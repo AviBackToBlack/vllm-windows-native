@@ -18,6 +18,7 @@ Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'abc..def' } 'acceptan
 Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'ABCDEF' } 'acceptance id'
 Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'abcdef.' } 'acceptance id'
 Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'abcdef.lock' } 'acceptance id'
+Assert-Fails { Invoke-VllmSm19dSshKeygen -PrivateKeyPath (Join-Path ([IO.Path]::GetTempPath()) '%TEMP%\sm19d-key') } 'must not contain percent'
 
 $id='20260925-bb4231f021f2-test'
 $identity=Get-VllmSm19dAcceptanceIdentity -AcceptanceId $id

@@ -120,6 +120,7 @@ function New-VllmSm19dFixtureAssets {
 
 function Invoke-VllmSm19dSshKeygen {
     param([Parameter(Mandatory)][string]$PrivateKeyPath)
+    if($PrivateKeyPath.Contains('%')){throw 'SM-19D private-key path must not contain percent characters because cmd.exe expands percent-delimited environment variables.'}
     if ($env:OS -ne 'Windows_NT') { throw 'SM-19D trusted acceptance key generation is Windows-only.' }
     $ssh = Get-Command ssh-keygen.exe -ErrorAction SilentlyContinue
     if ($null -eq $ssh) { throw 'SM-19D acceptance requires ssh-keygen.exe.' }
