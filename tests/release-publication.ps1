@@ -6,6 +6,8 @@ $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '..\scripts\release-publication.ps1')
 $script:VllmReleaseReadAttempts=5
 $script:VllmReleaseReadDelayMilliseconds=0
+$script:VllmResetPresenceConfirmAttempts=4
+$script:VllmResetPresenceConfirmDelayMilliseconds=0
 
 
 function Assert-Fails {
@@ -218,6 +220,16 @@ try{
     } 'permanent convergence validation'
     if($script:FakeReleaseReadCount-ne1){throw 'Permanent convergence validation was retried.'}
 
+    $savedRelease=$script:FakeRelease
+    $script:FakeRelease=$null
+    $script:FakeReleaseReadCount=0
+    Assert-Fails {
+        $null=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $repoSlug -Tag $tag
+    } 'after 5 attempts'
+    if($script:FakeReleaseReadCount-ne$script:VllmReleaseReadAttempts){throw 'Release convergence exhaustion did not consume exactly the configured attempt budget.'}
+    $script:FakeRelease=$savedRelease
+
+
 
     $script:FakeCommands.Clear()
     $retry=Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
@@ -318,14 +330,17 @@ try{
 
     $script:FakeRelease=Get-FakeReleaseObject -Body (Get-VllmReleaseDraftBody -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit) -Draft $true
     $script:FakeRelease.prerelease=$false
+    $script:FakeReleaseInvisibleReadsRemaining=2
     $script:FakeDeleteVisibilityLagReads=2
     $reset=Invoke-VllmResetOwnedDraftRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
     $script:FakeDeleteVisibilityLagReads=0
     if($null-ne$script:FakeDeletedRelease){throw 'Owned draft reset did not converge to remote absence.'}
     if($reset.state-ne'reset' -or $null-ne$script:FakeRelease){throw 'Owned draft reset failed.'}
 
+    $script:FakeReleaseReadCount=0
     $absent=Invoke-VllmResetOwnedDraftRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
     if($absent.state-ne'absent'){throw 'Absent reset was not idempotent.'}
+    if($script:FakeReleaseReadCount-ne$script:VllmResetPresenceConfirmAttempts){throw 'Absent reset did not perform the bounded presence-confirmation reads.'}
 
     Write-Host 'RELEASE_PUBLICATION_CONTRACT_OK'
 } finally {

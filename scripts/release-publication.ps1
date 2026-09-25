@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 
 $script:VllmReleaseApiVersion = '2026-03-10'
+$script:VllmResetPresenceConfirmAttempts = 4
+$script:VllmResetPresenceConfirmDelayMilliseconds = 1000
 # GitHub release-list state is eventually consistent immediately after create/edit/delete mutations.
 $script:VllmReleaseReadAttempts = 12
 $script:VllmReleaseReadDelayMilliseconds = 2000
@@ -389,6 +391,22 @@ function Invoke-VllmPublishGitHubRelease {
     }
 }
 
+function Get-VllmGitHubReleaseForReset {
+    param(
+        [Parameter(Mandatory)][string]$RepositorySlug,
+        [Parameter(Mandatory)][string]$Tag,
+        [string]$GhExecutable='gh'
+    )
+    for($attempt=1;$attempt-le$script:VllmResetPresenceConfirmAttempts;$attempt++){
+        $candidate=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
+        if($null-ne$candidate){return $candidate}
+        if($attempt-lt$script:VllmResetPresenceConfirmAttempts -and $script:VllmResetPresenceConfirmDelayMilliseconds-gt0){
+            Start-Sleep -Milliseconds $script:VllmResetPresenceConfirmDelayMilliseconds
+        }
+    }
+    $null
+}
+
 function Invoke-VllmResetOwnedDraftRelease {
     param(
         [Parameter(Mandatory)][string]$RepositorySlug,
@@ -397,7 +415,7 @@ function Invoke-VllmResetOwnedDraftRelease {
         [Parameter(Mandatory)][string]$ProjectCommit,
         [string]$GhExecutable='gh'
     )
-    $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
+    $remote=Get-VllmGitHubReleaseForReset -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
     if($null-eq$remote){
         return [pscustomobject][ordered]@{schema_version=1;component='vllm-windows-native-release-reset';state='absent'}
     }
