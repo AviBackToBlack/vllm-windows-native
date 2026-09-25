@@ -207,9 +207,13 @@ function Assert-VllmReleaseAttestationJson {
     }
     $packageRepository=$packageUri.Substring($packagePrefix.Length,$separator-$packagePrefix.Length)
     $packageTag=$packageUri.Substring($separator+1)
+    $expectedPackageTag=[Uri]::EscapeDataString($Tag)
     if(-not$packageRepository.Equals($RepositorySlug,[StringComparison]::OrdinalIgnoreCase) -or
-       -not$packageTag.Equals($Tag,[StringComparison]::Ordinal)){
+       -not$packageTag.Equals($expectedPackageTag,[StringComparison]::Ordinal)){
         throw 'GitHub release attestation package URI mismatch.'
+    }
+    if(-not([string]$s.predicate.purl).Equals($packageUri,[StringComparison]::Ordinal)){
+        throw 'GitHub release attestation predicate/package URI mismatch.'
     }
     if (-not ([string]$pkg[0].digest.sha1).Equals($ExpectedTagObject,[StringComparison]::OrdinalIgnoreCase)) { throw 'GitHub release attestation tag-object mismatch.' }
 

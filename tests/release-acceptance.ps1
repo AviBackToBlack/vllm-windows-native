@@ -102,6 +102,28 @@ try{
     $invalidState.remote_tag_pushed=$true
     $invalidState.published=$true
     Assert-Fails { Assert-VllmSm19dStateObject -State $invalidState } 'release id and URL'
+
+    $recoveryWorkspace=Join-Path $root 'recovery'
+    [IO.Directory]::CreateDirectory($recoveryWorkspace)|Out-Null
+    $recoveryState=($state|ConvertTo-Json -Depth 10|ConvertFrom-Json)
+    $recoveryState.draft_round_trip_completed=$true
+    $recoveryState.remote_tag_pushed=$true
+    $null=Write-VllmSm19dState -Workspace $recoveryWorkspace -State $recoveryState
+    $verifiedRelease=[pscustomobject][ordered]@{draft=$false;immutable=$true;id=12345;html_url='https://github.com/AviBackToBlack/vllm-windows-native/releases/tag/acceptance/test';published_at='2026-09-25T13:31:51Z'}
+    $unspecified=[DateTime]::SpecifyKind([DateTime]'2026-09-25T13:31:51',[DateTimeKind]::Unspecified)
+    $unspecifiedUtc=ConvertTo-VllmSm19dUtcTimestamp -Value $unspecified -Label 'test timestamp'
+    if(-not$unspecifiedUtc.Equals('2026-09-25T13:31:51.0000000Z',[StringComparison]::Ordinal)){throw 'Unspecified DateTime was not normalized as UTC.'}
+    $recovered=Set-VllmSm19dVerifiedPublishedState -Workspace $recoveryWorkspace -State $recoveryState -ReleaseObject $verifiedRelease
+    if(-not[bool]$recovered.published -or [int64]$recovered.release_id-ne12345 -or -not([string]$recovered.release_url).Equals([string]$verifiedRelease.html_url,[StringComparison]::Ordinal)){throw 'SM-19D published-state recovery failed.'}
+    $recoveryJson=[IO.File]::ReadAllText((Join-Path $recoveryWorkspace 'acceptance-state.json'))
+    if(-not$recoveryJson.Contains('2026-09-25T13:31:51.0000000Z')){throw 'SM-19D published-state recovery timestamp was not persisted as invariant UTC.'}
+    $recoveryBytesBeforeSecond=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $recoveryWorkspace 'acceptance-state.json')))
+    $recoveredAgain=Set-VllmSm19dVerifiedPublishedState -Workspace $recoveryWorkspace -State $recovered -ReleaseObject $verifiedRelease
+    $recoveryBytesAfterSecond=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $recoveryWorkspace 'acceptance-state.json')))
+    if(-not$recoveryBytesBeforeSecond.Equals($recoveryBytesAfterSecond,[StringComparison]::Ordinal)){throw 'Idempotent published-state recovery rewrote canonical state bytes.'}
+    if([int64]$recoveredAgain.release_id-ne12345){throw 'SM-19D published-state recovery was not idempotent.'}
+    $wrongRelease=[pscustomobject][ordered]@{draft=$false;immutable=$true;id=12346;html_url='https://github.com/AviBackToBlack/vllm-windows-native/releases/tag/acceptance/other';published_at='2026-09-25T13:31:51Z'}
+    Assert-Fails { Set-VllmSm19dVerifiedPublishedState -Workspace $recoveryWorkspace -State $recoveredAgain -ReleaseObject $wrongRelease } 'persisted published release identity mismatch'
     $context=Assert-VllmSm19dStateFiles -Workspace $workspace -State $loaded
     if(@($context.asset_plan).Count-ne4){throw 'SM-19D state file verification lost assets.'}
 
@@ -162,6 +184,62 @@ try{
     Assert-Fails {
         Assert-VllmSm19dRemoteReleaseAbsent -RepositorySlug $script:VllmSm19dRepositorySlug -Tag $identity.tag
     } 'release already exists'
+
+    $verifiedBody=Get-VllmReleaseDraftBody -RepositorySlug $script:VllmSm19dRepositorySlug -Release $identity.release -Tag $identity.tag -ProjectCommit $commit
+    $script:FakeRemoteRelease=[pscustomobject][ordered]@{
+        id=12345;html_url=$verifiedRelease.html_url;tag_name=$identity.tag;body=$verifiedBody;draft=$false;prerelease=$true;immutable=$true;published_at=$verifiedRelease.published_at
+        assets=@($context.asset_plan|ForEach-Object{[pscustomobject][ordered]@{name=$_.name;size=$_.size;digest=('sha256:'+([string]$_.sha256).ToLowerInvariant());state='uploaded'}})
+    }
+    function Invoke-VllmGitHubReleaseVerification {
+        param([string]$RepositorySlug,[string]$Tag,[string]$ExpectedTagObject,[string]$ArtifactsDirectory,[System.Collections.IDictionary]$ExpectedAssets,[string]$GhExecutable='gh')
+        $null=$RepositorySlug;$null=$Tag;$null=$ExpectedTagObject;$null=$ArtifactsDirectory;$null=$ExpectedAssets;$null=$GhExecutable
+        [pscustomobject][ordered]@{asset_count=4}
+    }
+    $stateFile=Join-Path $workspace 'acceptance-state.json'
+    $stateBefore=[IO.File]::ReadAllBytes($stateFile)
+    [IO.File]::SetAttributes($stateFile,([IO.File]::GetAttributes($stateFile)-bor[IO.FileAttributes]::ReadOnly))
+    try{
+        $proof=Get-VllmSm19dPublishedVerification -State $loaded -AssetPlan ([object[]]$context.asset_plan) -ArtifactsDirectory $context.assets_directory
+        if([int]$proof.attestation.asset_count-ne4){throw 'Read-only published verification returned wrong asset count.'}
+    }finally{
+        [IO.File]::SetAttributes($stateFile,([IO.File]::GetAttributes($stateFile)-band(-bnot[IO.FileAttributes]::ReadOnly)))
+    }
+    $stateAfter=[IO.File]::ReadAllBytes($stateFile)
+    if(-not[Convert]::ToBase64String($stateBefore).Equals([Convert]::ToBase64String($stateAfter),[StringComparison]::Ordinal)){throw 'Read-only published verification mutated acceptance state.'}
+
+    $topLevel=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\release-acceptance.ps1'))
+    $verifyStart=$topLevel.IndexOf("    'Verify' {",[StringComparison]::Ordinal)
+    $recoverStart=$topLevel.IndexOf("    'RecoverPublishedState' {",[StringComparison]::Ordinal)
+    if($verifyStart-lt0-or$recoverStart-le$verifyStart){throw 'Top-level Verify/RecoverPublishedState mode layout is invalid.'}
+    $verifyBlock=$topLevel.Substring($verifyStart,$recoverStart-$verifyStart)
+    if($verifyBlock.Contains('Set-VllmSm19dVerifiedPublishedState')){throw 'Top-level Verify must not reconcile or write acceptance state.'}
+
+    $whatIfWorkspace=Join-Path $root 'whatif'
+    [IO.Directory]::CreateDirectory($whatIfWorkspace)|Out-Null
+    $whatIfState=($state|ConvertTo-Json -Depth 10|ConvertFrom-Json)
+    $whatIfState.draft_round_trip_completed=$true
+    $whatIfState.remote_tag_pushed=$true
+    $null=Write-VllmSm19dState -Workspace $whatIfWorkspace -State $whatIfState
+    $objectBefore=$whatIfState|ConvertTo-Json -Depth 10 -Compress
+    $fileBefore=[IO.File]::ReadAllText((Join-Path $whatIfWorkspace 'acceptance-state.json'))
+    $null=Set-VllmSm19dVerifiedPublishedState -Workspace $whatIfWorkspace -State $whatIfState -ReleaseObject $verifiedRelease -WhatIf
+    $objectAfter=$whatIfState|ConvertTo-Json -Depth 10 -Compress
+    $fileAfter=[IO.File]::ReadAllText((Join-Path $whatIfWorkspace 'acceptance-state.json'))
+    if(-not$objectBefore.Equals($objectAfter,[StringComparison]::Ordinal)){throw 'Published-state WhatIf mutated the in-memory state object.'}
+    if(-not$fileBefore.Equals($fileAfter,[StringComparison]::Ordinal)){throw 'Published-state WhatIf mutated the state file.'}
+
+    $dispatchWorkspace=Join-Path $root 'dispatch'
+    [IO.Directory]::CreateDirectory((Join-Path $dispatchWorkspace 'signing'))|Out-Null
+    $dispatchKey=Join-Path $dispatchWorkspace 'signing\acceptance-ed25519'
+    [IO.File]::WriteAllText($dispatchKey,'residual-dispatch-test-key',[Text.UTF8Encoding]::new($false))
+    foreach($modeSpelling in @('Verify','verify','VERIFY')){
+        $caught=$null
+        try{
+            & (Join-Path $PSScriptRoot '..\release-acceptance.ps1') -Mode $modeSpelling -Workspace $dispatchWorkspace -Confirm:$false | Out-Null
+        }catch{$caught=$_.Exception.Message}
+        if([string]::IsNullOrWhiteSpace($caught)-or-not$caught.Contains('read-only Verify refuses')){throw "Top-level $modeSpelling dispatch did not refuse residual private signing material."}
+        if(-not[IO.File]::Exists($dispatchKey)){throw "Top-level $modeSpelling dispatch deleted residual private signing material."}
+    }
 
     Write-Host 'RELEASE_ACCEPTANCE_CONTRACT_OK'
 }finally{

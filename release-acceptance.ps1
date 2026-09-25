@@ -1,6 +1,6 @@
 [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
 param(
-    [Parameter(Mandatory)][ValidateSet('Prepare','ExerciseDraft','Publish','Verify','ResetDraft')][string]$Mode,
+    [Parameter(Mandatory)][ValidateSet('Prepare','ExerciseDraft','Publish','Verify','RecoverPublishedState','ResetDraft')][string]$Mode,
     [Parameter(Mandatory)][string]$Workspace,
     [string]$AcceptanceId,
     [string]$GhExecutable = 'gh',
@@ -49,7 +49,7 @@ $repoPrefix=$repository.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::Alt
 if($workspaceFull.Equals($repository,[StringComparison]::OrdinalIgnoreCase)-or$workspaceFull.StartsWith($repoPrefix,[StringComparison]::OrdinalIgnoreCase)){
     throw 'SM-19D acceptance workspace must be outside the project repository.'
 }
-if([IO.Directory]::Exists($workspaceFull)){
+if([IO.Directory]::Exists($workspaceFull)-and-not$Mode.Equals('Verify',[StringComparison]::OrdinalIgnoreCase)){
     $null=Clear-VllmSm19dResidualPrivateKey -Workspace $workspaceFull
 }
 
@@ -170,58 +170,59 @@ switch($Mode){
 
         $stage=Invoke-VllmStageGitHubRelease -RepositorySlug $script:VllmSm19dRepositorySlug -Release ([string]$state.release) -Tag ([string]$state.tag) -ProjectCommit $commit -TagObject ([string]$state.tag_object) -AssetPlan ([object[]]$context.files.asset_plan) -GhExecutable $GhExecutable
         if(([string]$stage.state).Equals('draft',[StringComparison]::Ordinal)-or([string]$stage.state).Equals('published',[StringComparison]::Ordinal)){
-            $published=Invoke-VllmPublishGitHubRelease -RepositorySlug $script:VllmSm19dRepositorySlug -Release ([string]$state.release) -Tag ([string]$state.tag) -ProjectCommit $commit -TagObject ([string]$state.tag_object) -AssetPlan ([object[]]$context.files.asset_plan) -GhExecutable $GhExecutable
+            $null=Invoke-VllmPublishGitHubRelease -RepositorySlug $script:VllmSm19dRepositorySlug -Release ([string]$state.release) -Tag ([string]$state.tag) -ProjectCommit $commit -TagObject ([string]$state.tag_object) -AssetPlan ([object[]]$context.files.asset_plan) -GhExecutable $GhExecutable
         }else{
             throw "SM-19D stage returned unsupported state: $($stage.state)"
         }
 
-        $digests=Get-VllmSm19dAssetDigestMap -AssetPlan ([object[]]$context.files.asset_plan)
-        $attestation=Invoke-VllmBoundedRetry -Attempts 5 -DelayMilliseconds 1500 -Action {
-            Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmSm19dRepositorySlug -Tag ([string]$state.tag) -ExpectedTagObject ([string]$state.tag_object) -ArtifactsDirectory ([string]$context.files.assets_directory) -ExpectedAssets $digests -GhExecutable $GhExecutable
+        $verification=Invoke-VllmBoundedRetry -Attempts 5 -DelayMilliseconds 1500 -Action {
+            Get-VllmSm19dPublishedVerification -State $state -AssetPlan ([object[]]$context.files.asset_plan) -ArtifactsDirectory ([string]$context.files.assets_directory) -GhExecutable $GhExecutable
         }
-
-        $state.published=$true
-        $state.remote_tag_pushed=$true
-        $state.release_id=[int64]$published.release_id
-        $state.release_url=[string]$published.url
-        if($null-eq$state.PSObject.Properties['published_utc']){
-            $state|Add-Member -NotePropertyName published_utc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o'))
-        }else{
-            $state.published_utc=(Get-Date).ToUniversalTime().ToString('o')
-        }
-        $null=Write-VllmSm19dState -Workspace $workspaceFull -State $state
+        $state=Set-VllmSm19dVerifiedPublishedState -Workspace $workspaceFull -State $state -ReleaseObject $verification.remote -Confirm:$false
         Write-Sm19dResult -Result ([pscustomobject][ordered]@{
             state='published'
             release=$state.release
             tag=$state.tag
             project_commit=$commit
-            release_id=$published.release_id
-            release_url=$published.url
-            asset_count=$attestation.asset_count
+            release_id=[int64]$state.release_id
+            release_url=[string]$state.release_url
+            asset_count=$verification.attestation.asset_count
         }) -Marker 'SM19D_PUBLISH_OK'
     }
     'Verify' {
+        $verifyPrivateKey=Join-Path $workspaceFull 'signing\acceptance-ed25519'
+        $verifyPrivateKeyEntry=Get-VllmPathEntryInfo -Path $verifyPrivateKey
+        if($verifyPrivateKeyEntry.Exists){throw 'SM-19D read-only Verify refuses a workspace containing residual private signing material.'}
         $state=Read-VllmSm19dState -Workspace $workspaceFull
         $context=Get-Sm19dVerifiedStateContext -State $state
-        Assert-VllmSm19dRemoteTagExact -RepositorySlug $script:VllmSm19dRepositorySlug -Tag ([string]$state.tag) -ExpectedTagObject ([string]$state.tag_object) -GhExecutable $GhExecutable
-        $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $script:VllmSm19dRepositorySlug -Tag ([string]$state.tag) -GhExecutable $GhExecutable
-        if($null-eq$remote){throw 'SM-19D published acceptance release is missing.'}
-        $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $script:VllmSm19dRepositorySlug -Release ([string]$state.release) -Tag ([string]$state.tag) -ProjectCommit ([string]$state.project_commit)
-        if($remote.draft-eq$true){throw 'SM-19D acceptance release is still a draft.'}
-        if($remote.immutable-ne$true){throw 'SM-19D published acceptance release is not immutable.'}
-        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan ([object[]]$context.files.asset_plan)
-
-        $digests=Get-VllmSm19dAssetDigestMap -AssetPlan ([object[]]$context.files.asset_plan)
-        $attestation=Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmSm19dRepositorySlug -Tag ([string]$state.tag) -ExpectedTagObject ([string]$state.tag_object) -ArtifactsDirectory ([string]$context.files.assets_directory) -ExpectedAssets $digests -GhExecutable $GhExecutable
+        $verification=Get-VllmSm19dPublishedVerification -State $state -AssetPlan ([object[]]$context.files.asset_plan) -ArtifactsDirectory ([string]$context.files.assets_directory) -GhExecutable $GhExecutable
         Write-Sm19dResult -Result ([pscustomobject][ordered]@{
             state='verified'
             release=$state.release
             tag=$state.tag
             project_commit=$state.project_commit
-            release_id=[int64]$remote.id
-            release_url=[string]$remote.html_url
-            asset_count=$attestation.asset_count
+            release_id=[int64]$verification.remote.id
+            release_url=[string]$verification.remote.html_url
+            asset_count=$verification.attestation.asset_count
         }) -Marker 'SM19D_VERIFY_OK'
+    }
+
+    'RecoverPublishedState' {
+        $state=Read-VllmSm19dState -Workspace $workspaceFull
+        $context=Get-Sm19dVerifiedStateContext -State $state
+        $verification=Get-VllmSm19dPublishedVerification -State $state -AssetPlan ([object[]]$context.files.asset_plan) -ArtifactsDirectory ([string]$context.files.assets_directory) -GhExecutable $GhExecutable
+        $target=(Join-Path $workspaceFull 'acceptance-state.json')
+        if(-not$PSCmdlet.ShouldProcess($target,'Reconcile verified immutable publication into SM-19D local state')){return}
+        $state=Set-VllmSm19dVerifiedPublishedState -Workspace $workspaceFull -State $state -ReleaseObject $verification.remote -Confirm:$false
+        Write-Sm19dResult -Result ([pscustomobject][ordered]@{
+            state='published-state-recovered'
+            release=$state.release
+            tag=$state.tag
+            project_commit=$state.project_commit
+            release_id=[int64]$state.release_id
+            release_url=[string]$state.release_url
+            asset_count=$verification.attestation.asset_count
+        }) -Marker 'SM19D_RECOVER_OK'
     }
 
     'ResetDraft' {
