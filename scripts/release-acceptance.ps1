@@ -300,7 +300,11 @@ function ConvertTo-VllmSm19dUtcTimestamp {
     param([Parameter(Mandatory)]$Value,[Parameter(Mandatory)][string]$Label)
     if($null-eq$Value -or [string]::IsNullOrWhiteSpace([string]$Value)){throw "$Label is missing."}
     if($Value -is [DateTimeOffset]){return ([DateTimeOffset]$Value).UtcDateTime.ToString('o',[Globalization.CultureInfo]::InvariantCulture)}
-    if($Value -is [DateTime]){return ([DateTime]$Value).ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)}
+    if($Value -is [DateTime]){
+        $dateTime=[DateTime]$Value
+        if($dateTime.Kind-eq[DateTimeKind]::Unspecified){$dateTime=[DateTime]::SpecifyKind($dateTime,[DateTimeKind]::Utc)}
+        return $dateTime.ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    }
     $parsed=[DateTimeOffset]::MinValue
     if(-not[DateTimeOffset]::TryParse([string]$Value,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal,[ref]$parsed)){throw "$Label is invalid."}
     $parsed.UtcDateTime.ToString('o',[Globalization.CultureInfo]::InvariantCulture)

@@ -49,14 +49,8 @@ $repoPrefix=$repository.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::Alt
 if($workspaceFull.Equals($repository,[StringComparison]::OrdinalIgnoreCase)-or$workspaceFull.StartsWith($repoPrefix,[StringComparison]::OrdinalIgnoreCase)){
     throw 'SM-19D acceptance workspace must be outside the project repository.'
 }
-if([IO.Directory]::Exists($workspaceFull)){
-    if($Mode.Equals('Verify',[StringComparison]::Ordinal)){
-        $verifyPrivateKey=Join-Path $workspaceFull 'signing\acceptance-ed25519'
-        $verifyPrivateKeyEntry=Get-VllmPathEntryInfo -Path $verifyPrivateKey
-        if($verifyPrivateKeyEntry.Exists){throw 'SM-19D read-only Verify refuses a workspace containing residual private signing material.'}
-    }else{
-        $null=Clear-VllmSm19dResidualPrivateKey -Workspace $workspaceFull
-    }
+if([IO.Directory]::Exists($workspaceFull)-and-not$Mode.Equals('Verify',[StringComparison]::OrdinalIgnoreCase)){
+    $null=Clear-VllmSm19dResidualPrivateKey -Workspace $workspaceFull
 }
 
 
@@ -196,6 +190,9 @@ switch($Mode){
         }) -Marker 'SM19D_PUBLISH_OK'
     }
     'Verify' {
+        $verifyPrivateKey=Join-Path $workspaceFull 'signing\acceptance-ed25519'
+        $verifyPrivateKeyEntry=Get-VllmPathEntryInfo -Path $verifyPrivateKey
+        if($verifyPrivateKeyEntry.Exists){throw 'SM-19D read-only Verify refuses a workspace containing residual private signing material.'}
         $state=Read-VllmSm19dState -Workspace $workspaceFull
         $context=Get-Sm19dVerifiedStateContext -State $state
         $verification=Get-VllmSm19dPublishedVerification -State $state -AssetPlan ([object[]]$context.files.asset_plan) -ArtifactsDirectory ([string]$context.files.assets_directory) -GhExecutable $GhExecutable

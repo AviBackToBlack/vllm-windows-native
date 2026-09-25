@@ -110,6 +110,9 @@ try{
     $recoveryState.remote_tag_pushed=$true
     $null=Write-VllmSm19dState -Workspace $recoveryWorkspace -State $recoveryState
     $verifiedRelease=[pscustomobject][ordered]@{draft=$false;immutable=$true;id=12345;html_url='https://github.com/AviBackToBlack/vllm-windows-native/releases/tag/acceptance/test';published_at='2026-09-25T13:31:51Z'}
+    $unspecified=[DateTime]::SpecifyKind([DateTime]'2026-09-25T13:31:51',[DateTimeKind]::Unspecified)
+    $unspecifiedUtc=ConvertTo-VllmSm19dUtcTimestamp -Value $unspecified -Label 'test timestamp'
+    if(-not$unspecifiedUtc.Equals('2026-09-25T13:31:51.0000000Z',[StringComparison]::Ordinal)){throw 'Unspecified DateTime was not normalized as UTC.'}
     $recovered=Set-VllmSm19dVerifiedPublishedState -Workspace $recoveryWorkspace -State $recoveryState -ReleaseObject $verifiedRelease
     if(-not[bool]$recovered.published -or [int64]$recovered.release_id-ne12345 -or -not([string]$recovered.release_url).Equals([string]$verifiedRelease.html_url,[StringComparison]::Ordinal)){throw 'SM-19D published-state recovery failed.'}
     $recoveryJson=[IO.File]::ReadAllText((Join-Path $recoveryWorkspace 'acceptance-state.json'))
@@ -224,6 +227,19 @@ try{
     $fileAfter=[IO.File]::ReadAllText((Join-Path $whatIfWorkspace 'acceptance-state.json'))
     if(-not$objectBefore.Equals($objectAfter,[StringComparison]::Ordinal)){throw 'Published-state WhatIf mutated the in-memory state object.'}
     if(-not$fileBefore.Equals($fileAfter,[StringComparison]::Ordinal)){throw 'Published-state WhatIf mutated the state file.'}
+
+    $dispatchWorkspace=Join-Path $root 'dispatch'
+    [IO.Directory]::CreateDirectory((Join-Path $dispatchWorkspace 'signing'))|Out-Null
+    $dispatchKey=Join-Path $dispatchWorkspace 'signing\acceptance-ed25519'
+    [IO.File]::WriteAllText($dispatchKey,'residual-dispatch-test-key',[Text.UTF8Encoding]::new($false))
+    foreach($modeSpelling in @('Verify','verify','VERIFY')){
+        $caught=$null
+        try{
+            & (Join-Path $PSScriptRoot '..\release-acceptance.ps1') -Mode $modeSpelling -Workspace $dispatchWorkspace -Confirm:$false | Out-Null
+        }catch{$caught=$_.Exception.Message}
+        if([string]::IsNullOrWhiteSpace($caught)-or-not$caught.Contains('read-only Verify refuses')){throw "Top-level $modeSpelling dispatch did not refuse residual private signing material."}
+        if(-not[IO.File]::Exists($dispatchKey)){throw "Top-level $modeSpelling dispatch deleted residual private signing material."}
+    }
 
     Write-Host 'RELEASE_ACCEPTANCE_CONTRACT_OK'
 }finally{
