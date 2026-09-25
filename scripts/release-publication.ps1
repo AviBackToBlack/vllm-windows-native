@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 
 $script:VllmReleaseApiVersion = '2026-03-10'
+# GitHub release-list state is eventually consistent immediately after create/edit/delete mutations.
+$script:VllmReleaseReadAttempts = 12
+$script:VllmReleaseReadDelayMilliseconds = 2000
 
 function Assert-VllmPublicationToken {
     param([Parameter(Mandatory)][string]$Value,[Parameter(Mandatory)][string]$Label)
@@ -155,6 +158,42 @@ function Get-VllmGitHubReleaseByTagAnyState {
     $releaseMatches[0]
 }
 
+function Invoke-VllmGitHubReleaseReadConvergence {
+    param(
+        [Parameter(Mandatory)][string]$RepositorySlug,
+        [Parameter(Mandatory)][string]$Tag,
+        [scriptblock]$Validate,
+        [string]$GhExecutable='gh'
+    )
+    $repositorySlugValue=$RepositorySlug
+    $tagValue=$Tag
+    $validateValue=$Validate
+    $ghExecutableValue=$GhExecutable
+    Invoke-VllmBoundedRetry -Attempts $script:VllmReleaseReadAttempts -DelayMilliseconds $script:VllmReleaseReadDelayMilliseconds -Action {
+        $candidate=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $repositorySlugValue -Tag $tagValue -GhExecutable $ghExecutableValue
+        if($null-eq$candidate){throw "GitHub release for tag '$tagValue' is not visible yet."}
+        if($null-ne$validateValue){$null=& $validateValue $candidate}
+        $candidate
+    }
+}
+
+function Assert-VllmGitHubReleaseAbsentConvergence {
+    param(
+        [Parameter(Mandatory)][string]$RepositorySlug,
+        [Parameter(Mandatory)][string]$Tag,
+        [string]$GhExecutable='gh'
+    )
+    $repositorySlugValue=$RepositorySlug
+    $tagValue=$Tag
+    $ghExecutableValue=$GhExecutable
+    $null=Invoke-VllmBoundedRetry -Attempts $script:VllmReleaseReadAttempts -DelayMilliseconds $script:VllmReleaseReadDelayMilliseconds -Action {
+        $candidate=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $repositorySlugValue -Tag $tagValue -GhExecutable $ghExecutableValue
+        if($null-ne$candidate){throw "GitHub release for tag '$tagValue' is still visible."}
+        $true
+    }
+    $true
+}
+
 function Assert-VllmReleaseOwnership {
     param(
         [Parameter(Mandatory)]$ReleaseObject,
@@ -240,8 +279,7 @@ function Invoke-VllmStageGitHubRelease {
     $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
     if($null-eq$remote){
         Invoke-VllmOwnedDraftReleaseCreation -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit -GhExecutable $GhExecutable
-        $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
-        if($null-eq$remote){throw 'Created GitHub release draft could not be rediscovered.'}
+        $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
     }
     $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
     if($remote.draft-ne$true){
@@ -259,18 +297,21 @@ function Invoke-VllmStageGitHubRelease {
         $asset=@($AssetPlan|Where-Object{([string]$_.name).Equals($name,[StringComparison]::Ordinal)})[0]
         Assert-VllmReleasePublicationAssetStable -Asset $asset
         $null=Invoke-VllmPublicationGhCommand -Arguments @('release','upload',$Tag,[string]$asset.path,'--repo',$RepositorySlug) -FailureLabel "Unable to upload GitHub release asset $name" -Executable $GhExecutable
-        $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
+        $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
         $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
         if($remote.draft-ne$true){throw 'GitHub release left draft state during asset upload.'}
         if($remote.prerelease-ne$true){throw 'GitHub release left prerelease state during asset upload.'}
         $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan -AllowMissing
     }
-    $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
-    $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
-    $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan
-    if($remote.draft-ne$true){throw 'GitHub release left draft state before final stage verification.'}
-    if($remote.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state before final stage verification.'}
-    if($remote.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
+    $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate {
+        param($candidate)
+        $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
+        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan
+        if($candidate.draft-ne$true){throw 'GitHub release left draft state before final stage verification.'}
+        if($candidate.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state before final stage verification.'}
+        if($candidate.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
+        $true
+    }
     [pscustomobject][ordered]@{
         schema_version=1;component='vllm-windows-native-release-stage';state='draft'
         release_id=[int64]$remote.id;url=[string]$remote.html_url;asset_count=@($remote.assets).Count
@@ -313,13 +354,15 @@ function Invoke-VllmPublishGitHubRelease {
     $null=Invoke-VllmPublicationGhCommand -Arguments @(
         'release','edit',$Tag,'--repo',$RepositorySlug,'--draft=false','--prerelease','--latest=false','--verify-tag'
     ) -FailureLabel 'Unable to publish guarded GitHub release draft' -Executable $GhExecutable
-    $published=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
-    if($null-eq$published){throw 'Published GitHub release could not be rediscovered.'}
-    $null=Assert-VllmReleaseOwnership -ReleaseObject $published -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
-    if($published.draft-eq$true){throw 'GitHub release remained a draft after publication.'}
-    if($published.prerelease-ne$true){throw 'Initial GitHub publication did not remain a prerelease.'}
-    if($published.immutable-ne$true){throw 'Published GitHub release is not immutable.'}
-    $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $published -AssetPlan $AssetPlan
+    $published=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate {
+        param($candidate)
+        $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
+        if($candidate.draft-eq$true){throw 'GitHub release remained a draft after publication.'}
+        if($candidate.prerelease-ne$true){throw 'Initial GitHub publication did not remain a prerelease.'}
+        if($candidate.immutable-ne$true){throw 'Published GitHub release is not immutable.'}
+        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan
+        $true
+    }
     [pscustomobject][ordered]@{
         schema_version=1;component='vllm-windows-native-release-publication';state='published'
         release_id=[int64]$published.id;url=[string]$published.html_url;asset_count=@($published.assets).Count
@@ -344,7 +387,6 @@ function Invoke-VllmResetOwnedDraftRelease {
     $id=[int64]$remote.id
     $apiArguments=@('api','-X','DELETE','-H','Accept: application/vnd.github+json','-H',('X-GitHub-Api-Version: '+$script:VllmReleaseApiVersion),"repos/$RepositorySlug/releases/$id")
     $null=Invoke-VllmPublicationGhCommand -Arguments $apiArguments -FailureLabel 'Unable to delete owned failed GitHub release draft' -Executable $GhExecutable
-    $after=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
-    if($null-ne$after){throw 'Owned GitHub release draft still exists after reset.'}
+    $null=Assert-VllmGitHubReleaseAbsentConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
     [pscustomobject][ordered]@{schema_version=1;component='vllm-windows-native-release-reset';state='reset';release_id=$id}
 }
