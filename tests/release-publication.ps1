@@ -44,6 +44,8 @@ try{
     $script:FakeTagObject=$tagObject
     $script:FakeMainReadCount=0
     $script:FakeChangeMainOnRead=0
+    $script:FakeReleaseReadCount=0
+    $script:FakePublishOnReleaseRead=0
     $script:FakeRelease=$null
     $script:FakeNextReleaseId=7001
     $script:FakeCommands=New-Object System.Collections.Generic.List[string]
@@ -91,6 +93,11 @@ try{
                 return (@{ref=('refs/tags/'+$tag);object=@{type='tag';sha=$script:FakeTagObject}}|ConvertTo-Json -Depth 4 -Compress)
             }
             if($joined -match 'repos/.+/releases\?per_page=100'){
+                $script:FakeReleaseReadCount++
+                if($null-ne$script:FakeRelease-and$script:FakePublishOnReleaseRead-gt0-and$script:FakeReleaseReadCount-ge$script:FakePublishOnReleaseRead){
+                    $script:FakeRelease.draft=$false
+                    $script:FakeRelease.immutable=$true
+                }
                 if($null-eq$script:FakeRelease){return '[[]]'}
                 return '[['+($script:FakeRelease|ConvertTo-Json -Depth 8 -Compress)+']]'
             }
@@ -162,6 +169,16 @@ try{
     $retry=Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
     if($retry.state-ne'draft'){throw 'Exact draft retry changed state.'}
     if(@($script:FakeCommands|Where-Object{$_ -like 'release create*' -or $_ -like 'release upload*'}).Count-ne0){throw 'Exact draft retry mutated remote state.'}
+
+    $script:FakeReleaseReadCount=0
+    $script:FakePublishOnReleaseRead=2
+    Assert-Fails {
+        Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
+    } 'left draft state before final stage verification'
+    $script:FakePublishOnReleaseRead=0
+    $script:FakeReleaseReadCount=0
+    $script:FakeRelease.draft=$true
+    $script:FakeRelease.immutable=$false
 
     $savedAssets=@($script:FakeRelease.assets)
     $script:FakeRelease.assets=@($savedAssets|Select-Object -First 3)
