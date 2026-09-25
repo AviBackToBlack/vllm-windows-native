@@ -303,9 +303,13 @@ Publish is a separate high-impact ShouldProcess action and refuses to run until 
 
     .\release-acceptance.ps1 -Mode Publish -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
 
-Run verification again as a separate consumer-style proof. Verification binds the canonical percent-encoded package PURL to the exact repository/tag, tag object, and four asset digests. If immutable publication already succeeded but the prior process failed before local state persistence, a successful Verify atomically reconciles acceptance-state.json to that verified published release:
+Run verification again as a strictly read-only consumer-style proof. Verification binds the canonical percent-encoded package PURL to the exact repository/tag, tag object, and four asset digests and does not rewrite acceptance-state.json:
 
     .\release-acceptance.ps1 -Mode Verify -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
+
+If immutable publication succeeded but the process failed before local state persistence, reconcile only after the same complete proof with an explicit state-recovery action:
+
+    .\release-acceptance.ps1 -Mode RecoverPublishedState -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
 
 If a pre-publication attempt leaves an owned draft, ResetDraft may remove only that exact marker-owned draft. Published acceptance releases are never reset, deleted, repaired, or clobbered by this harness.
 
