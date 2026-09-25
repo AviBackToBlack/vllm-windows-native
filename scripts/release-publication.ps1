@@ -268,6 +268,8 @@ function Invoke-VllmStageGitHubRelease {
     $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
     $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
     $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan
+    if($remote.draft-ne$true){throw 'GitHub release left draft state before final stage verification.'}
+    if($remote.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state before final stage verification.'}
     if($remote.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
     [pscustomobject][ordered]@{
         schema_version=1;component='vllm-windows-native-release-stage';state='draft'

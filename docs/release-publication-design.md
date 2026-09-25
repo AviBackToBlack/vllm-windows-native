@@ -97,6 +97,20 @@ Reset authority is exact schema-v1 ownership plus draft state, not mutable prere
 
 SM-19C tests use an injected fake `gh` state machine and perform no GitHub mutation. Production signing, repository-setting mutation, and real publication remain outside the implementation PR and are exercised only after review in the trusted SM-19D/operator flow.
 
+### SM-19D trusted end-to-end acceptance surface
+
+SM-19D performs the first real GitHub publication transaction, but only with a clearly non-production one-shot fixture. The implementation PR itself remains source-only: its PowerShell regression uses a temporary local Git repository, a generated software SSH key, fake GitHub reads, and no remote release mutation. The real acceptance runs only after review and merge from clean main.
+
+The repository immutable-release setting is a deliberate operator prerequisite rather than a capability of the release tooling. It was enabled before the trusted acceptance run and remains enabled for production readiness. Platform semantics were rechecked on 2026-09-25: drafts may still be modified or deleted; publication locks the release tag and asset bytes and creates a release attestation; deleting an immutable release does not make its tag name reusable. SM-19D therefore uses a unique acceptance/sm19d/<one-shot-id> annotated tag and never recycles acceptance identities.
+
+Prepare creates exactly four synthetic non-production assets in an isolated workspace outside the repository, generates an ephemeral Ed25519 software key, signs an annotated tag at the exact reviewed main commit, verifies that tag through the same signed-tag verifier with an acceptance-only principal/fingerprint, deletes the private key, and persists only public trust material plus asset identities and the tag object in acceptance-state.json. The production hardware-backed key and config/release-allowed-signers are not used.
+
+ExerciseDraft pushes the exact authenticated one-shot tag, executes the real StageDraft transaction, repeats StageDraft to prove retry idempotence, executes the exact marker-owned ResetDraft recovery path, and proves the draft is absent. The remote tag remains for the later publication phase. Publish is a separate ShouldProcess boundary and refuses to run until that real draft round trip has completed. It recreates the exact owned draft, publishes prerelease/latest=false, requires immutable=true, and verifies the release attestation plus each of the four local assets. Verify repeats that attestation proof without requiring remote main to remain at the historical publication commit.
+
+Published SM-19D fixtures are preserved as audit evidence and are never reset, repaired, clobbered, or deleted by the acceptance harness. Pre-publication failures may be recovered with the same exact marker-owned ResetDraft primitive. The fixture asset bytes are intentionally synthetic opaque publication inputs: SM-19A already owns canonical production-bundle correctness, while SM-19D isolates and proves the GitHub transaction, immutable-release boundary, signed-tag authorization, and release-attestation transport end to end.
+
+The final StageDraft re-fetch now also requires draft=true and immutable=false before reporting draft success. This closes the last review nit where a concurrent actor could publish the owned draft between the earlier state check and the final fetch and leave only a stale local state label.
+
 ### Trust boundary
 
 Public PR CI remains source-only. Trusted release preparation/publishing runs only from reviewed `main` in a trusted isolated environment or protected workflow and never uses `pull_request_target` to execute attacker-controlled PR code. Actions remain full-SHA pinned and final publication remains an explicit operator decision.
