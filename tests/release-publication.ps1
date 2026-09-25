@@ -212,6 +212,13 @@ try{
     $expectedMarker=Get-VllmReleaseOwnershipMarker -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit
     if(-not([string]$script:FakeRelease.body).StartsWith($expectedMarker,[StringComparison]::Ordinal)){throw 'Draft ownership marker mismatch.'}
 
+    $script:FakeReleaseReadCount=0
+    Assert-Fails {
+        Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $repoSlug -Tag $tag -Validate { param($candidate) $null=$candidate; throw 'permanent convergence validation' }
+    } 'permanent convergence validation'
+    if($script:FakeReleaseReadCount-ne1){throw 'Permanent convergence validation was retried.'}
+
+
     $script:FakeCommands.Clear()
     $retry=Invoke-VllmStageGitHubRelease -RepositorySlug $repoSlug -Release $releaseId -Tag $tag -ProjectCommit $commit -TagObject $tagObject -AssetPlan $plan
     if($retry.state-ne'draft'){throw 'Exact draft retry changed state.'}

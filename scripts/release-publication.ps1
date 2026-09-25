@@ -163,17 +163,27 @@ function Invoke-VllmGitHubReleaseReadConvergence {
         [Parameter(Mandatory)][string]$RepositorySlug,
         [Parameter(Mandatory)][string]$Tag,
         [scriptblock]$Validate,
+        [scriptblock]$Ready,
         [string]$GhExecutable='gh'
     )
     $repositorySlugValue=$RepositorySlug
     $tagValue=$Tag
     $validateValue=$Validate
+    $readyValue=$Ready
     $ghExecutableValue=$GhExecutable
-    Invoke-VllmBoundedRetry -Attempts $script:VllmReleaseReadAttempts -DelayMilliseconds $script:VllmReleaseReadDelayMilliseconds -Action {
+    for($attempt=1;$attempt-le$script:VllmReleaseReadAttempts;$attempt++){
         $candidate=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $repositorySlugValue -Tag $tagValue -GhExecutable $ghExecutableValue
-        if($null-eq$candidate){throw "GitHub release for tag '$tagValue' is not visible yet."}
-        if($null-ne$validateValue){$null=& $validateValue $candidate}
-        $candidate
+        if($null-ne$candidate){
+            if($null-ne$validateValue){$null=& $validateValue $candidate}
+            $isReady=$true
+            if($null-ne$readyValue){$isReady=[bool](& $readyValue $candidate)}
+            if($isReady){return $candidate}
+        }
+        if($attempt-ge$script:VllmReleaseReadAttempts){
+            if($null-eq$candidate){throw "GitHub release for tag '$tagValue' was not visible after $attempt attempts."}
+            throw "GitHub release for tag '$tagValue' did not converge after $attempt attempts."
+        }
+        if($script:VllmReleaseReadDelayMilliseconds-gt0){Start-Sleep -Milliseconds $script:VllmReleaseReadDelayMilliseconds}
     }
 }
 
@@ -186,10 +196,11 @@ function Assert-VllmGitHubReleaseAbsentConvergence {
     $repositorySlugValue=$RepositorySlug
     $tagValue=$Tag
     $ghExecutableValue=$GhExecutable
-    $null=Invoke-VllmBoundedRetry -Attempts $script:VllmReleaseReadAttempts -DelayMilliseconds $script:VllmReleaseReadDelayMilliseconds -Action {
+    for($attempt=1;$attempt-le$script:VllmReleaseReadAttempts;$attempt++){
         $candidate=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $repositorySlugValue -Tag $tagValue -GhExecutable $ghExecutableValue
-        if($null-ne$candidate){throw "GitHub release for tag '$tagValue' is still visible."}
-        $true
+        if($null-eq$candidate){return $true}
+        if($attempt-ge$script:VllmReleaseReadAttempts){throw "GitHub release for tag '$tagValue' was still visible after $attempt attempts."}
+        if($script:VllmReleaseReadDelayMilliseconds-gt0){Start-Sleep -Milliseconds $script:VllmReleaseReadDelayMilliseconds}
     }
     $true
 }
@@ -303,15 +314,21 @@ function Invoke-VllmStageGitHubRelease {
         if($remote.prerelease-ne$true){throw 'GitHub release left prerelease state during asset upload.'}
         $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan -AllowMissing
     }
-    $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate {
+    $stageValidate={
         param($candidate)
         $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
-        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan
         if($candidate.draft-ne$true){throw 'GitHub release left draft state before final stage verification.'}
         if($candidate.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state before final stage verification.'}
         if($candidate.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
+        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan -AllowMissing
         $true
     }
+    $stageReady={
+        param($candidate)
+        $missingAssets=@(Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan -AllowMissing)
+        $missingAssets.Count-eq0
+    }
+    $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $stageValidate -Ready $stageReady
     [pscustomobject][ordered]@{
         schema_version=1;component='vllm-windows-native-release-stage';state='draft'
         release_id=[int64]$remote.id;url=[string]$remote.html_url;asset_count=@($remote.assets).Count
@@ -354,15 +371,18 @@ function Invoke-VllmPublishGitHubRelease {
     $null=Invoke-VllmPublicationGhCommand -Arguments @(
         'release','edit',$Tag,'--repo',$RepositorySlug,'--draft=false','--prerelease','--latest=false','--verify-tag'
     ) -FailureLabel 'Unable to publish guarded GitHub release draft' -Executable $GhExecutable
-    $published=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate {
+    $publishedValidate={
         param($candidate)
         $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
-        if($candidate.draft-eq$true){throw 'GitHub release remained a draft after publication.'}
         if($candidate.prerelease-ne$true){throw 'Initial GitHub publication did not remain a prerelease.'}
-        if($candidate.immutable-ne$true){throw 'Published GitHub release is not immutable.'}
         $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan
         $true
     }
+    $publishedReady={
+        param($candidate)
+        ($candidate.draft-ne$true)-and($candidate.immutable-eq$true)
+    }
+    $published=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $publishedValidate -Ready $publishedReady
     [pscustomobject][ordered]@{
         schema_version=1;component='vllm-windows-native-release-publication';state='published'
         release_id=[int64]$published.id;url=[string]$published.html_url;asset_count=@($published.assets).Count
