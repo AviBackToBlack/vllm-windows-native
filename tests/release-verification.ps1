@@ -127,19 +127,30 @@ try {
     function Get-FixtureAttestation {
         param([string]$Repository='AviBackToBlack/vllm-windows-native',[string]$Tag='release/test',[string]$TagObject=$tagObjectId,[System.Collections.IDictionary]$AssetMap=$assets)
         $subjects=New-Object System.Collections.Generic.List[object]
-        $subjects.Add([ordered]@{uri="pkg:github/$Repository@$Tag";digest=[ordered]@{sha1=$TagObject}})
+        $encodedTag=[Uri]::EscapeDataString($Tag)
+        $subjects.Add([ordered]@{uri="pkg:github/$Repository@$encodedTag";digest=[ordered]@{sha1=$TagObject}})
         foreach($name in $AssetMap.Keys){$subjects.Add([ordered]@{name=[string]$name;digest=[ordered]@{sha256=[string]$AssetMap[$name]}})}
         [ordered]@{verificationResult=[ordered]@{statement=[ordered]@{
             _type='https://in-toto.io/Statement/v1'
             subject=$subjects.ToArray()
             predicateType='https://in-toto.io/attestation/release/v0.2'
-            predicate=[ordered]@{repository=$Repository;tag=$Tag}
+            predicate=[ordered]@{repository=$Repository;tag=$Tag;purl=("pkg:github/$Repository@$encodedTag")}
         }}}|ConvertTo-Json -Depth 10 -Compress
     }
 
     $json=Get-FixtureAttestation
     $a=Assert-VllmReleaseAttestationJson -Json $json -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets
     if($a.asset_count-ne4){throw 'attestation verifier returned wrong asset count.'}
+
+    $unescapedPurlDoc=(Get-FixtureAttestation | ConvertFrom-Json)
+    $unescapedPurlDoc.verificationResult.statement.subject[0].uri='pkg:github/AviBackToBlack/vllm-windows-native@release/test'
+    $unescapedPurlJson=$unescapedPurlDoc|ConvertTo-Json -Depth 10 -Compress
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json $unescapedPurlJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'package URI mismatch'
+
+    $wrongPredicatePurlDoc=(Get-FixtureAttestation | ConvertFrom-Json)
+    $wrongPredicatePurlDoc.verificationResult.statement.predicate.purl='pkg:github/AviBackToBlack/vllm-windows-native@release%2Fother'
+    $wrongPredicatePurlJson=$wrongPredicatePurlDoc|ConvertTo-Json -Depth 10 -Compress
+    Assert-Fails { Assert-VllmReleaseAttestationJson -Json $wrongPredicatePurlJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets } 'predicate/package URI mismatch'
 
     $lowercaseRepoJson=Get-FixtureAttestation -Repository 'avibacktoblack/vllm-windows-native'
     $lowercaseRepo=Assert-VllmReleaseAttestationJson -Json $lowercaseRepoJson -RepositorySlug 'AviBackToBlack/vllm-windows-native' -Tag 'release/test' -ExpectedTagObject $tagObjectId -ExpectedAssets $assets

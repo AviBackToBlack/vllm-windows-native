@@ -102,6 +102,22 @@ try{
     $invalidState.remote_tag_pushed=$true
     $invalidState.published=$true
     Assert-Fails { Assert-VllmSm19dStateObject -State $invalidState } 'release id and URL'
+
+    $recoveryWorkspace=Join-Path $root 'recovery'
+    [IO.Directory]::CreateDirectory($recoveryWorkspace)|Out-Null
+    $recoveryState=($state|ConvertTo-Json -Depth 10|ConvertFrom-Json)
+    $recoveryState.draft_round_trip_completed=$true
+    $recoveryState.remote_tag_pushed=$true
+    $null=Write-VllmSm19dState -Workspace $recoveryWorkspace -State $recoveryState
+    $verifiedRelease=[pscustomobject][ordered]@{draft=$false;immutable=$true;id=12345;html_url='https://github.com/AviBackToBlack/vllm-windows-native/releases/tag/acceptance/test';published_at='2026-09-25T13:31:51Z'}
+    $recovered=Set-VllmSm19dVerifiedPublishedState -Workspace $recoveryWorkspace -State $recoveryState -ReleaseObject $verifiedRelease
+    if(-not[bool]$recovered.published -or [int64]$recovered.release_id-ne12345 -or -not([string]$recovered.release_url).Equals([string]$verifiedRelease.html_url,[StringComparison]::Ordinal)){throw 'SM-19D published-state recovery failed.'}
+    $recoveryJson=[IO.File]::ReadAllText((Join-Path $recoveryWorkspace 'acceptance-state.json'))
+    if(-not$recoveryJson.Contains('2026-09-25T13:31:51.0000000Z')){throw 'SM-19D published-state recovery timestamp was not persisted as invariant UTC.'}
+    $recoveredAgain=Set-VllmSm19dVerifiedPublishedState -Workspace $recoveryWorkspace -State $recovered -ReleaseObject $verifiedRelease
+    if([int64]$recoveredAgain.release_id-ne12345){throw 'SM-19D published-state recovery was not idempotent.'}
+    $wrongRelease=[pscustomobject][ordered]@{draft=$false;immutable=$true;id=12346;html_url='https://github.com/AviBackToBlack/vllm-windows-native/releases/tag/acceptance/other';published_at='2026-09-25T13:31:51Z'}
+    Assert-Fails { Set-VllmSm19dVerifiedPublishedState -Workspace $recoveryWorkspace -State $recoveredAgain -ReleaseObject $wrongRelease } 'persisted published release identity mismatch'
     $context=Assert-VllmSm19dStateFiles -Workspace $workspace -State $loaded
     if(@($context.asset_plan).Count-ne4){throw 'SM-19D state file verification lost assets.'}
 

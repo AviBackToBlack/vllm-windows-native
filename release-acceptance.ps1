@@ -213,6 +213,7 @@ switch($Mode){
 
         $digests=Get-VllmSm19dAssetDigestMap -AssetPlan ([object[]]$context.files.asset_plan)
         $attestation=Invoke-VllmGitHubReleaseVerification -RepositorySlug $script:VllmSm19dRepositorySlug -Tag ([string]$state.tag) -ExpectedTagObject ([string]$state.tag_object) -ArtifactsDirectory ([string]$context.files.assets_directory) -ExpectedAssets $digests -GhExecutable $GhExecutable
+        $state=Set-VllmSm19dVerifiedPublishedState -Workspace $workspaceFull -State $state -ReleaseObject $remote
         Write-Sm19dResult -Result ([pscustomobject][ordered]@{
             state='verified'
             release=$state.release

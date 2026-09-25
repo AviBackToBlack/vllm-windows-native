@@ -277,6 +277,62 @@ function Read-VllmSm19dState {
     $state
 }
 
+function Set-VllmSm19dVerifiedPublishedState {
+    [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
+    param(
+        [Parameter(Mandatory)][string]$Workspace,
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)]$ReleaseObject
+    )
+    if($ReleaseObject.draft-eq$true -or $ReleaseObject.immutable-ne$true){
+        throw 'SM-19D verified release is not an immutable published release.'
+    }
+    $releaseId=[int64]$ReleaseObject.id
+    $releaseUrl=[string]$ReleaseObject.html_url
+    if($releaseId-le0 -or [string]::IsNullOrWhiteSpace($releaseUrl)){
+        throw 'SM-19D verified release identity is incomplete.'
+    }
+
+    $publishedValue=$ReleaseObject.published_at
+    if($null-eq$publishedValue -or [string]::IsNullOrWhiteSpace([string]$publishedValue)){
+        $publishedUtc=(Get-Date).ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    }elseif($publishedValue -is [DateTimeOffset]){
+        $publishedUtc=([DateTimeOffset]$publishedValue).UtcDateTime.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    }elseif($publishedValue -is [DateTime]){
+        $publishedUtc=([DateTime]$publishedValue).ToUniversalTime().ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    }else{
+        $parsed=[DateTimeOffset]::MinValue
+        if(-not[DateTimeOffset]::TryParse([string]$publishedValue,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal,[ref]$parsed)){
+            throw 'SM-19D verified release published timestamp is invalid.'
+        }
+        $publishedUtc=$parsed.UtcDateTime.ToString('o',[Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    $needsWrite=$false
+    if([bool]$State.published){
+        if([int64]$State.release_id-ne$releaseId -or -not([string]$State.release_url).Equals($releaseUrl,[StringComparison]::Ordinal)){
+            throw 'SM-19D persisted published release identity mismatch.'
+        }
+        if($null-eq$State.PSObject.Properties['published_utc'] -or -not([string]$State.published_utc).Equals($publishedUtc,[StringComparison]::Ordinal)){
+            if($null-eq$State.PSObject.Properties['published_utc']){$State|Add-Member -NotePropertyName published_utc -NotePropertyValue $publishedUtc}else{$State.published_utc=$publishedUtc}
+            $needsWrite=$true
+        }
+    }else{
+        $State.published=$true
+        $State.remote_tag_pushed=$true
+        $State.release_id=$releaseId
+        $State.release_url=$releaseUrl
+        if($null-eq$State.PSObject.Properties['published_utc']){$State|Add-Member -NotePropertyName published_utc -NotePropertyValue $publishedUtc}else{$State.published_utc=$publishedUtc}
+        $needsWrite=$true
+    }
+    if(-not$needsWrite){return $State}
+
+    $statePath=Join-Path ([IO.Path]::GetFullPath($Workspace)) $script:VllmSm19dStateFile
+    if(-not$PSCmdlet.ShouldProcess($statePath,'Record verified immutable SM-19D publication in local acceptance state')){return $State}
+    $null=Write-VllmSm19dState -Workspace $Workspace -State $State
+    Read-VllmSm19dState -Workspace $Workspace
+}
+
 function Assert-VllmSm19dStateFiles {
     param([Parameter(Mandatory)][string]$Workspace,[Parameter(Mandatory)]$State)
     $root = [IO.Path]::GetFullPath($Workspace)

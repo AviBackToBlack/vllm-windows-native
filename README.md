@@ -303,7 +303,7 @@ Publish is a separate high-impact ShouldProcess action and refuses to run until 
 
     .\release-acceptance.ps1 -Mode Publish -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
 
-Run verification again as a separate consumer-style proof:
+Run verification again as a separate consumer-style proof. Verification binds the canonical percent-encoded package PURL to the exact repository/tag, tag object, and four asset digests. If immutable publication already succeeded but the prior process failed before local state persistence, a successful Verify atomically reconciles acceptance-state.json to that verified published release:
 
     .\release-acceptance.ps1 -Mode Verify -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
 
