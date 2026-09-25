@@ -15,6 +15,9 @@ function Assert-Fails {
 
 Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'BAD' } 'acceptance id'
 Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'abc..def' } 'acceptance id'
+Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'ABCDEF' } 'acceptance id'
+Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'abcdef.' } 'acceptance id'
+Assert-Fails { Assert-VllmSm19dAcceptanceId -AcceptanceId 'abcdef.lock' } 'acceptance id'
 
 $id='20260925-bb4231f021f2-test'
 $identity=Get-VllmSm19dAcceptanceIdentity -AcceptanceId $id
@@ -35,6 +38,15 @@ try{
     Invoke-Git -Repository $repo -Arguments @('-c','user.name=SM19D Test','-c','user.email=sm19d-test@invalid.local','-c','commit.gpgsign=false','commit','-q','-m','fixture')
     $commit=(Invoke-Git -Repository $repo -Arguments @('rev-parse','HEAD') -Capture).Trim().ToLowerInvariant()
 
+    $canonicalPush=Get-VllmSm19dCanonicalPushUrl -Repository $repo -RepositorySlug $script:VllmSm19dRepositorySlug
+    if(-not$canonicalPush.Equals('https://github.com/AviBackToBlack/vllm-windows-native.git',[StringComparison]::Ordinal)){throw 'SM-19D canonical push URL mismatch.'}
+    Invoke-Git -Repository $repo -Arguments @('config','url.https://example.invalid/fork.git.insteadOf',$canonicalPush)
+    Assert-Fails { Get-VllmSm19dCanonicalPushUrl -Repository $repo -RepositorySlug $script:VllmSm19dRepositorySlug } 'canonical push URL is rewritten'
+    Invoke-Git -Repository $repo -Arguments @('config','--unset','url.https://example.invalid/fork.git.insteadOf')
+    Invoke-Git -Repository $repo -Arguments @('config','url.https://example.invalid/fork.git.pushInsteadOf',$canonicalPush)
+    Assert-Fails { Get-VllmSm19dCanonicalPushUrl -Repository $repo -RepositorySlug $script:VllmSm19dRepositorySlug } 'pushInsteadOf'
+    Invoke-Git -Repository $repo -Arguments @('config','--unset','url.https://example.invalid/fork.git.pushInsteadOf')
+
     $assets=@(New-VllmSm19dFixtureAssets -Workspace $workspace -AcceptanceId $id -Tag $identity.tag -ProjectCommit $commit)
     if($assets.Count-ne4){throw 'SM-19D fixture builder did not create exactly four assets.'}
     $expectedNames=@(Get-VllmSm19dExpectedAssetNames)
@@ -49,6 +61,9 @@ try{
 
     Remove-VllmSm19dPrivateSigningKey -PrivateKeyPath $signing.private_key
     if([IO.File]::Exists($signing.private_key)){throw 'SM-19D ephemeral private key survived removal.'}
+    [IO.File]::WriteAllText($signing.private_key,'residual-secret',[Text.UTF8Encoding]::new($false))
+    $cleaned=Clear-VllmSm19dResidualPrivateKey -Workspace $workspace
+    if(-not$cleaned -or [IO.File]::Exists($signing.private_key)){throw 'SM-19D residual private key sanitization failed.'}
     $verifiedAgain=Assert-VllmReleaseSignedTag -Repository $repo -Tag $identity.tag -ExpectedCommit $commit -AllowedSignersPath $signing.allowed_signers -ExpectedPrincipal $signing.principal -ExpectedFingerprint $signing.fingerprint
     if(-not$verifiedAgain.tag_object.Equals($verified.tag_object,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-19D signed tag changed after private-key removal.'}
 
@@ -74,6 +89,18 @@ try{
     $statePath=Write-VllmSm19dState -Workspace $workspace -State $state
     if(-not[IO.File]::Exists($statePath)){throw 'SM-19D state writer did not create state file.'}
     $loaded=Read-VllmSm19dState -Workspace $workspace
+    $faultState=($state|ConvertTo-Json -Depth 10|ConvertFrom-Json)
+    $faultState.remote_tag_pushed=$true
+    Assert-Fails { Write-VllmSm19dState -Workspace $workspace -State $faultState -FaultPoint BeforePublish } 'FAULT_INJECTED:BeforePublish'
+    $preserved=Read-VllmSm19dState -Workspace $workspace
+    if([bool]$preserved.remote_tag_pushed){throw 'SM-19D atomic state fault destroyed the previous valid state.'}
+
+    $invalidState=($state|ConvertTo-Json -Depth 10|ConvertFrom-Json)
+    $invalidState.draft_round_trip_completed=$true
+    Assert-Fails { Assert-VllmSm19dStateObject -State $invalidState } 'without the remote tag'
+    $invalidState.remote_tag_pushed=$true
+    $invalidState.published=$true
+    Assert-Fails { Assert-VllmSm19dStateObject -State $invalidState } 'release id and URL'
     $context=Assert-VllmSm19dStateFiles -Workspace $workspace -State $loaded
     if(@($context.asset_plan).Count-ne4){throw 'SM-19D state file verification lost assets.'}
 

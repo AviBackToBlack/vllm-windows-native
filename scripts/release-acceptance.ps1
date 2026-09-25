@@ -6,8 +6,11 @@ $script:VllmSm19dStateFile = 'acceptance-state.json'
 
 function Assert-VllmSm19dAcceptanceId {
     param([Parameter(Mandatory)][string]$AcceptanceId)
-    if ($AcceptanceId -notmatch '^[a-z0-9][a-z0-9.-]{5,63}$' -or $AcceptanceId.Contains('..')) {
-        throw 'SM-19D acceptance id must be 6-64 lowercase ASCII letters, digits, dot, or hyphen; it must not contain consecutive dots.'
+    if ($AcceptanceId -cnotmatch '^[a-z0-9][a-z0-9.-]{5,63}$' -or
+        $AcceptanceId.Contains('..') -or
+        $AcceptanceId.EndsWith('.',[StringComparison]::Ordinal) -or
+        $AcceptanceId.EndsWith('.lock',[StringComparison]::Ordinal)) {
+        throw 'SM-19D acceptance id must be 6-64 lowercase ASCII letters, digits, dot, or hyphen; it must not contain consecutive dots or end with dot or .lock.'
     }
 }
 
@@ -189,17 +192,77 @@ function Remove-VllmSm19dPrivateSigningKey {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
     param([Parameter(Mandatory)][string]$PrivateKeyPath)
     if(-not$PSCmdlet.ShouldProcess($PrivateKeyPath,'Delete ephemeral SM-19D private signing key')){return}
+    $entry=Get-VllmPathEntryInfo -Path $PrivateKeyPath
+    if($entry.Exists -and ($entry.IsDirectory -or $entry.IsReparsePoint)){
+        throw 'SM-19D private-key path is not a safe regular file.'
+    }
     if ([IO.File]::Exists($PrivateKeyPath)) {
         Remove-Item -LiteralPath $PrivateKeyPath -Force
     }
     if ([IO.File]::Exists($PrivateKeyPath)) { throw 'SM-19D ephemeral private key still exists after removal.' }
 }
 
+function Assert-VllmSm19dStateObject {
+    param([Parameter(Mandatory)]$State)
+    if ([int]$State.schema_version -ne 1 -or -not ([string]$State.component).Equals('vllm-windows-native-sm19d-acceptance',[StringComparison]::Ordinal)) {
+        throw 'SM-19D acceptance state schema/component mismatch.'
+    }
+    $identity = Get-VllmSm19dAcceptanceIdentity -AcceptanceId ([string]$State.acceptance_id)
+    if (-not ([string]$State.repository).Equals($script:VllmSm19dRepositorySlug,[StringComparison]::Ordinal) -or
+        -not ([string]$State.release).Equals($identity.release,[StringComparison]::Ordinal) -or
+        -not ([string]$State.tag).Equals($identity.tag,[StringComparison]::Ordinal) -or
+        -not ([string]$State.principal).Equals($script:VllmSm19dPrincipal,[StringComparison]::Ordinal) -or
+        [string]$State.project_commit -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$State.tag_object -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]::IsNullOrWhiteSpace([string]$State.key_fingerprint)) {
+        throw 'SM-19D acceptance state identity mismatch.'
+    }
+    foreach($name in @('draft_round_trip_completed','remote_tag_pushed','published')){
+        $property=$State.PSObject.Properties[$name]
+        if($null-eq$property -or -not($property.Value -is [bool])){throw "SM-19D acceptance state boolean is invalid: $name"}
+    }
+    if([bool]$State.draft_round_trip_completed -and -not[bool]$State.remote_tag_pushed){
+        throw 'SM-19D acceptance state cannot record draft completion without the remote tag.'
+    }
+    if([bool]$State.published -and -not[bool]$State.draft_round_trip_completed){
+        throw 'SM-19D acceptance state cannot record publication before draft-round-trip completion.'
+    }
+    if([bool]$State.published){
+        if($null-eq$State.release_id -or [int64]$State.release_id -le 0 -or [string]::IsNullOrWhiteSpace([string]$State.release_url)){
+            throw 'SM-19D published state must contain release id and URL.'
+        }
+    }elseif($null-ne$State.release_id -or $null-ne$State.release_url){
+        throw 'SM-19D unpublished state must not contain published release identity.'
+    }
+    $State
+}
+
+function Clear-VllmSm19dResidualPrivateKey {
+    [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
+    param([Parameter(Mandatory)][string]$Workspace)
+    $path=Join-Path ([IO.Path]::GetFullPath($Workspace)) 'signing\acceptance-ed25519'
+    $entry=Get-VllmPathEntryInfo -Path $path
+    if(-not$entry.Exists){return $false}
+    if($entry.IsDirectory -or $entry.IsReparsePoint){throw 'SM-19D residual private-key path is not a safe regular file.'}
+    if(-not$PSCmdlet.ShouldProcess($path,'Delete residual SM-19D ephemeral private signing key')){return $false}
+    Remove-VllmSm19dPrivateSigningKey -PrivateKeyPath $path -Confirm:$false
+    $true
+}
+
 function Write-VllmSm19dState {
-    param([Parameter(Mandatory)][string]$Workspace,[Parameter(Mandatory)]$State)
+    param(
+        [Parameter(Mandatory)][string]$Workspace,
+        [Parameter(Mandatory)]$State,
+        [ValidateSet('None','BeforePublish','AfterPublish')][string]$FaultPoint='None'
+    )
     $path = Join-Path ([IO.Path]::GetFullPath($Workspace)) $script:VllmSm19dStateFile
-    $json = $State | ConvertTo-Json -Depth 10
-    [IO.File]::WriteAllText($path,$json + [char]10,[Text.UTF8Encoding]::new($false))
+    $null=Assert-VllmSm19dStateObject -State $State
+    $validator={
+        param($candidate,$candidatePath)
+        $null=$candidatePath
+        $null=Assert-VllmSm19dStateObject -State $candidate
+    }
+    $null=Write-VllmAtomicJsonFile -Path $path -Value $State -Depth 10 -Validate $validator -FaultPoint $FaultPoint
     $path
 }
 
@@ -209,18 +272,7 @@ function Read-VllmSm19dState {
     $path = Join-Path $root $script:VllmSm19dStateFile
     if (-not [IO.File]::Exists($path)) { throw "SM-19D acceptance state does not exist: $path" }
     try { $state = [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch { throw 'SM-19D acceptance state is invalid JSON.' }
-    if ([int]$state.schema_version -ne 1 -or -not ([string]$state.component).Equals('vllm-windows-native-sm19d-acceptance',[StringComparison]::Ordinal)) {
-        throw 'SM-19D acceptance state schema/component mismatch.'
-    }
-    $identity = Get-VllmSm19dAcceptanceIdentity -AcceptanceId ([string]$state.acceptance_id)
-    if (-not ([string]$state.repository).Equals($script:VllmSm19dRepositorySlug,[StringComparison]::Ordinal) -or
-        -not ([string]$state.release).Equals($identity.release,[StringComparison]::Ordinal) -or
-        -not ([string]$state.tag).Equals($identity.tag,[StringComparison]::Ordinal) -or
-        -not ([string]$state.principal).Equals($script:VllmSm19dPrincipal,[StringComparison]::Ordinal) -or
-        [string]$state.project_commit -notmatch '^[0-9a-f]{40}$' -or
-        [string]$state.tag_object -notmatch '^[0-9a-f]{40}$') {
-        throw 'SM-19D acceptance state identity mismatch.'
-    }
+    $null=Assert-VllmSm19dStateObject -State $state
     $state
 }
 
@@ -308,7 +360,38 @@ function Assert-VllmSm19dRemoteTagExact {
     }
 }
 
+function Get-VllmSm19dCanonicalPushUrl {
+    param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$RepositorySlug)
+    if(-not$RepositorySlug.Equals($script:VllmSm19dRepositorySlug,[StringComparison]::Ordinal)){
+        throw "SM-19D push repository slug mismatch: $RepositorySlug"
+    }
+    $canonical='https://github.com/'+$RepositorySlug+'.git'
+    $effective=(Invoke-Git -Repository $Repository -Arguments @('ls-remote','--get-url',$canonical) -Capture).Trim()
+    if(-not$effective.Equals($canonical,[StringComparison]::Ordinal)){
+        throw "SM-19D canonical push URL is rewritten: expected $canonical, got $effective"
+    }
+
+    $oldErrorActionPreference=$ErrorActionPreference
+    try{
+        $ErrorActionPreference='Continue'
+        $rewriteOutput=@(& git -C $Repository -c core.longpaths=true config --get-regexp '^url[.].*[.]pushinsteadof$' 2>&1)
+        $rewriteExit=$LASTEXITCODE
+    }finally{
+        $ErrorActionPreference=$oldErrorActionPreference
+    }
+    if($rewriteExit-ne0-and$rewriteExit-ne1){throw "Unable to inspect git pushInsteadOf configuration (exit $rewriteExit)." }
+    if($rewriteExit-eq0-and@($rewriteOutput|Where-Object{-not[string]::IsNullOrWhiteSpace([string]$_)}).Count-ne0){
+        throw 'SM-19D refuses canonical tag push while any url.*.pushInsteadOf rewrite is configured.'
+    }
+    $canonical
+}
+
 function Push-VllmSm19dAcceptanceTag {
-    param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$Tag)
-    Invoke-Git -Repository $Repository -Arguments @('push','origin',('refs/tags/' + $Tag))
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$RepositorySlug,
+        [Parameter(Mandatory)][string]$Tag
+    )
+    $canonical=Get-VllmSm19dCanonicalPushUrl -Repository $Repository -RepositorySlug $RepositorySlug
+    Invoke-Git -Repository $Repository -Arguments @('push',$canonical,('refs/tags/'+$Tag+':refs/tags/'+$Tag))
 }

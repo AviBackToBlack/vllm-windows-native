@@ -291,15 +291,15 @@ Recovery authority is the exact ownership marker plus draft state. Reset therefo
 
 SM-19D is a trusted operator ceremony, not PR CI. Run it only from a clean reviewed main checkout whose HEAD still equals remote main. The repository must already have immutable releases enabled. The acceptance workspace must be outside the repository.
 
-Choose a unique one-shot acceptance id. Its tag lives below acceptance/sm19d/ and must never be reused. Prepare creates four clearly non-production synthetic assets, an ephemeral Ed25519 signing key, an annotated SSH-signed local tag, and a state file. The tag is verified against the generated acceptance-only trust root, then the private key is deleted before any remote mutation.
+Choose a unique one-shot acceptance id. Its tag lives below acceptance/sm19d/ and must never be reused. Prepare rejects non-lowercase or git-ref-invalid ids, creates four clearly non-production synthetic assets, an ephemeral Ed25519 signing key, an annotated SSH-signed local tag, and an atomically replaced state file. The tag is verified against the generated acceptance-only trust root, then the private key is deleted before any remote mutation. If a previous process died during preparation, the next harness invocation first removes any residual safe regular private-key file before doing anything else.
 
     .\release-acceptance.ps1 -Mode Prepare -AcceptanceId 20260925-bb4231f021f2-01 -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
 
-Exercise the real draft transaction before the irreversible boundary. This pushes the exact one-shot tag, stages all four assets, repeats StageDraft to prove retry idempotence, then resets the exact marker-owned draft and proves the release is absent. The remote tag remains as the identity that will be published.
+Exercise the real draft transaction before the irreversible boundary. The tag push is bound to the canonical https://github.com/AviBackToBlack/vllm-windows-native.git URL rather than the checkout origin and refuses git URL rewriting. It then stages all four assets, repeats StageDraft to prove retry idempotence, resets the exact marker-owned draft, and proves the release is absent. The remote tag remains as the identity that will be published.
 
     .\release-acceptance.ps1 -Mode ExerciseDraft -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
 
-Publish is a separate high-impact ShouldProcess action and refuses to run until the draft round trip completed. It recreates the exact draft, publishes it as prerelease/latest=false, requires immutable=true, and verifies the GitHub release attestation plus every local asset with the same release-verification primitives used by production.
+Publish is a separate high-impact ShouldProcess action and refuses to run until the trusted local acceptance state records the completed draft round trip. State updates are atomic and preserve the previous valid record if publication of a replacement state file fails before the rename boundary. The state file remains inside the trusted operator workspace; it is not a cryptographic defense against a same-rights process that can rewrite that workspace. Publish recreates the exact draft, publishes it as prerelease/latest=false, requires immutable=true, and verifies the GitHub release attestation plus every local asset with the same release-verification primitives used by production.
 
     .\release-acceptance.ps1 -Mode Publish -Workspace C:\AI\vLLM-build\acceptance\sm19d-20260925-bb4231f021f2-01
 

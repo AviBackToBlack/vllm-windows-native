@@ -49,6 +49,10 @@ $repoPrefix=$repository.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::Alt
 if($workspaceFull.Equals($repository,[StringComparison]::OrdinalIgnoreCase)-or$workspaceFull.StartsWith($repoPrefix,[StringComparison]::OrdinalIgnoreCase)){
     throw 'SM-19D acceptance workspace must be outside the project repository.'
 }
+if([IO.Directory]::Exists($workspaceFull)){
+    $null=Clear-VllmSm19dResidualPrivateKey -Workspace $workspaceFull
+}
+
 
 switch($Mode){
     'Prepare' {
@@ -136,7 +140,7 @@ switch($Mode){
         if(-not$PSCmdlet.ShouldProcess($target,'Push exact acceptance tag, stage twice, then reset exact owned draft')){return}
 
         if($null-eq$remoteTag){
-            Push-VllmSm19dAcceptanceTag -Repository $repository -Tag ([string]$state.tag)
+            Push-VllmSm19dAcceptanceTag -Repository $repository -RepositorySlug $script:VllmSm19dRepositorySlug -Tag ([string]$state.tag)
         }
         Assert-VllmSm19dRemoteTagExact -RepositorySlug $script:VllmSm19dRepositorySlug -Tag ([string]$state.tag) -ExpectedTagObject ([string]$state.tag_object) -GhExecutable $GhExecutable
 
