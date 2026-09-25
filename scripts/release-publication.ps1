@@ -6,6 +6,7 @@ $script:VllmResetPresenceConfirmDelayMilliseconds = 1000
 # GitHub release-list state is eventually consistent immediately after create/edit/delete mutations.
 $script:VllmReleaseReadAttempts = 12
 $script:VllmReleaseReadDelayMilliseconds = 2000
+$script:VllmReleaseAbsentConfirmReads = 2
 
 function Assert-VllmPublicationToken {
     param([Parameter(Mandatory)][string]$Value,[Parameter(Mandatory)][string]$Label)
@@ -198,10 +199,16 @@ function Assert-VllmGitHubReleaseAbsentConvergence {
     $repositorySlugValue=$RepositorySlug
     $tagValue=$Tag
     $ghExecutableValue=$GhExecutable
+    $consecutiveAbsent=0
     for($attempt=1;$attempt-le$script:VllmReleaseReadAttempts;$attempt++){
         $candidate=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $repositorySlugValue -Tag $tagValue -GhExecutable $ghExecutableValue
-        if($null-eq$candidate){return $true}
-        if($attempt-ge$script:VllmReleaseReadAttempts){throw "GitHub release for tag '$tagValue' was still visible after $attempt attempts."}
+        if($null-eq$candidate){
+            $consecutiveAbsent++
+            if($consecutiveAbsent-ge$script:VllmReleaseAbsentConfirmReads){return $true}
+        }else{
+            $consecutiveAbsent=0
+        }
+        if($attempt-ge$script:VllmReleaseReadAttempts){throw "GitHub release for tag '$tagValue' did not reach $($script:VllmReleaseAbsentConfirmReads) consecutive absent reads after $attempt attempts."}
         if($script:VllmReleaseReadDelayMilliseconds-gt0){Start-Sleep -Milliseconds $script:VllmReleaseReadDelayMilliseconds}
     }
     $true
@@ -224,14 +231,14 @@ function Assert-VllmReleaseOwnership {
 
     $true
 }
-function Assert-VllmRemoteReleaseAssets {
+function Get-VllmRemoteReleaseAssetStatus {
     param(
         [Parameter(Mandatory)]$ReleaseObject,
-        [Parameter(Mandatory)][object[]]$AssetPlan,
-        [switch]$AllowMissing
+        [Parameter(Mandatory)][object[]]$AssetPlan
     )
     $remote=@($ReleaseObject.assets)
     $seen=@{}
+    $pending=New-Object System.Collections.Generic.List[string]
     foreach($asset in $remote){
         $name=[string]$asset.name
         $expected=@($AssetPlan|Where-Object{([string]$_.name).Equals($name,[StringComparison]::Ordinal)})
@@ -239,15 +246,36 @@ function Assert-VllmRemoteReleaseAssets {
         if($seen.ContainsKey($name)){throw "GitHub release contains a duplicate asset: $name"}
         $seen[$name]=$true
         $want=$expected[0]
-        if(-not([string]$asset.state).Equals('uploaded',[StringComparison]::Ordinal)){throw "GitHub release asset is not fully uploaded: $name"}
+        $state=[string]$asset.state
+        if(-not$state.Equals('uploaded',[StringComparison]::Ordinal)){
+            if($state.Equals('starter',[StringComparison]::Ordinal)){
+                $pending.Add($name)
+                continue
+            }
+            throw "GitHub release asset has unexpected state '$state': $name"
+        }
         if([int64]$asset.size-ne[int64]$want.size){throw "GitHub release asset size mismatch: $name"}
         $digest=[string]$asset.digest
         $expectedDigest='sha256:'+([string]$want.sha256).ToLowerInvariant()
         if(-not$digest.Equals($expectedDigest,[StringComparison]::OrdinalIgnoreCase)){throw "GitHub release asset digest mismatch: $name"}
     }
     $missing=@($AssetPlan|Where-Object{-not$seen.ContainsKey([string]$_.name)}|ForEach-Object{[string]$_.name})
-    if(-not$AllowMissing-and$missing.Count-ne0){throw 'GitHub release asset set is incomplete.'}
-    $missing
+    [pscustomobject][ordered]@{
+        missing=[string[]]$missing
+        pending=[string[]]@($pending)
+    }
+}
+
+function Assert-VllmRemoteReleaseAssets {
+    param(
+        [Parameter(Mandatory)]$ReleaseObject,
+        [Parameter(Mandatory)][object[]]$AssetPlan,
+        [switch]$AllowMissing
+    )
+    $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $ReleaseObject -AssetPlan $AssetPlan
+    if(@($status.pending).Count-ne0){throw "GitHub release asset is not fully uploaded: $($status.pending[0])"}
+    if(-not$AllowMissing-and@($status.missing).Count-ne0){throw 'GitHub release asset set is incomplete.'}
+    [string[]]@($status.missing)
 }
 
 function Assert-VllmPublicationRemotePrerequisites {
@@ -296,8 +324,19 @@ function Invoke-VllmStageGitHubRelease {
     }
     $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
     if($remote.draft-ne$true){
-        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan
         if($remote.immutable-ne$true){throw 'Published exact-match release is not immutable.'}
+        $stagePublishedValidate={
+            param($candidate)
+            $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
+            $null=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+            $true
+        }
+        $stagePublishedReady={
+            param($candidate)
+            $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+            ($candidate.draft-ne$true)-and($candidate.immutable-eq$true)-and(@($status.missing).Count-eq0)-and(@($status.pending).Count-eq0)
+        }
+        $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $stagePublishedValidate -Ready $stagePublishedReady
         return [pscustomobject][ordered]@{
             schema_version=1;component='vllm-windows-native-release-stage';state='published'
             release_id=[int64]$remote.id;url=[string]$remote.html_url;asset_count=@($remote.assets).Count
@@ -305,16 +344,41 @@ function Invoke-VllmStageGitHubRelease {
     }
     if($remote.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state.'}
     if($remote.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
-    $missing=@(Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan -AllowMissing)
+    $preUploadValidate={
+        param($candidate)
+        $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
+        if($candidate.draft-ne$true){throw 'GitHub release left draft state before asset upload.'}
+        if($candidate.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state before asset upload.'}
+        if($candidate.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
+        $null=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+        $true
+    }
+    $preUploadReady={
+        param($candidate)
+        $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+        @($status.pending).Count-eq0
+    }
+    $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $preUploadValidate -Ready $preUploadReady
+    $assetStatus=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $remote -AssetPlan $AssetPlan
+    $missing=@($assetStatus.missing)
     foreach($name in $missing){
         $asset=@($AssetPlan|Where-Object{([string]$_.name).Equals($name,[StringComparison]::Ordinal)})[0]
         Assert-VllmReleasePublicationAssetStable -Asset $asset
         $null=Invoke-VllmPublicationGhCommand -Arguments @('release','upload',$Tag,[string]$asset.path,'--repo',$RepositorySlug) -FailureLabel "Unable to upload GitHub release asset $name" -Executable $GhExecutable
-        $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
-        $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
-        if($remote.draft-ne$true){throw 'GitHub release left draft state during asset upload.'}
-        if($remote.prerelease-ne$true){throw 'GitHub release left prerelease state during asset upload.'}
-        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan -AllowMissing
+        $uploadValidate={
+            param($candidate)
+            $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
+            if($candidate.draft-ne$true){throw 'GitHub release left draft state during asset upload.'}
+            if($candidate.prerelease-ne$true){throw 'GitHub release left prerelease state during asset upload.'}
+            $null=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+            $true
+        }
+        $uploadReady={
+            param($candidate)
+            $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+            (@($status.missing) -notcontains $name)-and(@($status.pending) -notcontains $name)
+        }
+        $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $uploadValidate -Ready $uploadReady
     }
     $stageValidate={
         param($candidate)
@@ -322,13 +386,13 @@ function Invoke-VllmStageGitHubRelease {
         if($candidate.draft-ne$true){throw 'GitHub release left draft state before final stage verification.'}
         if($candidate.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state before final stage verification.'}
         if($candidate.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
-        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan -AllowMissing
+        $null=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
         $true
     }
     $stageReady={
         param($candidate)
-        $missingAssets=@(Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan -AllowMissing)
-        $missingAssets.Count-eq0
+        $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+        (@($status.missing).Count-eq0)-and(@($status.pending).Count-eq0)
     }
     $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $stageValidate -Ready $stageReady
     [pscustomobject][ordered]@{
@@ -350,25 +414,46 @@ function Invoke-VllmPublishGitHubRelease {
     $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
     if($null-eq$remote){throw 'No GitHub release draft exists for publication.'}
     $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
-    $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan
     if($remote.draft-ne$true){
         if($remote.immutable-ne$true){throw 'Published exact-match release is not immutable.'}
+        $publishExistingValidate={
+            param($candidate)
+            $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
+            $null=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+            $true
+        }
+        $publishExistingReady={
+            param($candidate)
+            $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+            ($candidate.draft-ne$true)-and($candidate.immutable-eq$true)-and(@($status.missing).Count-eq0)-and(@($status.pending).Count-eq0)
+        }
+        $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $publishExistingValidate -Ready $publishExistingReady
         return [pscustomobject][ordered]@{
             schema_version=1;component='vllm-windows-native-release-publication';state='published'
             release_id=[int64]$remote.id;url=[string]$remote.html_url;asset_count=@($remote.assets).Count
         }
     }
     if($remote.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
+    $publishDraftValidate={
+        param($candidate)
+        $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
+        if($candidate.draft-ne$true){throw 'GitHub release left draft state before publication.'}
+        if($candidate.immutable-eq$true){throw 'Draft release unexpectedly reports immutable state before publication.'}
+        if($candidate.prerelease-ne$true){throw 'Owned draft must remain a prerelease before publication.'}
+        $null=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+        $true
+    }
+    $publishDraftReady={
+        param($candidate)
+        $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+        (@($status.missing).Count-eq0)-and(@($status.pending).Count-eq0)
+    }
+    $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $publishDraftValidate -Ready $publishDraftReady
     foreach($asset in $AssetPlan){Assert-VllmReleasePublicationAssetStable -Asset $asset}
 
     # Re-prove GitHub state immediately before the irreversible draft -> published boundary.
     Assert-VllmPublicationRemotePrerequisites -RepositorySlug $RepositorySlug -ProjectCommit $ProjectCommit -Tag $Tag -TagObject $TagObject -GhExecutable $GhExecutable
-    $remote=Get-VllmGitHubReleaseByTagAnyState -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable
-    if($null-eq$remote){throw 'GitHub release draft disappeared before publication.'}
-    $null=Assert-VllmReleaseOwnership -ReleaseObject $remote -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
-    if($remote.draft-ne$true){throw 'GitHub release left draft state before publication.'}
-    if($remote.prerelease-ne$true){throw 'GitHub release left prerelease state before publication.'}
-    $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $remote -AssetPlan $AssetPlan
+    $remote=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $publishDraftValidate -Ready $publishDraftReady
 
     $null=Invoke-VllmPublicationGhCommand -Arguments @(
         'release','edit',$Tag,'--repo',$RepositorySlug,'--draft=false','--prerelease','--latest=false','--verify-tag'
@@ -377,12 +462,13 @@ function Invoke-VllmPublishGitHubRelease {
         param($candidate)
         $null=Assert-VllmReleaseOwnership -ReleaseObject $candidate -RepositorySlug $RepositorySlug -Release $Release -Tag $Tag -ProjectCommit $ProjectCommit
         if($candidate.prerelease-ne$true){throw 'Initial GitHub publication did not remain a prerelease.'}
-        $null=Assert-VllmRemoteReleaseAssets -ReleaseObject $candidate -AssetPlan $AssetPlan
+        $null=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
         $true
     }
     $publishedReady={
         param($candidate)
-        ($candidate.draft-ne$true)-and($candidate.immutable-eq$true)
+        $status=Get-VllmRemoteReleaseAssetStatus -ReleaseObject $candidate -AssetPlan $AssetPlan
+        ($candidate.draft-ne$true)-and($candidate.immutable-eq$true)-and(@($status.missing).Count-eq0)-and(@($status.pending).Count-eq0)
     }
     $published=Invoke-VllmGitHubReleaseReadConvergence -RepositorySlug $RepositorySlug -Tag $Tag -GhExecutable $GhExecutable -Validate $publishedValidate -Ready $publishedReady
     [pscustomobject][ordered]@{
