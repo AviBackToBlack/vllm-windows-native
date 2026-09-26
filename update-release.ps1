@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)][string]$Tag,
     [Parameter(Mandatory)][string]$AllowedSignersPath,
     [Parameter(Mandatory)][string]$CacheRoot,
-    [string]$InstallationRoot = 'D:\AI\vLLM',
+    [string]$InstallationRoot = '',
     [switch]$Json,
     [string]$GhExecutable = 'gh'
 )
@@ -24,7 +24,8 @@ if($env:OS-ne'Windows_NT'-or-not[Environment]::Is64BitOperatingSystem){
 }
 
 $acquisition=Invoke-VllmReleaseAcquisition -RepositorySlug $Repository -Tag $Tag -AllowedSignersPath $AllowedSignersPath -CacheRoot $CacheRoot -GhExecutable $GhExecutable
-$params=[ordered]@{Acquisition=$acquisition;InstallationRoot=$InstallationRoot}
+$params=[ordered]@{Acquisition=$acquisition}
+if(-not[string]::IsNullOrWhiteSpace($InstallationRoot)){$params.InstallationRoot=$InstallationRoot}
 if($WhatIfPreference){$params.WhatIf=$true}
 if($PSBoundParameters.ContainsKey('Confirm')){$params.Confirm=[bool]$PSBoundParameters['Confirm']}
 if($Json){$params.Json=$true}
