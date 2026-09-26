@@ -350,7 +350,7 @@ try{
     $originalReceiptRaw=Get-Content -LiteralPath $fixture.ReceiptPath -Raw
     $receipt=$originalReceiptRaw|ConvertFrom-Json
     $receipt.release.release_manifest_sha256='F'*64
-    Write-VllmReleaseCanonicalJson -Value $receipt -Path $fixture.ReceiptPath
+    [IO.File]::WriteAllText($fixture.ReceiptPath,($receipt|ConvertTo-Json -Depth 16),[Text.UTF8Encoding]::new($false))
     Assert-Fails {
         Invoke-VllmAcquisitionInstallHandoff -Acquisition $fixture.Acquisition -LifecycleInvoker {throw 'should not run'}
     } 'release manifest SHA-256 does not match the verified acquisition result'
@@ -382,7 +382,7 @@ try{
     $receipt=Get-Content -LiteralPath $fixture.ReceiptPath -Raw|ConvertFrom-Json
     $receipt.artifacts.bundle.size_bytes=[int64]$maliciousId.Size
     $receipt.artifacts.bundle.sha256=[string]$maliciousId.Sha256
-    Write-VllmReleaseCanonicalJson -Value $receipt -Path $fixture.ReceiptPath
+    [IO.File]::WriteAllText($fixture.ReceiptPath,($receipt|ConvertTo-Json -Depth 16),[Text.UTF8Encoding]::new($false))
     $fixture.Acquisition.bundle_sha256=[string]$maliciousId.Sha256
     Assert-Fails {
         Invoke-VllmAcquisitionInstallHandoff -Acquisition $fixture.Acquisition -LifecycleInvoker {throw 'should not run'}
