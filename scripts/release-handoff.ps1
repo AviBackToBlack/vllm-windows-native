@@ -315,7 +315,7 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
         $source=$null;$parentGuard=$null;$generation=$null;$directories=$null;$fileStreams=$null
         return $result
     }catch{
-        if($null-ne$fileStreams){foreach($stream in @($fileStreams)){if($null-ne$stream){$stream.Dispose()}}}
+        if($null-ne$fileStreams){foreach($stream in $fileStreams.ToArray()){if($null-ne$stream){$stream.Dispose()}}}
         if($null-ne$directories){foreach($record in @($directories.Values)){if($null-ne$record.Handle){$record.Handle.Dispose()}}}
         if($null-ne$generation){
             try{Invoke-VllmReleaseOwnedTempCleanup -Path $generation.Path -ExpectedPhysical (Get-VllmCanonicalExistingPath -Path $generation.Path -Format Dos) -ExpectedIdentity $generation.Identity -ExistingRootGuard $generation.Handle}catch{}
@@ -330,7 +330,7 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
 function Exit-VllmAcquisitionHandoffMaterialization {
     param([AllowNull()]$Materialization)
     if($null-eq$Materialization){return}
-    foreach($stream in @($Materialization.FileStreams)){if($null-ne$stream){$stream.Dispose()}}
+    foreach($stream in $Materialization.FileStreams.ToArray()){if($null-ne$stream){$stream.Dispose()}}
     foreach($record in @($Materialization.Directories.Values)){if($null-ne$record.Handle){$record.Handle.Dispose()}}
     $generation=$Materialization.Generation
     try{
