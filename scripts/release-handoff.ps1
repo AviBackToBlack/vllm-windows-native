@@ -267,8 +267,12 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
         $source=Enter-VllmAcquisitionHandoffSource -Acquisition $Acquisition
         $contract=Get-VllmAcquisitionBundleContract -Source $source
         $handoffParent=Assert-VllmAcquisitionDirectory -Path (Join-Path ([string]$source.CacheRoot) '.handoff') -Label 'Acquisition handoff root' -Create
+        $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $handoffParent -Format Guid)
         $parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($handoffParent)
+        $parentEntry=Get-VllmPathEntryInfo -Path $handoffParent
+        if(-not$parentEntry.Exists-or-not$parentEntry.IsDirectory-or$parentEntry.IsReparsePoint){throw 'Acquisition handoff root changed type or became a reparse point while opening its guard.'}
         $parentGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($parentGuard))
+        if(-not$parentGuid.Equals($parentExpectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw 'Acquisition handoff root handle resolves outside the validated cache-local path.'}
         $generation=Invoke-VllmReleasePinnedDirectoryCreation -ParentGuard $parentGuard -ParentPath $handoffParent -ParentGuid $parentGuid -Leaf ([guid]::NewGuid().ToString('N')) -Label 'Acquisition handoff generation'
         $distribution=Invoke-VllmReleasePinnedDirectoryCreation -ParentGuard $generation.Handle -ParentPath $generation.Path -ParentGuid $generation.Guid -Leaf 'distribution' -Label 'Acquisition handoff distribution root'
         $directories['']=$distribution
