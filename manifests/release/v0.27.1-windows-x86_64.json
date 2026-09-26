@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "component": "runtime-release",
-  "release": "v0.27.1-native-windows-single-gpu-sm120",
+  "release": "v0.27.1-native-windows-single-gpu-sm120-nvfp4",
   "platform": "windows-x86_64",
   "self_path": "manifests/release/v0.27.1-windows-x86_64.json",
   "upstream": {
@@ -10,15 +10,15 @@
     "commit": "6e448d0ea9bf3d88d898b65449ca6dc2aec170ac"
   },
   "windows_patchset": {
-    "implementation_commit": "9f18048a2052072166ccc3b0ffef364e72bb4d11",
-    "tree": "115fa3e10d4b5a45c3e647cb343680a1fc743d18",
-    "patch_sha256": "08416EBB43632A0AC485839644A98E875A4AD9EBC49BE193DA25AB804AE6A272"
+    "implementation_commit": "947573f52816f0ecea62248c06ccf5ea4f196b5f",
+    "tree": "4610a5c5d6f255cc3670ddd645de9a2e5b2389e2",
+    "patch_sha256": "121E008ED126CB6AC78FE3E585610E7F52BA1510C36454011EB984D5A0CD25A4"
   },
   "wheel": {
-    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl",
-    "version": "0.27.2.dev0+g6e448d0ea.d20260909",
-    "size_bytes": 176769951,
-    "sha256": "66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6"
+    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260925-cp313-cp313-win_amd64.whl",
+    "version": "0.27.2.dev0+g6e448d0ea.d20260925",
+    "size_bytes": 176769128,
+    "sha256": "BD4A6E1D919A53FA98D27D221AD722507313025E6EF698AC32C126FCE5334A5E"
   },
   "orchestration": {
     "python_manifest": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
@@ -157,13 +157,13 @@
     },
     {
       "path": "manifests/bootstrap/venv-v0.27.1-windows-x86_64.json",
-      "size_bytes": 1283,
-      "sha256": "A9ABA6BA27A573E8D2D4DED2C71AE33E2D55D7CB450ADB0788C2F5F6C04BC69C"
+      "size_bytes": 1290,
+      "sha256": "52D7C1685687312650438B6C42BE13F3EACB0E5118A7A4942345762B35A0F849"
     },
     {
       "path": "manifests/runtime/dependencies-v0.27.1-windows-x86_64.json",
-      "size_bytes": 6237,
-      "sha256": "6B0C9599FA2C2F971A0AA272F4E9F8D468D130105C97F01C421165CC35B9FE5F"
+      "size_bytes": 6244,
+      "sha256": "EE83AF60B89BD7599DAB8CB6AFA9AC10AD90518EBBE5AF583833613A29009E70"
     },
     {
       "path": "manifests/runtime/vllm-runtime-packages-v0.27.1-windows-x86_64.json",
@@ -172,8 +172,8 @@
     },
     {
       "path": "manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json",
-      "size_bytes": 3413,
-      "sha256": "BF51030C91808A83A9BFB77ED5920A8D936A76612A31BC762E73BE5CA5080EE6"
+      "size_bytes": 3419,
+      "sha256": "6B5D1C91849A1239B39E44E9F04BD4334BF1223464DE8AA6A2DCA41E0F17E106"
     },
     {
       "path": "requirements/runtime-v0.27.1.in",

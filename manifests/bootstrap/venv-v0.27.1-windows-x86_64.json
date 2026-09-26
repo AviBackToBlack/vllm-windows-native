@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "component": "runtime-venv",
-  "milestone": "v0.27.1-native-windows-single-gpu-sm120",
+  "milestone": "v0.27.1-native-windows-single-gpu-sm120-nvfp4",
   "platform": "windows-x86_64",
   "python": {
     "version": "3.13.15",

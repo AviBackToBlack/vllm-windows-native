@@ -63,7 +63,7 @@ The exact machine-readable pins live in [`manifests/runtime/v0.27.1-rtx5090-sm12
 
 ```powershell
 .\install.ps1 `
-  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl'
+  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260925-cp313-cp313-win_amd64.whl'
 ```
 
 With `-InstallationRoot` omitted, the installer uses `D:\AI\vLLM`; `-ModelsRoot` defaults to `<InstallRoot>\models`. Before any runtime mutation, the installer verifies the canonical release manifest, every owned distribution-file size/SHA-256, and the exact project-wheel identity. It materializes a self-contained copy of the runtime distribution under the installation root, then resumes the proven CPython -> uv -> unseeded venv -> 28-package predecessor -> 160-distribution final-runtime chain from the highest independently verified receipt. A completed installation is committed atomically as `<InstallRoot>\state\install-state.json`, binding release ownership, upstream/patchset identity, wheel identity, Python/uv provenance, runtime receipts, `InstallRoot`, and `ModelsRoot`.
@@ -137,10 +137,10 @@ A receipt-backed dependency-ready environment is idempotent without `-Force`; un
 
 ```powershell
 .\bootstrap-vllm.ps1 `
-  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl'
+  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260925-cp313-cp313-win_amd64.whl'
 ```
 
-`bootstrap-vllm.ps1` requires the exact receipt-backed 28-package predecessor state from step 6 and a caller-supplied project wheel. Before mutation it verifies the committed 159-package runtime lock and accepted package map plus the wheel filename, size, SHA-256, tags, version, and nine expected native extensions. The canonical accepted wheel SHA-256 is `66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6`.
+`bootstrap-vllm.ps1` requires the exact receipt-backed 28-package predecessor state from step 6 and a caller-supplied project wheel. Before mutation it verifies the committed 159-package runtime lock and accepted package map plus the wheel filename, size, SHA-256, tags, version, and nine expected native extensions. The canonical accepted wheel SHA-256 is `BD4A6E1D919A53FA98D27D221AD722507313025E6EF698AC32C126FCE5334A5E`.
 
 The final runtime is assembled in relocatable staging: uv synchronizes the 159 hash-locked dependency distributions, the verified project wheel is installed with `--no-deps --no-index`, and the staged environment must contain exactly 160 distributions and pass `uv pip check` before a short activation swap. A durable transaction receipt makes interrupted materialization recoverable; successful reruns are idempotent and do not rewrite the final receipt. `-Force` performs full replacement, while `-Offline` requires every dependency artifact to already exist in the contained uv cache.
 
@@ -196,7 +196,7 @@ Prepare the four deterministic offline assets from the accepted caller-supplied 
 
 ```powershell
 .\release.ps1 -Mode Prepare `
-  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl' `
+  -WheelPath 'C:\path\to\vllm-0.27.2.dev0+g6e448d0ea.d20260925-cp313-cp313-win_amd64.whl' `
   -ArtifactsDirectory '.\artifacts\release'
 ```
 
@@ -227,7 +227,7 @@ A consumer must obtain and pin the allowed-signers file independently of the rel
 ```powershell
 .\release.ps1 -Mode VerifySignedTag `
   -ProjectCommit '<expected-project-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
 
@@ -253,7 +253,7 @@ Stage or resume the owned draft prerelease and upload only missing canonical ass
 ```powershell
 .\release.ps1 -Mode StageDraft `
   -ProjectCommit '<reviewed-main-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -ArtifactsDirectory 'C:\trusted\vllm-release' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
@@ -265,7 +265,7 @@ Publishing is a separate explicit operator action:
 ```powershell
 .\release.ps1 -Mode PublishDraft `
   -ProjectCommit '<reviewed-main-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -ArtifactsDirectory 'C:\trusted\vllm-release' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
@@ -279,7 +279,7 @@ A failed owned draft can be removed only through the separate recovery operation
 ```powershell
 .\release.ps1 -Mode ResetDraft `
   -ProjectCommit '<reviewed-main-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
 

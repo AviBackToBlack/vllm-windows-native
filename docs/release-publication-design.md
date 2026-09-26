@@ -12,7 +12,7 @@ SM-18 completed safe install/update/uninstall lifecycle semantics. The remaining
 
 - Public PR CI remains source-only. Never execute untrusted PR code on the trusted Windows/GPU build environment.
 - Publication consumes an already accepted wheel; it must not silently rebuild or substitute a merely equivalent-looking artifact.
-- The canonical publishable wheel identity is the one referenced by the accepted runtime/release contracts (`66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6` at the current v0.27.1 milestone). The older `manifests/runtime/v0.27.1-rtx5090-sm120.json` build artifact (`EA763A...`) remains historical build evidence, not publication authority.
+- The canonical publishable wheel identity is the Qwen-capable RC referenced by the accepted runtime/release contracts (`BD4A6E1D919A53FA98D27D221AD722507313025E6EF698AC32C126FCE5334A5E` at the current v0.27.1 milestone). The former `66201EF...` publication wheel and the earlier `EA763A...` build artifact remain historical evidence only; neither is current publication authority.
 - Release identity/tag, project commit, release manifest digest, wheel filename/size/SHA-256, distribution payload identities, and provenance must form one explicit chain.
 - Publication must fail closed on dirty worktrees, tag/commit mismatch, manifest drift, artifact mismatch, unexpected bundle members, or pre-existing mutable/conflicting release state.
 - No secrets or signing material are committed to the repository.
@@ -47,7 +47,7 @@ A consumer must be able to start from a release/tag plus downloaded assets and i
 
 ### Release tag and identity
 
-Project releases use `release/<release-manifest release>` tags so they cannot collide with upstream vLLM tags that may be fetched into local clones during source reconstruction. For the current milestone that means `release/v0.27.1-native-windows-single-gpu-sm120`. Changed accepted bytes require a new release identity/tag; moving a published release tag is forbidden.
+Project releases use `release/<release-manifest release>` tags so they cannot collide with upstream vLLM tags that may be fetched into local clones during source reconstruction. For the current milestone that means `release/v0.27.1-native-windows-single-gpu-sm120-nvfp4`. The earlier `release/v0.27.1-native-windows-single-gpu-sm120` identity is the pre-NVFP4 candidate and is not reused for the rebound Qwen-capable bytes. Changed accepted bytes require a new release identity/tag; moving a published release tag is forbidden.
 
 The first public binary release is published as a GitHub prerelease. GitHub immutable-release semantics lock the tag and asset bytes but explicitly still permit changing prerelease/latest metadata. After an independent consumer acceptance downloads the published immutable assets, verifies the release/tag/attestation chain, and completes a clean install, the same immutable release may therefore be promoted by clearing prerelease status and marking it latest. Promotion never changes the tag or asset bytes.
 

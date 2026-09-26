@@ -40,8 +40,8 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('vllm-sm19c-'+[guid]::NewGuid().ToSt
 [IO.Directory]::CreateDirectory($root)|Out-Null
 try{
     $repoSlug='AviBackToBlack/vllm-windows-native'
-    $releaseId='v0.27.1-native-windows-single-gpu-sm120'
-    $tag='release/v0.27.1-native-windows-single-gpu-sm120'
+    $releaseId='v0.27.1-native-windows-single-gpu-sm120-nvfp4'
+    $tag='release/v0.27.1-native-windows-single-gpu-sm120-nvfp4'
     $commit='1111111111111111111111111111111111111111'
     $tagObject='2222222222222222222222222222222222222222'
     $script:FakeImmutableMode='404'
