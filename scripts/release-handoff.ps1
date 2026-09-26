@@ -40,13 +40,22 @@ function Enter-VllmAcquisitionHandoffSource {
     if(-not(Test-VllmAcquisitionHandoffPathEqual -A ([string]$Acquisition.receipt_path) -B $receiptPath)){
         throw 'Acquisition handoff receipt path is inconsistent with cache entry.'
     }
+    $rootEntries=Get-VllmReleaseOrdinalStrings -Values @((Get-ChildItem -LiteralPath $cacheEntry -Force)|ForEach-Object{$_.Name})
+    $rootExpected=Get-VllmReleaseOrdinalStrings -Values @('acquisition-receipt.json','artifacts')
+    Assert-VllmReleaseOrdinalSequence -Actual $rootEntries -Expected $rootExpected -Label 'Acquisition handoff cache-entry member set'
     $receipt=Read-VllmAcquisitionReceipt -Path $receiptPath
     foreach($pair in @(
         @([string]$Acquisition.release,[string]$receipt.release.release,'release'),
         @([string]$Acquisition.tag,[string]$receipt.release.tag,'tag'),
-        @([string]$Acquisition.tag_object,[string]$receipt.release.tag_object,'tag object'),
-        @([string]$Acquisition.project_commit,[string]$receipt.release.project_commit,'project commit'),
         @([string]$Acquisition.release_manifest_path,[string]$receipt.release.release_manifest_path,'release manifest path')
+    )){
+        if(-not([string]$pair[0]).Equals([string]$pair[1],[StringComparison]::Ordinal)){
+            throw "Acquisition handoff $($pair[2]) does not match the verified receipt."
+        }
+    }
+    foreach($pair in @(
+        @([string]$Acquisition.tag_object,[string]$receipt.release.tag_object,'tag object'),
+        @([string]$Acquisition.project_commit,[string]$receipt.release.project_commit,'project commit')
     )){
         if(-not([string]$pair[0]).Equals([string]$pair[1],[StringComparison]::OrdinalIgnoreCase)){
             throw "Acquisition handoff $($pair[2]) does not match the verified receipt."
@@ -148,6 +157,10 @@ function Get-VllmAcquisitionBundleContract {
         if([int]$release.schema_version-ne1-or-not([string]$release.component).Equals('runtime-release',[StringComparison]::Ordinal)-or-not([string]$release.platform).Equals('windows-x86_64',[StringComparison]::Ordinal)){
             throw 'Acquisition handoff release manifest schema/component/platform is unsupported.'
         }
+        Assert-VllmReleasePublicProvenance -Upstream $release.upstream -WindowsPatchset $release.windows_patchset
+        if(-not([IO.Path]::GetFileName([string]$release.wheel.filename)).Equals([string]$release.wheel.filename,[StringComparison]::Ordinal)-or-not([string]$release.wheel.filename).EndsWith('.whl',[StringComparison]::Ordinal)){
+            throw 'Acquisition handoff wheel filename must be a simple .whl filename.'
+        }
         if(-not([string]$release.release).Equals([string]$receipt.release.release,[StringComparison]::Ordinal)-or-not('release/'+[string]$release.release).Equals([string]$receipt.release.tag,[StringComparison]::Ordinal)){
             throw 'Acquisition handoff release identity does not match the authenticated receipt.'
         }
@@ -204,7 +217,7 @@ function Get-VllmAcquisitionBundleContract {
 }
 
 function Get-VllmAcquisitionHandoffDirectoryRecord {
-    param([Parameter(Mandatory)][hashtable]$Directories,[Parameter(Mandatory)][string]$DistributionRoot,[Parameter(Mandatory)][string]$RelativeDirectory)
+    param([Parameter(Mandatory)][hashtable]$Directories,[Parameter(Mandatory)][string]$RelativeDirectory)
     $normalized=if([string]::IsNullOrWhiteSpace($RelativeDirectory)){''}else{(Assert-VllmSafeRelativePath -RelativePath $RelativeDirectory -Label 'Acquisition handoff directory').Replace('\','/')}
     if($Directories.ContainsKey($normalized.ToLowerInvariant())){return $Directories[$normalized.ToLowerInvariant()]}
     $segments=@($normalized -split '/')
@@ -245,7 +258,7 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
                 $relative=[string]$member.RelativePath
                 $parentRelative=[IO.Path]::GetDirectoryName($relative.Replace('/','\'))
                 if($null-eq$parentRelative){$parentRelative=''}
-                $parentRecord=Get-VllmAcquisitionHandoffDirectoryRecord -Directories $directories -DistributionRoot $distribution.Path -RelativeDirectory $parentRelative
+                $parentRecord=Get-VllmAcquisitionHandoffDirectoryRecord -Directories $directories -RelativeDirectory $parentRelative
                 $leaf=[IO.Path]::GetFileName($relative)
                 $destination=Join-Path $parentRecord.Path $leaf
                 $entry=$entryMap[$relative]
