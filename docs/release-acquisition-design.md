@@ -171,7 +171,11 @@ The tag string alone is not a cache key. An entry named only after `latest`, rel
 
 Reacquisition of the exact same release may reuse a cache entry only after the complete receipt schema and all local artifact identities are revalidated. A cache hit does not skip local byte verification.
 
-If the requested tag resolves to a different tag object, or any receipt/artifact identity conflicts, acquisition fails closed. It does not repair, replace, or silently adopt the conflicting entry.
+Before accepting or publishing a cache entry for an authenticated request, acquisition also enumerates the existing verified entries below that repository-id and reads only structurally valid `acquisition-receipt.json` candidates. Any other valid receipt that binds the same exact tag string to a different authenticated tag-object SHA is a hard same-tag identity conflict. Unknown, malformed, or unreadable sibling entries are not trusted and cannot satisfy the request; they are preserved rather than silently repaired or deleted.
+
+This repository-scoped tag-conflict scan is required even though the final cache key contains the tag-object SHA: a changed tag object necessarily maps to a different destination path, so destination-key validation alone cannot detect reuse of the same tag name.
+
+If the requested tag resolves to a different tag object than a prior valid receipt for that same tag, or any receipt/artifact identity conflicts with the authenticated request, acquisition fails closed. It does not repair, replace, or silently adopt the conflicting entry.
 
 ## Provenance receipt
 
