@@ -244,6 +244,22 @@ After downloading the four immutable release assets, compose offline verificatio
 
 `VerifyPublished` first performs the SM-19A exact-four local verification. It then verifies the signed tag and requires `gh release verify --format json` to bind the exact repository, annotated tag object, and exactly those four asset names/SHA-256 digests. The signed-tag check separately peels that authenticated tag object to the expected reviewed project commit. Finally it runs `gh release verify-asset` separately for the wheel, distribution ZIP, `release-index.json`, and `SHA256SUMS`. The immutable-release attestation proves release/asset integrity; it is not represented as build provenance for the prebuilt local GPU wheel.
 
+### Acquire a published immutable release by exact tag
+
+SM-20A/B adds a consumer-side network boundary without changing the installer or updater transaction. Acquisition requires an exact release tag and an independently pinned allowed-signers file; there is no implicit latest/channel/semantic-version selection.
+
+```powershell
+.\acquire.ps1 -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers' -CacheRoot 'C:\AI\vLLM-acquisition-cache'
+```
+
+The acquisition client authenticates the canonical GitHub repository identity, fetches only the exact annotated tag into an isolated Git repository, verifies its SSH signature against the out-of-band trust root, derives the matching release manifest from that authenticated commit, requires the immutable exact-four GitHub Release asset set, downloads each expected asset into private staging, and reuses the existing offline release plus GitHub release/per-asset attestation verifiers.
+
+Verified entries are committed atomically below `<CacheRoot>\verified\1361670545\<tag-object-sha>\` with `acquisition-receipt.json`. Cache hits revalidate the receipt and every local artifact byte against the authenticated tag/release contract; partial, poisoned, same-tag/different-object, or contradictory cache state fails closed. Interrupted staging is never accepted as a cache hit.
+
+GitHub CLI transport is isolated from ambient host/config state. An existing `GH_TOKEN` may be supplied as the read credential; otherwise acquisition obtains the current GitHub.com credential with `gh auth token --hostname github.com` before entering the isolated child environment. The credential is never stored in the cache or provenance receipt.
+
+This slice intentionally stops at a verified local release artifact set. Materializing the verified distribution bundle and handing exact local manifest/wheel paths into `install.ps1` / `update.ps1` remains SM-20C.
+
 ### Stage and publish the guarded GitHub Release
 
 SM-19C adds the mutation surface, but it deliberately does not create or sign the release tag and does not enable repository release immutability. Before staging, the repository must already have immutable releases enabled, the reviewed project commit must still be the remote `main` tip, and the canonical annotated SSH-signed release tag must already exist both locally and on GitHub. Run the commands from a clean checkout of `main` at that exact commit with an authenticated `gh` CLI and an independently pinned allowed-signers file.
