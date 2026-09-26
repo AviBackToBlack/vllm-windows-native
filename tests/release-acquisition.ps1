@@ -391,6 +391,7 @@ try{
     } 'receipt is missing'
     Write-Host 'ACQUISITION_PARTIAL_FINAL_CACHE_FAIL_CLOSED_OK'
 
+    $script:DownloadCount=0
     $cache=Join-Path $root 'cache'
     $ambientGitNames=@('GIT_DIR','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES','GIT_SSL_NO_VERIFY','GIT_TEMPLATE_DIR','GIT_ASKPASS','SSH_ASKPASS','GCM_INTERACTIVE','GIT_CONFIG_COUNT','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0')
     $ambientGitSaved=[ordered]@{}
