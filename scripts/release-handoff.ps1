@@ -5,6 +5,7 @@ function Test-VllmAcquisitionHandoffSharingViolation {
     $current=$Exception
     while($null-ne$current){
         if(($current.HResult-band 0xFFFF)-eq32){return $true}
+        if($current-is[ComponentModel.Win32Exception]-and$current.NativeErrorCode-eq32){return $true}
         $current=$current.InnerException
     }
     $false
