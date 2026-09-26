@@ -72,13 +72,32 @@ explicit repository + exact tag + out-of-band allowed_signers
 
 No lower layer may bootstrap an authority required by an earlier layer.
 
+## GitHub CLI isolation and credential source
+
+The GitHub CLI is treated as network transport plus a client-side attestation verifier, not as an ambient trust root. Production acquisition runs every `gh` invocation through one controlled wrapper with a pinned GitHub.com host and sanitized process environment.
+
+The wrapper MUST:
+
+- force `GH_HOST=github.com` and `GH_PROMPT_DISABLED=1`;
+- use an acquisition-owned temporary `GH_CONFIG_DIR` that starts empty, so ambient `hosts.yml`, aliases, extensions, and config cannot redirect or mutate behavior;
+- remove inherited `GH_HOST`, `GH_CONFIG_DIR`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, and other `GH_*` values not explicitly required by the wrapper before starting the child process;
+- pass `--hostname github.com` to `gh api` where supported, in addition to the pinned environment host;
+- pass the exact `--repo AviBackToBlack/vllm-windows-native` identity to release operations;
+- never invoke a GitHub mutation command from acquisition.
+
+The read credential is supplied out of band. V1 accepts an explicit caller `GH_TOKEN`; if it is absent, the wrapper may obtain the token once with `gh auth token --hostname github.com` before entering the isolated environment. Only the token value is copied into the isolated child environment as `GH_TOKEN`; ambient gh configuration is not copied. Failure to obtain a GitHub.com credential is fail-closed.
+
+The credential authenticates read requests but is not release authority: repository id/node-id, the independently pinned signed-tag trust root, exact Git transport, local SHA verification, and GitHub release/per-asset attestation verification remain independent checks. The token is never written to the acquisition receipt, cache, logs, command line, or release artifacts.
+
+`-GhExecutable` exists for deterministic test injection. Production acceptance resolves a trusted local `gh` executable before acquisition; substituting an attacker-controlled executable is outside the same-rights local-process threat boundary already documented for release tooling.
+
 ## Exact repository and tag acquisition
 
 Acquisition uses a fresh isolated Git repository inside the private staging generation. It does not use the caller's checkout, ambient remotes, or cached Git objects as authority.
 
 Before transport it:
 
-1. authenticates the requested repository with `gh api` and requires the pinned slug/id/node-id;
+1. authenticates the requested repository through the isolated GitHub CLI wrapper and requires the pinned slug/id/node-id;
 2. constructs the canonical HTTPS URL from policy rather than remote release metadata;
 3. disables Git system/global configuration and relevant repository/config override environment variables for the isolated fetch;
 4. disables terminal credential prompting;
@@ -196,15 +215,21 @@ verification: offline_release_schema, github_release_attestation_schema,
 
 The receipt contains no secrets, token, private signing material, copy of `allowed_signers`, or mutable URL treated as authority. `verified_utc` is audit metadata only and never participates in identity/idempotence.
 
-## Atomic cache commit and interruption
+## Atomic cache commit, concurrency, and interruption
+
+Network download and cryptographic verification may proceed concurrently for different attempts, but the repository-wide same-tag receipt scan and final cache publication are serialized by a per-repository coordination lock below `<CacheRoot>\verified\<repository-id>`. The lock is acquired before the repository-scoped receipt scan/cache-hit decision and is held through destination validation, atomic rename (if needed), and post-commit revalidation.
+
+This lock scope is intentionally broader than one tag-object destination: two concurrent attempts that authenticated different tag objects for the same tag cannot both pass the scan-to-publish window. After the first publishes, the second observes the prior valid receipt and fails the same-tag/different-object conflict check. The lock is coordination only, not trust or ownership proof, and it never authorizes deletion of unknown state.
 
 For a new entry:
 
-1. all verification completes in private staging;
+1. all network and cryptographic verification completes in private staging;
 2. the receipt is written and validated there;
-3. no verification-required file is modified after final byte proof;
-4. artifact set plus receipt is published to the final key by one same-filesystem atomic directory rename;
-5. the committed entry is reopened and fully revalidated before success is returned.
+3. the per-repository lock is acquired;
+4. same-tag sibling receipts and any destination entry are revalidated under the lock;
+5. no verification-required file is modified after final byte proof;
+6. artifact set plus receipt is published to the final key by one same-filesystem atomic directory rename;
+7. the committed entry is reopened and fully revalidated before releasing the lock and reporting success.
 
 A process death before rename leaves only non-authoritative staging. A process death after rename leaves a complete candidate that must pass ordinary cache-hit validation on retry.
 
