@@ -289,8 +289,10 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
                     $writer=Write-VllmReleasePinnedFile -Path $destination -ExpectedParentGuid $parentRecord.Guid -WriteAction {param($output)$sourceStream.CopyTo($output)}
                 }finally{$sourceStream.Dispose()}
                 $fileStreams.Add($writer)
-                $identity=Get-VllmReleaseFileIdentity -Path $destination
+                $writer.Position=0
+                $identity=Get-VllmReleaseStreamIdentity -Stream $writer
                 if($identity.Size-ne[int64]$member.Size-or-not([string]$identity.Sha256).Equals([string]$member.Sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Acquisition handoff materialized file identity mismatch: $relative"}
+                $writer.Position=0
             }
         }finally{$zip.Dispose()}
         $actualFiles=Get-VllmReleaseOrdinalStrings -Values @(
