@@ -80,7 +80,7 @@ The wrapper MUST:
 
 - force `GH_HOST=github.com` and `GH_PROMPT_DISABLED=1`;
 - use an acquisition-owned temporary `GH_CONFIG_DIR` that starts empty, so ambient `hosts.yml`, aliases, extensions, and config cannot redirect or mutate behavior;
-- remove inherited `GH_HOST`, `GH_CONFIG_DIR`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, and other `GH_*` values not explicitly required by the wrapper before starting the child process;
+- remove inherited `GH_HOST`, `GH_CONFIG_DIR`, `GH_ENTERPRISE_TOKEN`, `GITHUB_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, and other `GH_*` values not explicitly required by the wrapper before starting the child process;
 - pass `--hostname github.com` to `gh api` where supported, in addition to the pinned environment host;
 - pass the exact `--repo AviBackToBlack/vllm-windows-native` identity to release operations;
 - never invoke a GitHub mutation command from acquisition.
@@ -221,6 +221,8 @@ Network download and cryptographic verification may proceed concurrently for dif
 
 This lock scope is intentionally broader than one tag-object destination: two concurrent attempts that authenticated different tag objects for the same tag cannot both pass the scan-to-publish window. After the first publishes, the second observes the prior valid receipt and fails the same-tag/different-object conflict check. The lock is coordination only, not trust or ownership proof, and it never authorizes deletion of unknown state.
 
+The coordination primitive MUST be process-lifetime-scoped or otherwise have explicit stale-holder recovery such that abnormal process termination cannot permanently wedge the repository cache. V1 should prefer an OS-held exclusive file handle whose ownership is released automatically when the holder exits; a persistent lockfile whose existence alone means "locked" is not sufficient.
+
 For a new entry:
 
 1. all network and cryptographic verification completes in private staging;
@@ -256,7 +258,7 @@ Bundle materialization for handoff uses existing archive/path-safety rules and i
 
 ## Required source-only regressions
 
-Public PR CI remains source-only, using temporary local Git repositories and an injected fake `gh` state machine. The regression must cover at least exact tag success; wrong repository; lightweight/unsigned/bad signer tag; tag-object mismatch; project-commit mismatch; zero/multiple manifest matches; missing/extra/case-colliding assets; bad SHA/index/checksum; release-attestation failure; per-asset verification failure; stale/partial/poisoned cache; same-tag/different-object conflict; interrupted download; interrupted cache publication; retry; idempotent exact reacquisition; and install/update handoff.
+Public PR CI remains source-only, using temporary local Git repositories and an injected fake `gh` state machine. The regression must cover at least exact tag success; wrong repository; lightweight/unsigned/bad signer tag; tag-object mismatch; project-commit mismatch; zero/multiple manifest matches; missing/extra/case-colliding assets; bad SHA/index/checksum; release-attestation failure; per-asset verification failure; stale/partial/poisoned cache; same-tag/different-object conflict; concurrent acquisitions straddling a re-tag with serialization across the scan-to-publish window; interrupted download; interrupted cache publication; retry; idempotent exact reacquisition; and install/update handoff.
 
 The regression runs in PowerShell 7 and Windows PowerShell 5.1.
 
