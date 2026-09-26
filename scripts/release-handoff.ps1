@@ -284,10 +284,10 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
                 $destination=Join-Path $parentRecord.Path $leaf
                 $entry=$entryMap[$relative]
                 if($null-eq$entry){throw "Acquisition handoff extraction source disappeared: $relative"}
-                $input=$entry.Open()
+                $sourceStream=$entry.Open()
                 try{
-                    $writer=Write-VllmReleasePinnedFile -Path $destination -ExpectedParentGuid $parentRecord.Guid -WriteAction {param($output)$input.CopyTo($output)}
-                }finally{$input.Dispose()}
+                    $writer=Write-VllmReleasePinnedFile -Path $destination -ExpectedParentGuid $parentRecord.Guid -WriteAction {param($output)$sourceStream.CopyTo($output)}
+                }finally{$sourceStream.Dispose()}
                 $fileStreams.Add($writer)
                 $identity=Get-VllmReleaseFileIdentity -Path $destination
                 if($identity.Size-ne[int64]$member.Size-or-not([string]$identity.Sha256).Equals([string]$member.Sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Acquisition handoff materialized file identity mismatch: $relative"}
