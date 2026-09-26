@@ -299,11 +299,11 @@ function Invoke-VllmGitHubReleaseVerification {
         [string]$GhExecutable = 'gh',
         [AllowNull()][scriptblock]$GhJsonInvoker=$null
     )
-    $releaseJson=Invoke-VllmReleaseVerificationGhJson -Arguments @('release','verify',$Tag,'--repo',$RepositorySlug,'--format','json') -FailureLabel 'GitHub release attestation verification failed' -Executable $GhExecutable -GhJsonInvoker $GhJsonInvoker
+    $releaseJson=Invoke-VllmReleaseVerificationGhJson -Arguments @('release','verify',$Tag,'--repo',$RepositorySlug,'--format','json') -FailureLabel 'GitHub release attestation verification failed' -GhExecutable $GhExecutable -GhJsonInvoker $GhJsonInvoker
     $result=Assert-VllmReleaseAttestationJson -Json $releaseJson -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
     foreach($name in $ExpectedAssets.Keys){
         $path=Join-Path ([IO.Path]::GetFullPath($ArtifactsDirectory)) ([string]$name)
-        $assetJson=Invoke-VllmReleaseVerificationGhJson -Arguments @('release','verify-asset',$Tag,$path,'--repo',$RepositorySlug,'--format','json') -FailureLabel "GitHub release asset verification failed for $name" -Executable $GhExecutable -GhJsonInvoker $GhJsonInvoker
+        $assetJson=Invoke-VllmReleaseVerificationGhJson -Arguments @('release','verify-asset',$Tag,$path,'--repo',$RepositorySlug,'--format','json') -FailureLabel "GitHub release asset verification failed for $name" -GhExecutable $GhExecutable -GhJsonInvoker $GhJsonInvoker
         $null=Assert-VllmReleaseAttestationJson -Json $assetJson -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $ExpectedTagObject -ExpectedAssets $ExpectedAssets
     }
     [pscustomobject][ordered]@{
