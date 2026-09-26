@@ -366,7 +366,6 @@ try{
     [IO.File]::WriteAllBytes($wheelPath,$wheelRaw)
     Write-Host 'RELEASE_HANDOFF_WHEEL_TAMPER_FAIL_CLOSED_OK'
 
-    $bundleRaw=[IO.File]::ReadAllBytes($fixture.Bundle)
     $malicious=Join-Path $root 'malicious.zip'
     $zip=[IO.Compression.ZipFile]::Open($malicious,[IO.Compression.ZipArchiveMode]::Create)
     try{
