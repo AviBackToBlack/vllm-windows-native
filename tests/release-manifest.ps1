@@ -31,4 +31,43 @@ $actualManaged=@($release.managed_paths|ForEach-Object{(Assert-VllmSafeRelativeP
 if(Compare-Object $expectedManaged $actualManaged){throw 'Release managed_paths set does not match the accepted installer ownership contract.'}
 $requiredOrchestration=@('python_manifest','uv_manifest','venv_manifest','dependency_manifest','runtime_manifest','python_receipt','uv_receipt','venv_receipt','dependency_receipt','runtime_receipt','runtime_root')
 if(Compare-Object ($requiredOrchestration|Sort-Object) (@($release.orchestration.PSObject.Properties.Name)|Sort-Object)){throw 'Release orchestration schema is incomplete or contains unexpected fields.'}
+$outerPatchPath=Join-Path $repoRoot ([string]$accepted.accepted_delta.patch)
+if(-not(Test-Path -LiteralPath $outerPatchPath -PathType Leaf)){throw "Accepted Windows patch missing: $outerPatchPath"}
+$outerPatchLines=@(Get-Content -LiteralPath $outerPatchPath -Encoding UTF8)
+$utf8NoBom=New-Object System.Text.UTF8Encoding($false)
+$sha256=[System.Security.Cryptography.SHA256]::Create()
+try{
+    foreach($embedded in @($accepted.embedded_dependency_patches.PSObject.Properties)){
+        $name=[string]$embedded.Name
+        $expected=([string]$embedded.Value).ToUpperInvariant()
+        $header="diff --git a/$name b/$name"
+        $start=-1
+        for($i=0;$i -lt $outerPatchLines.Count;$i++){
+            if([string]$outerPatchLines[$i] -ceq $header){$start=$i;break}
+        }
+        if($start -lt 0){throw "Embedded dependency patch diff missing from accepted Windows patch: $name"}
+        if($start+4 -ge $outerPatchLines.Count -or [string]$outerPatchLines[$start+1] -cne 'new file mode 100644' -or [string]$outerPatchLines[$start+3] -cne '--- /dev/null' -or [string]$outerPatchLines[$start+4] -cne "+++ b/$name"){
+            throw "Embedded dependency patch is not represented as a canonical new file: $name"
+        }
+        $hunk=$start+5
+        if($hunk -ge $outerPatchLines.Count -or [string]$outerPatchLines[$hunk] -notmatch '^@@ -0,0 \+1,([0-9]+) @@$'){
+            throw "Embedded dependency patch new-file hunk is malformed: $name"
+        }
+        $expectedLines=[int]$Matches[1]
+        $content=New-Object System.Collections.Generic.List[string]
+        for($i=$hunk+1;$i -lt $outerPatchLines.Count;$i++){
+            $line=[string]$outerPatchLines[$i]
+            if($line.StartsWith('diff --git ')){break}
+            if($line -eq '\ No newline at end of file'){throw "Embedded dependency patch must end with LF: $name"}
+            if(-not $line.StartsWith('+')){throw "Unexpected non-addition in embedded dependency patch new-file hunk: $name"}
+            $content.Add($line.Substring(1))
+        }
+        if($content.Count -ne $expectedLines){throw "Embedded dependency patch line-count mismatch for ${name}: expected $expectedLines, got $($content.Count)"}
+        $canonicalText=([string]::Join([char]10,$content.ToArray()))+[char]10
+        $bytes=$utf8NoBom.GetBytes($canonicalText)
+        $actual=([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-','')
+        if($actual -ne $expected){throw "Embedded dependency patch LF SHA-256 mismatch for ${name}: expected $expected, got $actual"}
+    }
+}finally{$sha256.Dispose()}
+Write-Host "EMBEDDED_DEPENDENCY_PATCH_PROVENANCE_OK count=$(@($accepted.embedded_dependency_patches.PSObject.Properties).Count)"
 Write-Host "RELEASE_MANIFEST_OK files=$(@($release.files).Count) sha256=$((Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash)"
