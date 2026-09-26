@@ -309,7 +309,7 @@ try{
     $installJson=Invoke-VllmAcquisitionInstallHandoff -Acquisition $fixture.Acquisition -InstallationRoot 'C:\fixture-install' -ModelsRoot 'C:\fixture-models' -Offline -Json
     $install=$installJson|ConvertFrom-Json
     if([string]$install.action-ne'install'-or-not[bool]$install.offline-or-not[bool]$install.json){throw 'Install handoff did not preserve lifecycle switches.'}
-    if(-not([string]$install.script_root).Contains('.handoff',[StringComparison]::OrdinalIgnoreCase)){throw 'Install handoff did not execute the materialized installer.'}
+    if(([string]$install.script_root).IndexOf('.handoff',[StringComparison]::OrdinalIgnoreCase)-lt0){throw 'Install handoff did not execute the materialized installer.'}
     if(-not([string]$install.manifest).StartsWith([string]$install.script_root,[StringComparison]::OrdinalIgnoreCase)){throw 'Install handoff manifest is outside materialized distribution.'}
     if(-not(Test-VllmAcquisitionHandoffPathEqual -A ([string]$install.wheel) -B ([string]$fixture.Acquisition.wheel_path))){throw 'Install handoff did not preserve the verified wheel path.'}
     Write-Host 'RELEASE_HANDOFF_INSTALL_OK'
@@ -317,7 +317,7 @@ try{
     $updateJson=Invoke-VllmAcquisitionUpdateHandoff -Acquisition $fixture.Acquisition -InstallationRoot 'C:\fixture-update' -WhatIf -Confirm:$false -Json
     $update=$updateJson|ConvertFrom-Json
     if([string]$update.action-ne'update'-or-not[bool]$update.what_if-or[bool]$update.confirm-ne$false-or-not[bool]$update.json){throw 'Update handoff did not preserve lifecycle switches.'}
-    if(-not([string]$update.script_root).Contains('.handoff',[StringComparison]::OrdinalIgnoreCase)){throw 'Update handoff did not execute the materialized updater.'}
+    if(([string]$update.script_root).IndexOf('.handoff',[StringComparison]::OrdinalIgnoreCase)-lt0){throw 'Update handoff did not execute the materialized updater.'}
     if(-not([string]$update.manifest).StartsWith([string]$update.script_root,[StringComparison]::OrdinalIgnoreCase)){throw 'Update handoff manifest is outside materialized distribution.'}
     Write-Host 'RELEASE_HANDOFF_UPDATE_OK'
 
