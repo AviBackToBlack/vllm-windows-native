@@ -248,6 +248,8 @@ try{
     $script:PublishedDirectory=$published
     $script:DownloadCount=0
     $script:FakeBadAttestation=$false
+    $script:VerifyAssetCount=0
+    $script:FailVerifyAssetName=''
     $script:FakeRepositoryId=[int64]$script:VllmAcquisitionRepositoryId
     $script:FakeTagType='tag'
     $script:FailDownloadName=''
@@ -281,8 +283,17 @@ try{
             $script:DownloadCount++
             return ''
         }
-        if($commandArguments[0]-eq'release'-and($commandArguments[1]-eq'verify'-or$commandArguments[1]-eq'verify-asset')){
+        if($commandArguments[0]-eq'release'-and$commandArguments[1]-eq'verify'){
             return Get-FixtureAttestationJson -TagObject $script:RemoteTagObject -Assets $assetMap -BadDigest:$script:FakeBadAttestation
+        }
+        if($commandArguments[0]-eq'release'-and$commandArguments[1]-eq'verify-asset'){
+            $script:VerifyAssetCount++
+            $assetPath=[string]$commandArguments[3]
+            $assetName=[IO.Path]::GetFileName($assetPath)
+            if(-not[string]::IsNullOrWhiteSpace($script:FailVerifyAssetName)-and$assetName.Equals($script:FailVerifyAssetName,[StringComparison]::Ordinal)){
+                throw "Injected verify-asset failure: $assetName"
+            }
+            return Get-FixtureAttestationJson -TagObject $script:RemoteTagObject -Assets $assetMap
         }
         throw "Unhandled fake gh command: $($commandArguments -join ' ')"
     }
@@ -392,6 +403,7 @@ try{
     Write-Host 'ACQUISITION_PARTIAL_FINAL_CACHE_FAIL_CLOSED_OK'
 
     $script:DownloadCount=0
+    $script:VerifyAssetCount=0
     $cache=Join-Path $root 'cache'
     $ambientGitNames=@('GIT_DIR','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES','GIT_SSL_NO_VERIFY','GIT_TEMPLATE_DIR','GIT_ASKPASS','SSH_ASKPASS','GCM_INTERACTIVE','GIT_CONFIG_COUNT','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0')
     $ambientGitSaved=[ordered]@{}
@@ -432,6 +444,7 @@ try{
     }
     Write-Host 'ACQUISITION_AMBIENT_GIT_READ_ISOLATION_OK'
     if($script:DownloadCount-ne4){throw "Initial acquisition downloaded unexpected asset count: $($script:DownloadCount)"}
+    if($script:VerifyAssetCount-ne4){throw "Initial acquisition performed unexpected verify-asset count: $($script:VerifyAssetCount)"}
     if(-not(Test-Path -LiteralPath $r1.receipt_path -PathType Leaf)-or-not(Test-Path -LiteralPath $r1.wheel_path -PathType Leaf)){throw 'Initial acquisition did not commit the verified cache entry.'}
     $receipt=Read-VllmAcquisitionReceipt -Path $r1.receipt_path
     if(-not([string]$receipt.release.tag_object).Equals($script:RemoteTagObject,[StringComparison]::OrdinalIgnoreCase)){throw 'Acquisition receipt tag object mismatch.'}
@@ -527,6 +540,18 @@ try{
     $badFinal=Join-Path (Join-Path (Join-Path $badAttestationCache 'verified') ([string]$script:VllmAcquisitionRepositoryId)) $script:RemoteTagObject
     if(Test-Path -LiteralPath $badFinal){throw 'Attestation failure exposed a verified cache entry.'}
     Write-Host 'ACQUISITION_ATTESTATION_FAIL_CLOSED_OK'
+
+    $perAssetFailureCache=Join-Path $root 'per-asset-verification-failure'
+    $verifyAssetBefore=$script:VerifyAssetCount
+    $script:FailVerifyAssetName='release-index.json'
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $perAssetFailureCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'Injected verify-asset failure: release-index.json'
+    $script:FailVerifyAssetName=''
+    if($script:VerifyAssetCount-le$verifyAssetBefore){throw 'Per-asset verification failure test did not reach the verify-asset loop.'}
+    $perAssetFinal=Join-Path (Join-Path (Join-Path $perAssetFailureCache 'verified') ([string]$script:VllmAcquisitionRepositoryId)) $script:RemoteTagObject
+    if(Test-Path -LiteralPath $perAssetFinal){throw 'Per-asset verification failure exposed a verified cache entry.'}
+    Write-Host 'ACQUISITION_PER_ASSET_ATTESTATION_FAIL_CLOSED_OK'
 
     $poisonCache=Join-Path $root 'poison-cache'
     $poison=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $poisonCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
