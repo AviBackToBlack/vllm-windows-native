@@ -292,6 +292,8 @@ try{
     $unsignedRepo=Join-Path $root 'unsigned-tag-repo'
     & git clone -q $fixtureRepo $unsignedRepo
     if($LASTEXITCODE-ne0){throw 'unsigned-tag fixture clone failed'}
+    & git -C $unsignedRepo config user.name 'SM20 Fixture'
+    & git -C $unsignedRepo config user.email 'sm20@example.invalid'
     & git -C $unsignedRepo tag -d release/test-release | Out-Null
     & git -C $unsignedRepo -c tag.gpgSign=false tag -a release/test-release -m unsigned $commit
     if($LASTEXITCODE-ne0){throw 'unsigned annotated tag fixture creation failed'}
@@ -305,6 +307,8 @@ try{
     $badSignerRepo=Join-Path $root 'bad-signer-repo'
     & git clone -q $fixtureRepo $badSignerRepo
     if($LASTEXITCODE-ne0){throw 'bad-signer fixture clone failed'}
+    & git -C $badSignerRepo config user.name 'SM20 Fixture'
+    & git -C $badSignerRepo config user.email 'sm20@example.invalid'
     & git -C $badSignerRepo tag -d release/test-release | Out-Null
     & git -C $badSignerRepo -c tag.gpgSign=false -c 'gpg.format=ssh' -c "user.signingkey=$wrongKey" tag -s -a release/test-release -m bad-signer $commit
     if($LASTEXITCODE-ne0){throw 'bad-signer annotated tag fixture creation failed'}
