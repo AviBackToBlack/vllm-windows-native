@@ -91,7 +91,7 @@ function Enter-VllmAcquisitionHandoffSource {
             @([string]$Acquisition.release_index_path,$index,'release index'),
             @([string]$Acquisition.checksums_path,$checksums,'checksums')
         )){
-            if(-not(Test-VllmAcquisitionHandoffPathEqual -A ([string]$pair[0]) -B ([string]$pair[1])){throw "Acquisition handoff $($pair[2]) path is inconsistent with verified cache."}
+            if(-not(Test-VllmAcquisitionHandoffPathEqual -A ([string]$pair[0]) -B ([string]$pair[1]))){throw "Acquisition handoff $($pair[2]) path is inconsistent with verified cache."}
         }
         $result=[pscustomobject][ordered]@{
             CacheEntry=$cacheEntry
