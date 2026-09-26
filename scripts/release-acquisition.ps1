@@ -166,6 +166,35 @@ function Get-VllmAcquisitionRemoteTagObject {
     $sha.ToLowerInvariant()
 }
 
+function Test-VllmAcquisitionGitEnvironmentName {
+    param([Parameter(Mandatory)][string]$Name)
+    $Name.StartsWith('GIT_',[StringComparison]::OrdinalIgnoreCase) -or
+    $Name.Equals('SSH_ASKPASS',[StringComparison]::OrdinalIgnoreCase) -or
+    $Name.Equals('SSH_ASKPASS_REQUIRE',[StringComparison]::OrdinalIgnoreCase) -or
+    $Name.StartsWith('GCM_',[StringComparison]::OrdinalIgnoreCase)
+}
+
+function Invoke-VllmAcquisitionGitIsolation {
+    param([Parameter(Mandatory)][scriptblock]$Action)
+    $saved=[ordered]@{}
+    $names=@(Get-ChildItem Env:|Where-Object{Test-VllmAcquisitionGitEnvironmentName -Name $_.Name}|Select-Object -ExpandProperty Name)
+    foreach($name in $names){$saved[$name]=(Get-Item -LiteralPath "Env:$name").Value}
+    try{
+        foreach($name in $names){Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue}
+        $env:GIT_CONFIG_NOSYSTEM='1'
+        $env:GIT_CONFIG_GLOBAL='NUL'
+        $env:GIT_TERMINAL_PROMPT='0'
+        $env:GIT_NO_REPLACE_OBJECTS='1'
+        $env:GCM_INTERACTIVE='Never'
+        & $Action
+    }finally{
+        foreach($name in @(Get-ChildItem Env:|Where-Object{Test-VllmAcquisitionGitEnvironmentName -Name $_.Name}|Select-Object -ExpandProperty Name)){
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        }
+        foreach($name in $saved.Keys){Set-Item -LiteralPath "Env:$name" -Value $saved[$name]}
+    }
+}
+
 function Invoke-VllmAcquisitionGitCommand {
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
@@ -173,50 +202,28 @@ function Invoke-VllmAcquisitionGitCommand {
         [string]$Repository=''
     )
     if($null-eq(Get-Command git -ErrorAction SilentlyContinue)){throw ($FailureLabel+': git executable not found.')}
-    $saved=[ordered]@{}
-    $names=@(Get-ChildItem Env:|Where-Object{
-        $_.Name.Equals('GIT_CONFIG',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.StartsWith('GIT_CONFIG_',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.Equals('GIT_DIR',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.Equals('GIT_WORK_TREE',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.Equals('GIT_COMMON_DIR',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.Equals('GIT_OBJECT_DIRECTORY',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.Equals('GIT_ALTERNATE_OBJECT_DIRECTORIES',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.Equals('GIT_NAMESPACE',[StringComparison]::OrdinalIgnoreCase) -or
-        $_.Name.Equals('GIT_TERMINAL_PROMPT',[StringComparison]::OrdinalIgnoreCase)
-    }|Select-Object -ExpandProperty Name)
-    foreach($name in $names){$saved[$name]=(Get-Item -LiteralPath "Env:$name").Value}
-    $old=$ErrorActionPreference
-    try{
-        foreach($name in $names){Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue}
-        $env:GIT_CONFIG_NOSYSTEM='1'
-        $env:GIT_CONFIG_GLOBAL='NUL'
-        $env:GIT_TERMINAL_PROMPT='0'
-        $ErrorActionPreference='Continue'
-        $gitArguments=New-Object System.Collections.Generic.List[string]
-        if(-not[string]::IsNullOrWhiteSpace($Repository)){$gitArguments.Add('-C');$gitArguments.Add([IO.Path]::GetFullPath($Repository))}
-        $gitArguments.Add('-c');$gitArguments.Add('core.longpaths=true')
-        $gitArguments.Add('-c');$gitArguments.Add('core.hooksPath=NUL')
-        foreach($arg in $Arguments){$gitArguments.Add($arg)}
-        $output=@(& git @($gitArguments.ToArray()) 2>&1)
-        $exit=$LASTEXITCODE
-    }finally{
-        $ErrorActionPreference=$old
-        foreach($name in @(Get-ChildItem Env:|Where-Object{
-            $_.Name.Equals('GIT_CONFIG',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.StartsWith('GIT_CONFIG_',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.Equals('GIT_DIR',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.Equals('GIT_WORK_TREE',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.Equals('GIT_COMMON_DIR',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.Equals('GIT_OBJECT_DIRECTORY',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.Equals('GIT_ALTERNATE_OBJECT_DIRECTORIES',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.Equals('GIT_NAMESPACE',[StringComparison]::OrdinalIgnoreCase) -or
-            $_.Name.Equals('GIT_TERMINAL_PROMPT',[StringComparison]::OrdinalIgnoreCase)
-        }|Select-Object -ExpandProperty Name)){Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue}
-        foreach($name in $saved.Keys){Set-Item -LiteralPath "Env:$name" -Value $saved[$name]}
+    $repositoryValue=$Repository
+    $argumentsValue=$Arguments
+    $failureLabelValue=$FailureLabel
+    Invoke-VllmAcquisitionGitIsolation -Action {
+        $old=$ErrorActionPreference
+        try{
+            $ErrorActionPreference='Continue'
+            $gitArguments=New-Object System.Collections.Generic.List[string]
+            if(-not[string]::IsNullOrWhiteSpace($repositoryValue)){$gitArguments.Add('-C');$gitArguments.Add([IO.Path]::GetFullPath($repositoryValue))}
+            $gitArguments.Add('-c');$gitArguments.Add('core.longpaths=true')
+            $gitArguments.Add('-c');$gitArguments.Add('core.hooksPath=NUL')
+            $gitArguments.Add('-c');$gitArguments.Add('credential.helper=')
+            $gitArguments.Add('-c');$gitArguments.Add('http.sslVerify=true')
+            foreach($arg in $argumentsValue){$gitArguments.Add($arg)}
+            $output=@(& git @($gitArguments.ToArray()) 2>&1)
+            $exit=$LASTEXITCODE
+        }finally{
+            $ErrorActionPreference=$old
+        }
+        if($exit-ne0){throw ($failureLabelValue+': '+($output -join ' '))}
+        $output -join [char]10
     }
-    if($exit-ne0){throw ($FailureLabel+': '+($output -join ' '))}
-    $output -join [char]10
 }
 
 function Initialize-VllmAcquisitionGitRepository {
@@ -529,7 +536,7 @@ function Assert-VllmAcquisitionCacheEntry {
     $actual=Get-VllmReleaseOrdinalStrings -Values @((Get-ChildItem -LiteralPath $artifacts -Force)|ForEach-Object{$_.Name})
     $expected=Get-VllmReleaseOrdinalStrings -Values $expectedNames
     Assert-VllmReleaseOrdinalSequence -Actual $actual -Expected $expected -Label 'Verified acquisition cache asset filename set'
-    $offline=Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit ([string]$SignedTag.project_commit) -ReleaseManifestPath ([string]$ReleaseContext.release_manifest_path) -ArtifactsDirectory $artifacts
+    $offline=Invoke-VllmAcquisitionGitIsolation -Action { Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit ([string]$SignedTag.project_commit) -ReleaseManifestPath ([string]$ReleaseContext.release_manifest_path) -ArtifactsDirectory $artifacts }
     $assetMap=Get-VllmAcquisitionReceiptAssetMap -Receipt $receipt
     $local=New-Object System.Collections.Generic.List[object]
     foreach($name in $expectedNames){
@@ -591,6 +598,7 @@ function Invoke-VllmReleaseAcquisition {
     $stagingParent=Assert-VllmAcquisitionDirectory -Path (Join-Path $cache '.staging') -Label 'Acquisition staging root' -Create
     $verifiedRoot=Assert-VllmAcquisitionDirectory -Path (Join-Path $cache 'verified') -Label 'Acquisition verified root' -Create
     $repoCache=Assert-VllmAcquisitionDirectory -Path (Join-Path $verifiedRoot ([string]$script:VllmAcquisitionRepositoryId)) -Label 'Acquisition repository cache' -Create
+    if([string]::IsNullOrWhiteSpace($GitHubToken)){$GitHubToken=Get-VllmAcquisitionGitHubToken -GhExecutable $GhExecutable}
     $generation=Join-Path $stagingParent ([guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($generation)
     $generation=Assert-VllmAcquisitionDirectory -Path $generation -Label 'Acquisition generation'
@@ -598,7 +606,6 @@ function Invoke-VllmReleaseAcquisition {
     $ghConfig=Assert-VllmAcquisitionDirectory -Path (Join-Path $generation 'gh-config') -Label 'GitHub CLI isolation directory' -Create
     $candidate=Assert-VllmAcquisitionDirectory -Path (Join-Path $generation 'candidate') -Label 'Acquisition candidate directory' -Create
     $artifacts=Assert-VllmAcquisitionDirectory -Path (Join-Path $candidate 'artifacts') -Label 'Acquisition candidate artifacts' -Create
-    if([string]::IsNullOrWhiteSpace($GitHubToken)){$GitHubToken=Get-VllmAcquisitionGitHubToken -GhExecutable $GhExecutable}
     try{
         $repoIdentity=Assert-VllmAcquisitionRepositoryIdentity -RepositorySlug $RepositorySlug -GhConfigDirectory $ghConfig -GitHubToken $GitHubToken -GhExecutable $GhExecutable -GhCommandInvoker $GhCommandInvoker
         $remoteTagObject=Get-VllmAcquisitionRemoteTagObject -RepositorySlug $RepositorySlug -Tag $Tag -GhConfigDirectory $ghConfig -GitHubToken $GitHubToken -GhExecutable $GhExecutable -GhCommandInvoker $GhCommandInvoker
@@ -608,7 +615,7 @@ function Invoke-VllmReleaseAcquisition {
         $peeled=(Invoke-VllmAcquisitionGitCommand -Repository $gitRepo -Arguments @('rev-parse',$commitRef) -FailureLabel 'Unable to peel authenticated release tag').Trim().ToLowerInvariant()
         $signed=Assert-VllmReleaseSignedTag -Repository $gitRepo -Tag $Tag -ExpectedCommit $peeled -AllowedSignersPath $trustPath -ExpectedPrincipal $ExpectedPrincipal -ExpectedFingerprint $ExpectedFingerprint
         if(-not([string]$signed.tag_object).Equals($remoteTagObject,[StringComparison]::OrdinalIgnoreCase)){throw 'Signed-tag verification returned a different tag object than authenticated GitHub.'}
-        $context=Resolve-VllmAcquisitionReleaseContext -Repository $gitRepo -ProjectCommit ([string]$signed.project_commit) -Tag $Tag
+        $context=Invoke-VllmAcquisitionGitIsolation -Action { Resolve-VllmAcquisitionReleaseContext -Repository $gitRepo -ProjectCommit ([string]$signed.project_commit) -Tag $Tag }
         $remote=Get-VllmAcquisitionRemoteRelease -RepositorySlug $RepositorySlug -Tag $Tag -ReleaseContext $context -GhConfigDirectory $ghConfig -GitHubToken $GitHubToken -GhExecutable $GhExecutable -GhCommandInvoker $GhCommandInvoker
         $destination=Join-Path $repoCache $remoteTagObject
         $lock=$null
@@ -622,7 +629,7 @@ function Invoke-VllmReleaseAcquisition {
         $expectedNames=[string[]](Get-VllmAcquisitionExpectedAssetNames -ReleaseContext $context)
         $null=Invoke-VllmAcquisitionDownloadAssets -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedNames $expectedNames -ArtifactsDirectory $artifacts -GhConfigDirectory $ghConfig -GitHubToken $GitHubToken -GhExecutable $GhExecutable -GhCommandInvoker $GhCommandInvoker
         if($FaultPoint-eq'AfterDownload'){throw 'FAULT_INJECTED:AfterDownload'}
-        $offline=Assert-VllmOfflineRelease -Repository $gitRepo -ProjectCommit ([string]$signed.project_commit) -ReleaseManifestPath ([string]$context.release_manifest_path) -ArtifactsDirectory $artifacts
+        $offline=Invoke-VllmAcquisitionGitIsolation -Action { Assert-VllmOfflineRelease -Repository $gitRepo -ProjectCommit ([string]$signed.project_commit) -ReleaseManifestPath ([string]$context.release_manifest_path) -ArtifactsDirectory $artifacts }
         $localAssets=[object[]](Get-VllmAcquisitionLocalAssetPlan -ArtifactsDirectory $artifacts -OfflineVerification $offline)
         $null=Assert-VllmAcquisitionRemoteAssetsMatchLocal -RemoteAssets $remote.assets -LocalAssets $localAssets
         $ghInvoker={
