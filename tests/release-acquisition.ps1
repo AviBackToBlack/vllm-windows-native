@@ -212,9 +212,9 @@ try{
     $fakeGh={
         param($Arguments,$FailureLabel)
         $null=$FailureLabel
-        $args=[string[]]$Arguments
-        if($args[0]-eq'api'){
-            $endpoint=[string]$args[$args.Length-1]
+        $commandArguments=[string[]]$Arguments
+        if($commandArguments[0]-eq'api'){
+            $endpoint=[string]$args[$commandArguments.Length-1]
             if($endpoint-eq'repos/AviBackToBlack/vllm-windows-native'){
                 return ([ordered]@{id=$script:FakeRepositoryId;node_id=$script:VllmAcquisitionRepositoryNodeId;full_name=$script:VllmAcquisitionRepository}|ConvertTo-Json -Compress)
             }
@@ -226,10 +226,10 @@ try{
             }
             throw "Unhandled fake gh api endpoint: $endpoint"
         }
-        if($args[0]-eq'release'-and$args[1]-eq'download'){
-            $patternIndex=[Array]::IndexOf($args,'--pattern')
-            $dirIndex=[Array]::IndexOf($args,'--dir')
-            $name=$args[$patternIndex+1];$dir=$args[$dirIndex+1]
+        if($commandArguments[0]-eq'release'-and$commandArguments[1]-eq'download'){
+            $patternIndex=[Array]::IndexOf($commandArguments,'--pattern')
+            $dirIndex=[Array]::IndexOf($commandArguments,'--dir')
+            $name=$commandArguments[$patternIndex+1];$dir=$commandArguments[$dirIndex+1]
             if(-not[string]::IsNullOrWhiteSpace($script:FailDownloadName)-and$name.Equals($script:FailDownloadName,[StringComparison]::Ordinal)){throw "Injected download failure: $name"}
             $destination=Join-Path $dir $name
             Copy-Item -LiteralPath (Join-Path $script:PublishedDirectory $name) -Destination $destination
@@ -237,10 +237,10 @@ try{
             $script:DownloadCount++
             return ''
         }
-        if($args[0]-eq'release'-and($args[1]-eq'verify'-or$args[1]-eq'verify-asset')){
+        if($commandArguments[0]-eq'release'-and($commandArguments[1]-eq'verify'-or$commandArguments[1]-eq'verify-asset')){
             return Get-FixtureAttestationJson -TagObject $script:RemoteTagObject -Assets $assetMap -BadDigest:$script:FakeBadAttestation
         }
-        throw "Unhandled fake gh command: $($args -join ' ')"
+        throw "Unhandled fake gh command: $($commandArguments -join ' ')"
     }
 
     $context=Resolve-VllmAcquisitionReleaseContext -Repository $fixtureRepo -ProjectCommit $commit -Tag 'release/test-release'
