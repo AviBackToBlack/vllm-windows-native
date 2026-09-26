@@ -526,6 +526,7 @@ function Assert-VllmAcquisitionCacheEntry {
         [Parameter(Mandatory)]$SignedTag,
         [Parameter(Mandatory)][object[]]$RemoteAssets
     )
+    $repositoryValue=$Repository
     $root=Assert-VllmAcquisitionDirectory -Path $EntryPath -Label 'Verified acquisition cache entry'
     $receipt=Read-VllmAcquisitionReceipt -Path (Join-Path $root 'acquisition-receipt.json')
     if(-not([string]$receipt.release.tag).Equals([string]$ReleaseContext.tag,[StringComparison]::Ordinal)-or-not([string]$receipt.release.tag_object).Equals([string]$SignedTag.tag_object,[StringComparison]::OrdinalIgnoreCase)-or-not([string]$receipt.release.project_commit).Equals([string]$SignedTag.project_commit,[StringComparison]::OrdinalIgnoreCase)){throw 'Acquisition cache receipt release identity mismatch.'}
@@ -536,7 +537,7 @@ function Assert-VllmAcquisitionCacheEntry {
     $actual=Get-VllmReleaseOrdinalStrings -Values @((Get-ChildItem -LiteralPath $artifacts -Force)|ForEach-Object{$_.Name})
     $expected=Get-VllmReleaseOrdinalStrings -Values $expectedNames
     Assert-VllmReleaseOrdinalSequence -Actual $actual -Expected $expected -Label 'Verified acquisition cache asset filename set'
-    $offline=Invoke-VllmAcquisitionGitIsolation -Action { Assert-VllmOfflineRelease -Repository $Repository -ProjectCommit ([string]$SignedTag.project_commit) -ReleaseManifestPath ([string]$ReleaseContext.release_manifest_path) -ArtifactsDirectory $artifacts }
+    $offline=Invoke-VllmAcquisitionGitIsolation -Action { Assert-VllmOfflineRelease -Repository $repositoryValue -ProjectCommit ([string]$SignedTag.project_commit) -ReleaseManifestPath ([string]$ReleaseContext.release_manifest_path) -ArtifactsDirectory $artifacts }
     $assetMap=Get-VllmAcquisitionReceiptAssetMap -Receipt $receipt
     $local=New-Object System.Collections.Generic.List[object]
     foreach($name in $expectedNames){
