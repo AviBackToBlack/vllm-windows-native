@@ -251,6 +251,7 @@ try{
     if($LASTEXITCODE-ne0){throw 'multi-manifest fixture clone failed'}
     & git -C $multiRepo config user.name 'SM20 Fixture'
     & git -C $multiRepo config user.email 'sm20@example.invalid'
+    & git -C $multiRepo config core.autocrlf false
     $second=(Get-Content -LiteralPath (Join-Path $multiRepo 'manifests\release\release.json') -Raw|ConvertFrom-Json)
     $second.self_path='manifests/release/release-two.json'
     Write-VllmReleaseCanonicalJson -Value $second -Path (Join-Path $multiRepo 'manifests\release\release-two.json')
