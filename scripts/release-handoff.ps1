@@ -345,7 +345,7 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
         if($null-ne$fileStreams){foreach($stream in $fileStreams.ToArray()){if($null-ne$stream){$stream.Dispose()}}}
         if($null-ne$directories){foreach($record in @($directories.Values)){if($null-ne$record.Handle){$record.Handle.Dispose()}}}
         if($null-ne$generation){
-            try{Invoke-VllmReleaseOwnedTempCleanup -Path $generation.Path -ExpectedPhysical (Get-VllmCanonicalExistingPath -Path $generation.Path -Format Dos) -ExpectedIdentity $generation.Identity -ExistingRootGuard $generation.Handle}catch{}
+            try{Invoke-VllmReleaseOwnedTempCleanup -Path $generation.Path -ExpectedPhysical (Get-VllmCanonicalExistingPath -Path $generation.Path -Format Dos) -ExpectedIdentity $generation.Identity -ExistingRootGuard $generation.Handle}catch{Write-Verbose ('Best-effort failed handoff cleanup could not remove generation: '+$_.Exception.Message)}
             $generation.Handle.Dispose()
         }
         if($null-ne$parentGuard){$parentGuard.Dispose()}
@@ -402,11 +402,10 @@ function Invoke-VllmAcquisitionInstallHandoff {
 }
 
 function Invoke-VllmAcquisitionUpdateHandoff {
+    [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
     param(
         [Parameter(Mandatory)]$Acquisition,
         [string]$InstallationRoot='D:\AI\vLLM',
-        [switch]$WhatIf,
-        [switch]$Confirm,
         [switch]$Json,
         [AllowNull()][scriptblock]$LifecycleInvoker=$null
     )
@@ -418,8 +417,8 @@ function Invoke-VllmAcquisitionUpdateHandoff {
             WheelPath=$materialization.WheelPath
             InstallationRoot=$InstallationRoot
         }
-        if($WhatIf){$parameters.WhatIf=$true}
-        if($PSBoundParameters.ContainsKey('Confirm')){$parameters.Confirm=[bool]$Confirm}
+        if($WhatIfPreference){$parameters.WhatIf=$true}
+        if($PSBoundParameters.ContainsKey('Confirm')){$parameters.Confirm=[bool]$PSBoundParameters['Confirm']}
         if($Json){$parameters.Json=$true}
         if($null-ne$LifecycleInvoker){return & $LifecycleInvoker 'update' $materialization.UpdateScriptPath $parameters}
         return & $materialization.UpdateScriptPath @parameters
