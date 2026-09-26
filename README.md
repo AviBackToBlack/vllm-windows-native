@@ -249,10 +249,7 @@ After downloading the four immutable release assets, compose offline verificatio
 SM-20A/B adds a consumer-side network boundary without changing the installer or updater transaction. Acquisition requires an exact release tag and an independently pinned allowed-signers file; there is no implicit latest/channel/semantic-version selection.
 
 ```powershell
-.\acquire.ps1 \
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' \
-  -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers' \
-  -CacheRoot 'C:\AI\vLLM-acquisition-cache'
+.\acquire.ps1 -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers' -CacheRoot 'C:\AI\vLLM-acquisition-cache'
 ```
 
 The acquisition client authenticates the canonical GitHub repository identity, fetches only the exact annotated tag into an isolated Git repository, verifies its SSH signature against the out-of-band trust root, derives the matching release manifest from that authenticated commit, requires the immutable exact-four GitHub Release asset set, downloads each expected asset into private staging, and reuses the existing offline release plus GitHub release/per-asset attestation verifiers.
