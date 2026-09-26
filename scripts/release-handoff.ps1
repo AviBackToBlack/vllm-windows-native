@@ -288,11 +288,32 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
                 try{
                     $writer=Write-VllmReleasePinnedFile -Path $destination -ExpectedParentGuid $parentRecord.Guid -WriteAction {param($output)$sourceStream.CopyTo($output)}
                 }finally{$sourceStream.Dispose()}
-                $fileStreams.Add($writer)
                 $writer.Position=0
                 $identity=Get-VllmReleaseStreamIdentity -Stream $writer
                 if($identity.Size-ne[int64]$member.Size-or-not([string]$identity.Sha256).Equals([string]$member.Sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Acquisition handoff materialized file identity mismatch: $relative"}
-                $writer.Position=0
+                $writer.Dispose()
+                $writer=$null
+                $readHandle=$null;$readStream=$null
+                try{
+                    $readHandle=[VllmWindowsNative.ReleaseDirectoryGuard]::OpenRead($destination)
+                    $entryInfo=Get-VllmPathEntryInfo -Path $destination
+                    if(-not$entryInfo.Exists-or$entryInfo.IsDirectory-or$entryInfo.IsReparsePoint){throw "Acquisition handoff pinned file changed type: $relative"}
+                    if([VllmWindowsNative.NativePath]::GetLinkCount($readHandle)-ne1){throw "Acquisition handoff pinned file has unexpected hard-link count: $relative"}
+                    $expectedGuid=Get-VllmPathWithoutTrailingSeparator ([IO.Path]::Combine($parentRecord.Guid,$leaf))
+                    $actualGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($readHandle))
+                    if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw "Acquisition handoff pinned file resolves outside expected parent: $relative"}
+                    $readStream=New-Object IO.FileStream($readHandle,[IO.FileAccess]::Read,65536,$false)
+                    $readHandle=$null
+                    $guardedIdentity=Get-VllmReleaseStreamIdentity -Stream $readStream
+                    if($guardedIdentity.Size-ne[int64]$member.Size-or-not([string]$guardedIdentity.Sha256).Equals([string]$member.Sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Acquisition handoff pinned file identity mismatch after reopen: $relative"}
+                    $readStream.Position=0
+                    $fileStreams.Add($readStream)
+                    $readStream=$null
+                }finally{
+                    if($null-ne$readStream){$readStream.Dispose()}
+                    if($null-ne$readHandle){$readHandle.Dispose()}
+                    if($null-ne$writer){$writer.Dispose()}
+                }
             }
         }finally{$zip.Dispose()}
         $actualFiles=Get-VllmReleaseOrdinalStrings -Values @(
