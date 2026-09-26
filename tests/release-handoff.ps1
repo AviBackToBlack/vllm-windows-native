@@ -340,6 +340,36 @@ try{
     }
     Write-Host 'RELEASE_HANDOFF_CACHE_IMMUTABLE_OK'
 
+    $heldMaterialization=Initialize-VllmAcquisitionHandoffMaterialization -Acquisition $fixture.Acquisition
+    try{
+        Assert-Fails {
+            Initialize-VllmAcquisitionHandoffMaterialization -Acquisition $fixture.Acquisition | Out-Null
+        } 'Another verified lifecycle handoff is active for this acquisition cache.'
+    }finally{
+        Exit-VllmAcquisitionHandoffMaterialization -Materialization $heldMaterialization
+    }
+    Write-Host 'RELEASE_HANDOFF_CONCURRENCY_MESSAGE_OK'
+
+    $script:cleanupBlocker=$null
+    $maskingProbe={
+        param($Mode,$ScriptPath,$Parameters)
+        $null=$Mode;$null=$Parameters
+        $script:cleanupBlocker=[IO.File]::Open([string]$ScriptPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        throw 'INJECTED_PRIMARY_LIFECYCLE_FAILURE'
+    }
+    try{
+        Assert-Fails {
+            Invoke-VllmAcquisitionInstallHandoff -Acquisition $fixture.Acquisition -LifecycleInvoker $maskingProbe
+        } 'INJECTED_PRIMARY_LIFECYCLE_FAILURE'
+    }finally{
+        if($null-ne$script:cleanupBlocker){$script:cleanupBlocker.Dispose();$script:cleanupBlocker=$null}
+    }
+    $residue=@()
+    if(Test-Path -LiteralPath $handoffRoot){$residue=@(Get-ChildItem -LiteralPath $handoffRoot -Force -Directory)}
+    if($residue.Count-ne1){throw "Lifecycle cleanup-failure fixture expected exactly one bounded handoff residue, got $($residue.Count)."}
+    Remove-Item -LiteralPath $residue[0].FullName -Recurse -Force
+    Write-Host 'RELEASE_HANDOFF_PRIMARY_FAILURE_PRESERVED_OK'
+
     $lockedObserved=$false
     $probe={
         param($Mode,$ScriptPath,$Parameters)
