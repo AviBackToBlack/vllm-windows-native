@@ -613,7 +613,7 @@ function Invoke-VllmReleaseAcquisition {
         if(-not([string]$git.tag_object).Equals($remoteTagObject,[StringComparison]::OrdinalIgnoreCase)){throw "Fetched tag object does not match authenticated GitHub tag object: fetched=$($git.tag_object), remote=$remoteTagObject"}
         $commitRef="refs/tags/$Tag"+'^{commit}'
         $peeled=(Invoke-VllmAcquisitionGitCommand -Repository $gitRepo -Arguments @('rev-parse',$commitRef) -FailureLabel 'Unable to peel authenticated release tag').Trim().ToLowerInvariant()
-        $signed=Assert-VllmReleaseSignedTag -Repository $gitRepo -Tag $Tag -ExpectedCommit $peeled -AllowedSignersPath $trustPath -ExpectedPrincipal $ExpectedPrincipal -ExpectedFingerprint $ExpectedFingerprint
+        $signed=Invoke-VllmAcquisitionGitIsolation -Action { Assert-VllmReleaseSignedTag -Repository $gitRepo -Tag $Tag -ExpectedCommit $peeled -AllowedSignersPath $trustPath -ExpectedPrincipal $ExpectedPrincipal -ExpectedFingerprint $ExpectedFingerprint }
         if(-not([string]$signed.tag_object).Equals($remoteTagObject,[StringComparison]::OrdinalIgnoreCase)){throw 'Signed-tag verification returned a different tag object than authenticated GitHub.'}
         $context=Invoke-VllmAcquisitionGitIsolation -Action { Resolve-VllmAcquisitionReleaseContext -Repository $gitRepo -ProjectCommit ([string]$signed.project_commit) -Tag $Tag }
         $remote=Get-VllmAcquisitionRemoteRelease -RepositorySlug $RepositorySlug -Tag $Tag -ReleaseContext $context -GhConfigDirectory $ghConfig -GitHubToken $GitHubToken -GhExecutable $GhExecutable -GhCommandInvoker $GhCommandInvoker
