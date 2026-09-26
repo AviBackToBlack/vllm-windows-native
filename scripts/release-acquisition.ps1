@@ -568,6 +568,14 @@ function Assert-VllmAcquisitionCacheEntry {
         checksums_path=(Join-Path $artifacts 'SHA256SUMS')
         receipt_path=(Join-Path $root 'acquisition-receipt.json')
         release_manifest_path=[string]$ReleaseContext.release_manifest_path
+        release_manifest_sha256=([string]$receipt.release.release_manifest_sha256).ToUpperInvariant()
+        runtime_manifest_sha256=([string]$receipt.release.runtime_manifest_sha256).ToUpperInvariant()
+        signing_principal=[string]$receipt.signing.principal
+        signing_key_fingerprint=[string]$receipt.signing.key_fingerprint
+        wheel_sha256=([string]$receipt.artifacts.wheel.sha256).ToUpperInvariant()
+        bundle_sha256=([string]$receipt.artifacts.bundle.sha256).ToUpperInvariant()
+        release_index_sha256=([string]$receipt.artifacts.index.sha256).ToUpperInvariant()
+        checksums_sha256=([string]$receipt.artifacts.checksums.sha256).ToUpperInvariant()
     }
 }
 
