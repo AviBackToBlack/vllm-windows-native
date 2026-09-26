@@ -321,7 +321,7 @@ function Get-VllmAcquisitionRemoteRelease {
     foreach($name in $expected){if(-not$seenExact.Contains($name)){throw "GitHub release asset set is incomplete: $name"}}
     $wheel=@($plan|Where-Object{$_.name.Equals([string]$ReleaseContext.wheel_filename,[StringComparison]::Ordinal)})[0]
     if($wheel.size-ne[int64]$ReleaseContext.wheel_size-or-not([string]$wheel.sha256).Equals([string]$ReleaseContext.wheel_sha256,[StringComparison]::OrdinalIgnoreCase)){throw 'GitHub release wheel metadata does not match the authenticated release manifest.'}
-    [pscustomobject][ordered]@{release=$release;assets=@($plan)}
+    [pscustomobject][ordered]@{release=$release;assets=$plan.ToArray()}
 }
 
 function Invoke-VllmAcquisitionDownloadAssets {
@@ -362,7 +362,7 @@ function Get-VllmAcquisitionLocalAssetPlan {
         $plan.Add([pscustomobject][ordered]@{name=[string]$name;path=$item.FullName;size=[int64]$item.Length;sha256=$actual.ToUpperInvariant()})
     }
     if($plan.Count-ne4){throw "Verified local release requires exactly four assets, got $($plan.Count)."}
-    @($plan)
+    return $plan.ToArray()
 }
 
 function Assert-VllmAcquisitionRemoteAssetsMatchLocal {
@@ -542,7 +542,7 @@ function Assert-VllmAcquisitionCacheEntry {
         if([int64]$item.Length-ne[int64]$record.size_bytes-or-not$hash.Equals([string]$record.sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Cached acquisition asset identity mismatch: $name"}
         $local.Add([pscustomobject][ordered]@{name=$name;path=$path;size=[int64]$item.Length;sha256=$hash.ToUpperInvariant()})
     }
-    $null=Assert-VllmAcquisitionRemoteAssetsMatchLocal -RemoteAssets $RemoteAssets -LocalAssets @($local)
+    $null=Assert-VllmAcquisitionRemoteAssetsMatchLocal -RemoteAssets $RemoteAssets -LocalAssets $local.ToArray()
     if(-not([string]$offline.wheel_sha256).Equals([string]$receipt.artifacts.wheel.sha256,[StringComparison]::OrdinalIgnoreCase)-or-not([string]$offline.bundle_sha256).Equals([string]$receipt.artifacts.bundle.sha256,[StringComparison]::OrdinalIgnoreCase)-or-not([string]$offline.index_sha256).Equals([string]$receipt.artifacts.index.sha256,[StringComparison]::OrdinalIgnoreCase)-or-not([string]$offline.checksums_sha256).Equals([string]$receipt.artifacts.checksums.sha256,[StringComparison]::OrdinalIgnoreCase)){throw 'Acquisition cache receipt disagrees with complete offline verification.'}
     [pscustomobject][ordered]@{
         schema_version=1
