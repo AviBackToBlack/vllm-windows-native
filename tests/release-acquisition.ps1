@@ -214,7 +214,7 @@ try{
         $null=$FailureLabel
         $commandArguments=[string[]]$Arguments
         if($commandArguments[0]-eq'api'){
-            $endpoint=[string]$args[$commandArguments.Length-1]
+            $endpoint=[string]$commandArguments[$commandArguments.Length-1]
             if($endpoint-eq'repos/AviBackToBlack/vllm-windows-native'){
                 return ([ordered]@{id=$script:FakeRepositoryId;node_id=$script:VllmAcquisitionRepositoryNodeId;full_name=$script:VllmAcquisitionRepository}|ConvertTo-Json -Compress)
             }
