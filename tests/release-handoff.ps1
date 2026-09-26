@@ -215,12 +215,12 @@ function Initialize-HandoffFixture {
     $entry=Join-Path (Join-Path (Join-Path $cacheRoot 'verified') ([string]$script:VllmAcquisitionRepositoryId)) $tagObject
     $artifacts=Join-Path $entry 'artifacts'
     [void][IO.Directory]::CreateDirectory($artifacts)
-    Copy-Item -LiteralPath $wheel -Destination (Join-Path $artifacts ([IO.Path]::GetFileName($wheel))
+    Copy-Item -LiteralPath $wheel -Destination (Join-Path $artifacts ([IO.Path]::GetFileName($wheel)))
     $bundle=Join-Path $artifacts 'vllm-windows-native-handoff-test.zip'
     Write-VllmReleaseStoredZip -Context ([pscustomobject]@{Members=$members.ToArray()}) -Path $bundle
     Write-TestFile -Path (Join-Path $artifacts 'release-index.json') -Text ('{}'+[char]10)
     Write-TestFile -Path (Join-Path $artifacts 'SHA256SUMS') -Text ('fixture'+[char]10)
-    $wheelArtifact=Get-TestIdentity -Path (Join-Path $artifacts ([IO.Path]::GetFileName($wheel))
+    $wheelArtifact=Get-TestIdentity -Path (Join-Path $artifacts ([IO.Path]::GetFileName($wheel)))
     $bundleArtifact=Get-TestIdentity -Path $bundle
     $indexArtifact=Get-TestIdentity -Path (Join-Path $artifacts 'release-index.json')
     $checksumsArtifact=Get-TestIdentity -Path (Join-Path $artifacts 'SHA256SUMS')
@@ -273,7 +273,7 @@ function Initialize-HandoffFixture {
         project_commit=$projectCommit
         cache_entry=$entry
         artifacts_directory=$artifacts
-        wheel_path=(Join-Path $artifacts ([IO.Path]::GetFileName($wheel))
+        wheel_path=(Join-Path $artifacts ([IO.Path]::GetFileName($wheel)))
         bundle_path=$bundle
         release_index_path=(Join-Path $artifacts 'release-index.json')
         checksums_path=(Join-Path $artifacts 'SHA256SUMS')
@@ -311,7 +311,7 @@ try{
     if([string]$install.action-ne'install'-or-not[bool]$install.offline-or-not[bool]$install.json){throw 'Install handoff did not preserve lifecycle switches.'}
     if(-not([string]$install.script_root).Contains('.handoff',[StringComparison]::OrdinalIgnoreCase)){throw 'Install handoff did not execute the materialized installer.'}
     if(-not([string]$install.manifest).StartsWith([string]$install.script_root,[StringComparison]::OrdinalIgnoreCase)){throw 'Install handoff manifest is outside materialized distribution.'}
-    if(-not(Test-VllmAcquisitionHandoffPathEqual -A ([string]$install.wheel) -B ([string]$fixture.Acquisition.wheel_path)){throw 'Install handoff did not preserve the verified wheel path.'}
+    if(-not(Test-VllmAcquisitionHandoffPathEqual -A ([string]$install.wheel) -B ([string]$fixture.Acquisition.wheel_path))){throw 'Install handoff did not preserve the verified wheel path.'}
     Write-Host 'RELEASE_HANDOFF_INSTALL_OK'
 
     $updateJson=Invoke-VllmAcquisitionUpdateHandoff -Acquisition $fixture.Acquisition -InstallationRoot 'C:\fixture-update' -WhatIf -Confirm:$false -Json
