@@ -206,6 +206,8 @@ try{
     $script:FakeBadAttestation=$false
     $script:FakeRepositoryId=[int64]$script:VllmAcquisitionRepositoryId
     $script:FakeTagType='tag'
+    $script:FailDownloadName=''
+    $script:TamperDownloadName=''
 
     $fakeGh={
         param($Arguments,$FailureLabel)
@@ -228,7 +230,10 @@ try{
             $patternIndex=[Array]::IndexOf($args,'--pattern')
             $dirIndex=[Array]::IndexOf($args,'--dir')
             $name=$args[$patternIndex+1];$dir=$args[$dirIndex+1]
-            Copy-Item -LiteralPath (Join-Path $script:PublishedDirectory $name) -Destination (Join-Path $dir $name)
+            if(-not[string]::IsNullOrWhiteSpace($script:FailDownloadName)-and$name.Equals($script:FailDownloadName,[StringComparison]::Ordinal)){throw "Injected download failure: $name"}
+            $destination=Join-Path $dir $name
+            Copy-Item -LiteralPath (Join-Path $script:PublishedDirectory $name) -Destination $destination
+            if(-not[string]::IsNullOrWhiteSpace($script:TamperDownloadName)-and$name.Equals($script:TamperDownloadName,[StringComparison]::Ordinal)){[IO.File]::AppendAllText($destination,'tamper',[Text.UTF8Encoding]::new($false))}
             $script:DownloadCount++
             return ''
         }
@@ -238,8 +243,44 @@ try{
         throw "Unhandled fake gh command: $($args -join ' ')"
     }
 
-    $null=Resolve-VllmAcquisitionReleaseContext -Repository $fixtureRepo -ProjectCommit $commit -Tag 'release/test-release'
+    $context=Resolve-VllmAcquisitionReleaseContext -Repository $fixtureRepo -ProjectCommit $commit -Tag 'release/test-release'
     Assert-Fails { Resolve-VllmAcquisitionReleaseContext -Repository $fixtureRepo -ProjectCommit $commit -Tag 'release/no-such-release' } 'exactly one matching release manifest'
+
+    $multiRepo=Join-Path $root 'multi-manifest-repo'
+    & git clone -q $fixtureRepo $multiRepo
+    if($LASTEXITCODE-ne0){throw 'multi-manifest fixture clone failed'}
+    & git -C $multiRepo config user.name 'SM20 Fixture'
+    & git -C $multiRepo config user.email 'sm20@example.invalid'
+    $second=(Get-Content -LiteralPath (Join-Path $multiRepo 'manifests\release\release.json') -Raw|ConvertFrom-Json)
+    $second.self_path='manifests/release/release-two.json'
+    Write-VllmReleaseCanonicalJson -Value $second -Path (Join-Path $multiRepo 'manifests\release\release-two.json')
+    & git -C $multiRepo add manifests/release/release-two.json
+    & git -C $multiRepo -c commit.gpgsign=false commit -q -m 'second release manifest'
+    $multiCommit=(& git -C $multiRepo rev-parse HEAD).Trim()
+    Assert-Fails { Resolve-VllmAcquisitionReleaseContext -Repository $multiRepo -ProjectCommit $multiCommit -Tag 'release/test-release' } 'found 2'
+    Write-Host 'ACQUISITION_MANIFEST_SELECTION_FAIL_CLOSED_OK'
+
+    $originalRemoteAssets=@($script:RemoteAssets.ToArray())
+    $script:RemoteAssets.Add([ordered]@{name='extra.bin';size=1;digest=('sha256:'+('A'*64));state='uploaded'})
+    Assert-Fails {
+        Get-VllmAcquisitionRemoteRelease -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -ReleaseContext $context -GhConfigDirectory (Join-Path $root 'asset-probe-extra') -GitHubToken 'fixture-token' -GhCommandInvoker $fakeGh
+    } 'exactly four assets'
+    $script:RemoteAssets=New-Object System.Collections.Generic.List[object]
+    foreach($asset in $originalRemoteAssets|Select-Object -First 3){$script:RemoteAssets.Add($asset)}
+    Assert-Fails {
+        Get-VllmAcquisitionRemoteRelease -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -ReleaseContext $context -GhConfigDirectory (Join-Path $root 'asset-probe-missing') -GitHubToken 'fixture-token' -GhCommandInvoker $fakeGh
+    } 'exactly four assets'
+    $script:RemoteAssets=New-Object System.Collections.Generic.List[object]
+    foreach($asset in $originalRemoteAssets){$script:RemoteAssets.Add($asset)}
+    Write-Host 'ACQUISITION_REMOTE_ASSET_SET_FAIL_CLOSED_OK'
+
+    $partialCache=Join-Path $root 'partial-final-cache'
+    $partialDestination=Join-Path (Join-Path (Join-Path $partialCache 'verified') ([string]$script:VllmAcquisitionRepositoryId)) $script:RemoteTagObject
+    [void][IO.Directory]::CreateDirectory((Join-Path $partialDestination 'artifacts'))
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $partialCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'receipt is missing'
+    Write-Host 'ACQUISITION_PARTIAL_FINAL_CACHE_FAIL_CLOSED_OK'
 
     $cache=Join-Path $root 'cache'
     $r1=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $cache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
@@ -284,6 +325,34 @@ try{
     if($script:DownloadCount-ne$downloadsAfterFault){throw 'Retry after post-publish interruption re-downloaded an already committed exact cache entry.'}
     if(-not(Test-Path -LiteralPath $recovered.receipt_path -PathType Leaf)){throw 'Retry after post-publish interruption did not recover the cache entry.'}
     Write-Host 'ACQUISITION_POSTPUBLISH_RECOVERY_OK'
+
+    $interruptedDownloadCache=Join-Path $root 'interrupted-download'
+    $script:FailDownloadName='release-index.json'
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $interruptedDownloadCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'Injected download failure'
+    $script:FailDownloadName=''
+    $interruptedFinal=Join-Path (Join-Path (Join-Path $interruptedDownloadCache 'verified') ([string]$script:VllmAcquisitionRepositoryId)) $script:RemoteTagObject
+    if(Test-Path -LiteralPath $interruptedFinal){throw 'Interrupted download exposed a final cache entry.'}
+    Write-Host 'ACQUISITION_INTERRUPTED_DOWNLOAD_FAIL_CLOSED_OK'
+
+    $tamperedDownloadCache=Join-Path $root 'tampered-download'
+    $script:TamperDownloadName='release-index.json'
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $tamperedDownloadCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'release-index.json'
+    $script:TamperDownloadName=''
+    Write-Host 'ACQUISITION_TAMPERED_DOWNLOAD_FAIL_CLOSED_OK'
+
+    $remoteDigestCache=Join-Path $root 'remote-digest-mismatch'
+    $bundleRemote=@($script:RemoteAssets|Where-Object{([string]$_.name).EndsWith('.zip',[StringComparison]::Ordinal)})[0]
+    $goodBundleDigest=[string]$bundleRemote.digest
+    $bundleRemote.digest='sha256:'+('B'*64)
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $remoteDigestCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'digest mismatch after download'
+    $bundleRemote.digest=$goodBundleDigest
+    Write-Host 'ACQUISITION_REMOTE_DIGEST_FAIL_CLOSED_OK'
 
     $badAttestationCache=Join-Path $root 'bad-attestation'
     $script:FakeBadAttestation=$true
