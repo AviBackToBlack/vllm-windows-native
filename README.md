@@ -227,7 +227,7 @@ A consumer must obtain and pin the allowed-signers file independently of the rel
 ```powershell
 .\release.ps1 -Mode VerifySignedTag `
   -ProjectCommit '<expected-project-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
 
@@ -253,7 +253,7 @@ Stage or resume the owned draft prerelease and upload only missing canonical ass
 ```powershell
 .\release.ps1 -Mode StageDraft `
   -ProjectCommit '<reviewed-main-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -ArtifactsDirectory 'C:\trusted\vllm-release' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
@@ -265,7 +265,7 @@ Publishing is a separate explicit operator action:
 ```powershell
 .\release.ps1 -Mode PublishDraft `
   -ProjectCommit '<reviewed-main-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -ArtifactsDirectory 'C:\trusted\vllm-release' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
@@ -279,7 +279,7 @@ A failed owned draft can be removed only through the separate recovery operation
 ```powershell
 .\release.ps1 -Mode ResetDraft `
   -ProjectCommit '<reviewed-main-commit>' `
-  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120' `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
   -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers'
 ```
 

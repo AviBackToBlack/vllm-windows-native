@@ -3,7 +3,7 @@
 """Trusted native-Windows RTX 5090 / SM120 NVFP4 GEMM regression."""
 from __future__ import annotations
 import importlib, os
-os.environ.setdefault("CUDA_LAUNCH_BLOCKING","1")
+os.environ["CUDA_LAUNCH_BLOCKING"]="1"
 import torch
 from vllm import _custom_ops as ops
 

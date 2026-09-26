@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "accepted-candidate",
   "project": "vllm-windows-native",
-  "milestone": "v0.27.1-native-windows-single-gpu-sm120",
+  "milestone": "v0.27.1-native-windows-single-gpu-sm120-nvfp4",
   "upstream": {
     "repository": "https://github.com/vllm-project/vllm.git",
     "tag": "v0.27.1",
