@@ -319,6 +319,17 @@ try{
     if([string]$update.action-ne'update'-or-not[bool]$update.what_if-or[bool]$update.confirm-ne$false-or-not[bool]$update.json){throw 'Update handoff did not preserve lifecycle switches.'}
     if(([string]$update.script_root).IndexOf('.handoff',[StringComparison]::OrdinalIgnoreCase)-lt0){throw 'Update handoff did not execute the materialized updater.'}
     if(-not([string]$update.manifest).StartsWith([string]$update.script_root,[StringComparison]::OrdinalIgnoreCase)){throw 'Update handoff manifest is outside materialized distribution.'}
+
+    $defaultProbe=Invoke-VllmAcquisitionUpdateHandoff -Acquisition $fixture.Acquisition -WhatIf -LifecycleInvoker {
+        param($Mode,$ScriptPath,$Parameters)
+        $null=$Mode;$null=$ScriptPath
+        [pscustomobject][ordered]@{
+            has_installation_root=$Parameters.Contains('InstallationRoot')
+            what_if=[bool]$Parameters.WhatIf
+        }
+    }
+    if([bool]$defaultProbe.has_installation_root-or-not[bool]$defaultProbe.what_if){throw 'Update handoff did not defer the installation-root default to update.ps1.'}
+    Write-Host 'RELEASE_HANDOFF_UPDATE_DEFAULT_DEFERRED_OK'
     Write-Host 'RELEASE_HANDOFF_UPDATE_OK'
 
     $handoffRoot=Join-Path $fixture.CacheRoot '.handoff'
@@ -345,6 +356,12 @@ try{
     } 'INJECTED_LIFECYCLE_FAILURE'
     if(-not$lockedObserved){throw 'Lifecycle handoff did not pin verified source artifacts.'}
     if((Test-Path -LiteralPath $handoffRoot)-and@(Get-ChildItem -LiteralPath $handoffRoot -Force).Count-ne0){throw 'Failed lifecycle handoff leaked a materialization generation.'}
+
+    Assert-Fails {
+        Initialize-VllmAcquisitionHandoffMaterialization -Acquisition $fixture.Acquisition -FaultPoint AfterMaterializedWriteBeforeVerify | Out-Null
+    } 'FAULT_INJECTED:AfterMaterializedWriteBeforeVerify'
+    if((Test-Path -LiteralPath $handoffRoot)-and@(Get-ChildItem -LiteralPath $handoffRoot -Force).Count-ne0){throw 'Post-write verification failure leaked a handoff materialization generation.'}
+    Write-Host 'RELEASE_HANDOFF_POSTWRITE_FAILURE_CLEANUP_OK'
     Write-Host 'RELEASE_HANDOFF_FAILURE_CLEANUP_OK'
 
     $originalReceiptRaw=Get-Content -LiteralPath $fixture.ReceiptPath -Raw
