@@ -1,0 +1,340 @@
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+
+$repoRoot=Split-Path -Parent $PSScriptRoot
+. (Join-Path $repoRoot 'scripts\common.ps1')
+. (Join-Path $repoRoot 'scripts\release-bundle.ps1')
+. (Join-Path $repoRoot 'scripts\release-verification.ps1')
+. (Join-Path $repoRoot 'scripts\release-acquisition.ps1')
+
+function Assert-Fails {
+    param([Parameter(Mandatory)][scriptblock]$Action,[Parameter(Mandatory)][string]$Contains)
+    $message=$null
+    try{& $Action}catch{$message=$_.Exception.Message}
+    if($null-eq$message){throw "Expected failure containing: $Contains"}
+    if($message.IndexOf($Contains,[StringComparison]::OrdinalIgnoreCase)-lt0){throw "Unexpected failure: $message"}
+}
+
+function Write-TestBytes {
+    param([string]$Path,[string]$Text)
+    $parent=Split-Path -Parent $Path
+    if($parent){[void][IO.Directory]::CreateDirectory($parent)}
+    [IO.File]::WriteAllText($Path,$Text,[Text.UTF8Encoding]::new($false))
+}
+
+function Write-TestWheel {
+    param([string]$Path)
+    $source=$Path+'.source'
+    [void][IO.Directory]::CreateDirectory($source)
+    try{
+        $entries=[ordered]@{
+            'vllm/__init__.py'="__version__ = '1.2.3'"+[char]10
+            'vllm/_test.pyd'='synthetic-native-bytes'
+            'vllm-1.2.3.dist-info/METADATA'=("Metadata-Version: 2.1"+[char]10+"Name: vllm"+[char]10+"Version: 1.2.3"+[char]10)
+            'vllm-1.2.3.dist-info/WHEEL'=("Wheel-Version: 1.0"+[char]10+"Generator: sm20-test"+[char]10+"Root-Is-Purelib: false"+[char]10+"Tag: cp313-cp313-win_amd64"+[char]10)
+        }
+        $members=New-Object System.Collections.Generic.List[object]
+        foreach($name in (Get-VllmReleaseOrdinalStrings -Values @($entries.Keys))){
+            $file=Join-Path $source $name.Replace('/','\')
+            Write-TestBytes -Path $file -Text ([string]$entries[$name])
+            $id=Get-VllmReleaseFileIdentity -Path $file
+            $members.Add([pscustomobject][ordered]@{RelativePath=$name;Path=$file;Size=[int64]$id.Size;Sha256=[string]$id.Sha256})
+        }
+        Write-VllmReleaseStoredZip -Context ([pscustomobject]@{Members=$members.ToArray()}) -Path $Path
+    }finally{
+        Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Initialize-FixtureRepo {
+    param([string]$Root,[string]$WheelPath)
+    [void][IO.Directory]::CreateDirectory($Root)
+    & git -C $Root init --initial-branch=main | Out-Null
+    if($LASTEXITCODE-ne0){throw 'fixture git init failed'}
+    & git -C $Root config user.name 'SM20 Fixture'
+    & git -C $Root config user.email 'sm20@example.invalid'
+    & git -C $Root config core.autocrlf false
+    Write-TestBytes -Path (Join-Path $Root 'payload\a.txt') -Text ('alpha'+[char]10)
+    Write-TestBytes -Path (Join-Path $Root 'payload\B.txt') -Text ('bravo'+[char]10)
+    $wheel=Get-VllmReleaseFileIdentity -Path $WheelPath
+    $runtime=[ordered]@{
+        schema_version=1
+        component='vllm-runtime'
+        milestone='test-release'
+        platform='windows-x86_64'
+        project_wheel=[ordered]@{
+            distribution='vllm'
+            version='1.2.3'
+            filename='vllm-1.2.3-cp313-cp313-win_amd64.whl'
+            size_bytes=[int64]$wheel.Size
+            sha256=[string]$wheel.Sha256
+            python_tag='cp313'
+            abi_tag='cp313'
+            platform_tag='win_amd64'
+            acquisition='provided-only'
+            dependency_install='no-deps-no-index'
+            native_extension_count=1
+            native_extensions=@('vllm\_test.pyd')
+        }
+    }
+    $runtimePath=Join-Path $Root 'manifests\runtime\runtime.json'
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $runtimePath))
+    Write-VllmReleaseCanonicalJson -Value $runtime -Path $runtimePath
+    $files=New-Object System.Collections.Generic.List[object]
+    foreach($relative in @('manifests/runtime/runtime.json','payload/B.txt','payload/a.txt')){
+        $path=Join-Path $Root $relative.Replace('/','\')
+        $id=Get-VllmReleaseFileIdentity -Path $path
+        $files.Add([ordered]@{path=$relative;size_bytes=[int64]$id.Size;sha256=[string]$id.Sha256})
+    }
+    $release=[ordered]@{
+        schema_version=1
+        component='runtime-release'
+        release='test-release'
+        platform='windows-x86_64'
+        self_path='manifests/release/release.json'
+        upstream=[ordered]@{repository='https://github.com/example/upstream.git';tag='v1.2.3';commit='1111111111111111111111111111111111111111'}
+        windows_patchset=[ordered]@{implementation_commit='2222222222222222222222222222222222222222';tree='3333333333333333333333333333333333333333';patch_sha256=('44'*32)}
+        wheel=[ordered]@{filename='vllm-1.2.3-cp313-cp313-win_amd64.whl';version='1.2.3';size_bytes=[int64]$wheel.Size;sha256=[string]$wheel.Sha256}
+        orchestration=[ordered]@{
+            python_manifest='manifests/bootstrap/python.json'
+            uv_manifest='manifests/bootstrap/uv.json'
+            venv_manifest='manifests/bootstrap/venv.json'
+            dependency_manifest='manifests/runtime/deps.json'
+            runtime_manifest='manifests/runtime/runtime.json'
+            python_receipt='forensic/python.json'
+            uv_receipt='forensic/uv.json'
+            venv_receipt='forensic/venv.json'
+            dependency_receipt='forensic/deps.json'
+            runtime_receipt='forensic/runtime.json'
+            runtime_root='runtime/venv'
+        }
+        managed_paths=@('runtime/venv')
+        files=$files.ToArray()
+    }
+    $releasePath=Join-Path $Root 'manifests\release\release.json'
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $releasePath))
+    Write-VllmReleaseCanonicalJson -Value $release -Path $releasePath
+    & git -C $Root add .
+    & git -C $Root -c commit.gpgsign=false commit -q -m fixture
+    if($LASTEXITCODE-ne0){throw 'fixture git commit failed'}
+    (& git -C $Root rev-parse HEAD).Trim()
+}
+
+function Get-FixtureSshKey {
+    param([Parameter(Mandatory)][string]$Path)
+    $psi=New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName='ssh-keygen'
+    $psi.Arguments='-q -t ed25519 -N "" -f "'+$Path+'"'
+    $psi.UseShellExecute=$false
+    $process=[Diagnostics.Process]::Start($psi)
+    $process.WaitForExit()
+    if($process.ExitCode-ne0){throw "ssh-keygen fixture creation failed with exit $($process.ExitCode)."}
+}
+
+function Get-FixtureAttestationJson {
+    param([string]$TagObject,[System.Collections.IDictionary]$Assets,[switch]$BadDigest)
+    $subjects=New-Object System.Collections.Generic.List[object]
+    $tag='release/test-release'
+    $repo='AviBackToBlack/vllm-windows-native'
+    $encoded=[Uri]::EscapeDataString($tag)
+    $subjects.Add([ordered]@{uri="pkg:github/$repo@$encoded";digest=[ordered]@{sha1=$TagObject}})
+    $index=0
+    foreach($name in $Assets.Keys){
+        $digest=[string]$Assets[$name]
+        if($BadDigest-and$index-eq0){$digest='0'*64}
+        $subjects.Add([ordered]@{name=[string]$name;digest=[ordered]@{sha256=$digest}})
+        $index++
+    }
+    [ordered]@{verificationResult=[ordered]@{statement=[ordered]@{
+        _type='https://in-toto.io/Statement/v1'
+        subject=$subjects.ToArray()
+        predicateType='https://in-toto.io/attestation/release/v0.2'
+        predicate=[ordered]@{repository=$repo;tag=$tag;purl="pkg:github/$repo@$encoded"}
+    }}}|ConvertTo-Json -Depth 10 -Compress
+}
+
+$root=Join-Path ([IO.Path]::GetTempPath()) ('vllm-sm20-'+[guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($root)
+try{
+    Assert-Fails { Assert-VllmAcquisitionRepository -RepositorySlug 'Other/repo' } 'Unsupported acquisition repository'
+    Assert-Fails { Assert-VllmAcquisitionTag -Tag 'latest' } 'exact release'
+
+    $probeConfig=Join-Path $root 'probe-config'
+    [void][IO.Directory]::CreateDirectory($probeConfig)
+    $probe=Join-Path $root 'gh-env-probe.cmd'
+    [IO.File]::WriteAllLines($probe,@('@echo off','echo %GH_HOST%^|%GH_PROMPT_DISABLED%^|%GITHUB_TOKEN%^|%GH_FOO%'),[Text.Encoding]::ASCII)
+    $oldHost=$env:GH_HOST;$oldGithubToken=$env:GITHUB_TOKEN;$oldFoo=$env:GH_FOO
+    try{
+        $env:GH_HOST='evil.invalid';$env:GITHUB_TOKEN='evil-token';$env:GH_FOO='evil-value'
+        $probeOut=Invoke-VllmAcquisitionGhCommand -Arguments @('ignored') -FailureLabel 'gh isolation probe' -GhConfigDirectory $probeConfig -GitHubToken 'fixture-token' -Executable $probe
+        if(-not$probeOut.Equals('github.com|1||',[StringComparison]::Ordinal)){throw "GitHub CLI isolation probe leaked ambient state: $probeOut"}
+        if($env:GH_HOST-ne'evil.invalid'-or$env:GITHUB_TOKEN-ne'evil-token'-or$env:GH_FOO-ne'evil-value'){throw 'GitHub CLI isolation did not restore caller environment.'}
+    }finally{
+        if($null-eq$oldHost){Remove-Item Env:GH_HOST -ErrorAction SilentlyContinue}else{$env:GH_HOST=$oldHost}
+        if($null-eq$oldGithubToken){Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue}else{$env:GITHUB_TOKEN=$oldGithubToken}
+        if($null-eq$oldFoo){Remove-Item Env:GH_FOO -ErrorAction SilentlyContinue}else{$env:GH_FOO=$oldFoo}
+    }
+    Write-Host 'ACQUISITION_GH_ISOLATION_OK'
+
+    $wheel=Join-Path $root 'vllm-1.2.3-cp313-cp313-win_amd64.whl'
+    Write-TestWheel -Path $wheel
+    $fixtureRepo=Join-Path $root 'source-repo'
+    $commit=Initialize-FixtureRepo -Root $fixtureRepo -WheelPath $wheel
+
+    $key=Join-Path $root 'fixture-key'
+    Get-FixtureSshKey -Path $key
+    $pub=([IO.File]::ReadAllText($key+'.pub')).Trim() -split ' '
+    $allowed=Join-Path $root 'allowed_signers'
+    [IO.File]::WriteAllText($allowed,"fixture-release $($pub[0]) $($pub[1])"+[char]10,[Text.UTF8Encoding]::new($false))
+    $fingerprint=Get-VllmReleaseSigningKeyFingerprint -KeyType $pub[0] -KeyData $pub[1]
+    & git -C $fixtureRepo -c tag.gpgSign=false -c 'gpg.format=ssh' -c "user.signingkey=$key" tag -s -a release/test-release -m fixture $commit
+    if($LASTEXITCODE-ne0){throw 'fixture signed tag creation failed'}
+    $script:RemoteTagObject=(& git -C $fixtureRepo rev-parse refs/tags/release/test-release).Trim().ToLowerInvariant()
+
+    $published=Join-Path $root 'published'
+    $null=Write-VllmOfflineRelease -Repository $fixtureRepo -ProjectCommit $commit -ReleaseManifestPath 'manifests/release/release.json' -WheelPath $wheel -ArtifactsDirectory $published
+    $assetMap=[ordered]@{}
+    $script:RemoteAssets=New-Object System.Collections.Generic.List[object]
+    foreach($file in @(Get-ChildItem -LiteralPath $published -File|Sort-Object Name)){
+        $hash=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        $assetMap[$file.Name]=$hash
+        $script:RemoteAssets.Add([ordered]@{name=$file.Name;size=[int64]$file.Length;digest=('sha256:'+$hash.ToLowerInvariant());state='uploaded'})
+    }
+    $script:PublishedDirectory=$published
+    $script:DownloadCount=0
+    $script:FakeBadAttestation=$false
+    $script:FakeRepositoryId=[int64]$script:VllmAcquisitionRepositoryId
+    $script:FakeTagType='tag'
+
+    $fakeGh={
+        param($Arguments,$FailureLabel)
+        $null=$FailureLabel
+        $args=[string[]]$Arguments
+        if($args[0]-eq'api'){
+            $endpoint=[string]$args[$args.Length-1]
+            if($endpoint-eq'repos/AviBackToBlack/vllm-windows-native'){
+                return ([ordered]@{id=$script:FakeRepositoryId;node_id=$script:VllmAcquisitionRepositoryNodeId;full_name=$script:VllmAcquisitionRepository}|ConvertTo-Json -Compress)
+            }
+            if($endpoint.Contains('/git/ref/tags/')){
+                return ([ordered]@{object=[ordered]@{type=$script:FakeTagType;sha=$script:RemoteTagObject}}|ConvertTo-Json -Depth 4 -Compress)
+            }
+            if($endpoint.Contains('/releases/tags/')){
+                return ([ordered]@{tag_name='release/test-release';draft=$false;immutable=$true;assets=$script:RemoteAssets.ToArray()}|ConvertTo-Json -Depth 6 -Compress)
+            }
+            throw "Unhandled fake gh api endpoint: $endpoint"
+        }
+        if($args[0]-eq'release'-and$args[1]-eq'download'){
+            $patternIndex=[Array]::IndexOf($args,'--pattern')
+            $dirIndex=[Array]::IndexOf($args,'--dir')
+            $name=$args[$patternIndex+1];$dir=$args[$dirIndex+1]
+            Copy-Item -LiteralPath (Join-Path $script:PublishedDirectory $name) -Destination (Join-Path $dir $name)
+            $script:DownloadCount++
+            return ''
+        }
+        if($args[0]-eq'release'-and($args[1]-eq'verify'-or$args[1]-eq'verify-asset')){
+            return Get-FixtureAttestationJson -TagObject $script:RemoteTagObject -Assets $assetMap -BadDigest:$script:FakeBadAttestation
+        }
+        throw "Unhandled fake gh command: $($args -join ' ')"
+    }
+
+    $null=Resolve-VllmAcquisitionReleaseContext -Repository $fixtureRepo -ProjectCommit $commit -Tag 'release/test-release'
+    Assert-Fails { Resolve-VllmAcquisitionReleaseContext -Repository $fixtureRepo -ProjectCommit $commit -Tag 'release/no-such-release' } 'exactly one matching release manifest'
+
+    $cache=Join-Path $root 'cache'
+    $r1=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $cache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    if($script:DownloadCount-ne4){throw "Initial acquisition downloaded unexpected asset count: $($script:DownloadCount)"}
+    if(-not(Test-Path -LiteralPath $r1.receipt_path -PathType Leaf)-or-not(Test-Path -LiteralPath $r1.wheel_path -PathType Leaf)){throw 'Initial acquisition did not commit the verified cache entry.'}
+    $receipt=Read-VllmAcquisitionReceipt -Path $r1.receipt_path
+    if(-not([string]$receipt.release.tag_object).Equals($script:RemoteTagObject,[StringComparison]::OrdinalIgnoreCase)){throw 'Acquisition receipt tag object mismatch.'}
+    Write-Host 'ACQUISITION_EXACT_TAG_OK'
+
+    $stale=Join-Path $cache '.staging\stale-generation'
+    [void][IO.Directory]::CreateDirectory($stale)
+    Write-TestBytes -Path (Join-Path $stale 'partial.bin') -Text 'partial'
+    $r2=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $cache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    if($script:DownloadCount-ne4){throw 'Exact cache hit unexpectedly re-downloaded assets.'}
+    if(-not$r2.cache_entry.Equals($r1.cache_entry,[StringComparison]::OrdinalIgnoreCase)){throw 'Exact cache hit returned a different entry.'}
+    if(-not(Test-Path -LiteralPath $stale -PathType Container)){throw 'Acquisition incorrectly adopted or removed an unrelated stale staging generation.'}
+    Write-Host 'ACQUISITION_CACHE_HIT_OK'
+
+    $repoCache=Join-Path (Join-Path $cache 'verified') ([string]$script:VllmAcquisitionRepositoryId)
+    $held=Enter-VllmAcquisitionCacheLock -RepositoryCacheRoot $repoCache -Operation 'test-holder'
+    try{Assert-Fails { Enter-VllmAcquisitionCacheLock -RepositoryCacheRoot $repoCache -Operation 'test-contender' } 'Another release acquisition cache commit'}finally{Exit-VllmAcquisitionCacheLock -Lock $held}
+    $reclaimed=Enter-VllmAcquisitionCacheLock -RepositoryCacheRoot $repoCache -Operation 'test-reclaimed'
+    Exit-VllmAcquisitionCacheLock -Lock $reclaimed
+    Write-Host 'ACQUISITION_CACHE_LOCK_OK'
+
+    $faultCache=Join-Path $root 'fault-before-cache'
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $faultCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh -FaultPoint BeforeCachePublish
+    } 'FAULT_INJECTED:BeforeCachePublish'
+    $faultFinal=Join-Path (Join-Path (Join-Path $faultCache 'verified') ([string]$script:VllmAcquisitionRepositoryId)) $script:RemoteTagObject
+    if(Test-Path -LiteralPath $faultFinal){throw 'Pre-publish acquisition fault exposed a final cache entry.'}
+    Write-Host 'ACQUISITION_PREPUBLISH_FAULT_OK'
+
+    $afterCache=Join-Path $root 'fault-after-cache'
+    $downloadsBefore=$script:DownloadCount
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $afterCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh -FaultPoint AfterCachePublish
+    } 'FAULT_INJECTED:AfterCachePublish'
+    $downloadsAfterFault=$script:DownloadCount
+    if($downloadsAfterFault-ne($downloadsBefore+4)){throw 'After-cache fault did not complete exactly one four-asset download.'}
+    $recovered=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $afterCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    if($script:DownloadCount-ne$downloadsAfterFault){throw 'Retry after post-publish interruption re-downloaded an already committed exact cache entry.'}
+    if(-not(Test-Path -LiteralPath $recovered.receipt_path -PathType Leaf)){throw 'Retry after post-publish interruption did not recover the cache entry.'}
+    Write-Host 'ACQUISITION_POSTPUBLISH_RECOVERY_OK'
+
+    $badAttestationCache=Join-Path $root 'bad-attestation'
+    $script:FakeBadAttestation=$true
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $badAttestationCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'digest mismatch'
+    $script:FakeBadAttestation=$false
+    $badFinal=Join-Path (Join-Path (Join-Path $badAttestationCache 'verified') ([string]$script:VllmAcquisitionRepositoryId)) $script:RemoteTagObject
+    if(Test-Path -LiteralPath $badFinal){throw 'Attestation failure exposed a verified cache entry.'}
+    Write-Host 'ACQUISITION_ATTESTATION_FAIL_CLOSED_OK'
+
+    $poisonCache=Join-Path $root 'poison-cache'
+    $poison=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $poisonCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    [IO.File]::AppendAllText($poison.wheel_path,'tamper',[Text.UTF8Encoding]::new($false))
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $poisonCache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'size/SHA-256 mismatch'
+    Write-Host 'ACQUISITION_POISONED_CACHE_FAIL_CLOSED_OK'
+
+    $originalTagObject=$script:RemoteTagObject
+    Write-TestBytes -Path (Join-Path $fixtureRepo 'unowned-extra.txt') -Text 'new commit'
+    & git -C $fixtureRepo add unowned-extra.txt
+    & git -C $fixtureRepo -c commit.gpgsign=false commit -q -m retag
+    $commit2=(& git -C $fixtureRepo rev-parse HEAD).Trim()
+    & git -C $fixtureRepo tag -d release/test-release | Out-Null
+    & git -C $fixtureRepo -c tag.gpgSign=false -c 'gpg.format=ssh' -c "user.signingkey=$key" tag -s -a release/test-release -m retag $commit2
+    if($LASTEXITCODE-ne0){throw 'fixture retag creation failed'}
+    $script:RemoteTagObject=(& git -C $fixtureRepo rev-parse refs/tags/release/test-release).Trim().ToLowerInvariant()
+    if($script:RemoteTagObject.Equals($originalTagObject,[StringComparison]::OrdinalIgnoreCase)){throw 'Retag fixture did not change the annotated tag object.'}
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot $cache -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'same tag bound to a different tag object'
+    Write-Host 'ACQUISITION_RETAG_CONFLICT_OK'
+
+    $script:RemoteTagObject=$originalTagObject
+    $script:FakeRepositoryId=123
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot (Join-Path $root 'wrong-repo') -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'repository id mismatch'
+    $script:FakeRepositoryId=[int64]$script:VllmAcquisitionRepositoryId
+
+    $script:FakeTagType='commit'
+    $tagProbe=Join-Path $root 'tag-probe-config'
+    [void][IO.Directory]::CreateDirectory($tagProbe)
+    Assert-Fails {
+        Get-VllmAcquisitionRemoteTagObject -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -GhConfigDirectory $tagProbe -GitHubToken 'fixture-token' -GhCommandInvoker $fakeGh
+    } 'annotated tag object'
+    $script:FakeTagType='tag'
+    Write-Host 'ACQUISITION_IDENTITY_FAIL_CLOSED_OK'
+
+    Write-Host 'RELEASE_ACQUISITION_CONTRACT_OK'
+}finally{
+    if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue}
+}
