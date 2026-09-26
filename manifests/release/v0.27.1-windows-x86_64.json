@@ -10,15 +10,15 @@
     "commit": "6e448d0ea9bf3d88d898b65449ca6dc2aec170ac"
   },
   "windows_patchset": {
-    "implementation_commit": "9f18048a2052072166ccc3b0ffef364e72bb4d11",
-    "tree": "115fa3e10d4b5a45c3e647cb343680a1fc743d18",
-    "patch_sha256": "08416EBB43632A0AC485839644A98E875A4AD9EBC49BE193DA25AB804AE6A272"
+    "implementation_commit": "947573f52816f0ecea62248c06ccf5ea4f196b5f",
+    "tree": "4610a5c5d6f255cc3670ddd645de9a2e5b2389e2",
+    "patch_sha256": "121E008ED126CB6AC78FE3E585610E7F52BA1510C36454011EB984D5A0CD25A4"
   },
   "wheel": {
-    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl",
-    "version": "0.27.2.dev0+g6e448d0ea.d20260909",
-    "size_bytes": 176769951,
-    "sha256": "66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6"
+    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260925-cp313-cp313-win_amd64.whl",
+    "version": "0.27.2.dev0+g6e448d0ea.d20260925",
+    "size_bytes": 176769128,
+    "sha256": "BD4A6E1D919A53FA98D27D221AD722507313025E6EF698AC32C126FCE5334A5E"
   },
   "orchestration": {
     "python_manifest": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
@@ -173,7 +173,7 @@
     {
       "path": "manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json",
       "size_bytes": 3413,
-      "sha256": "BF51030C91808A83A9BFB77ED5920A8D936A76612A31BC762E73BE5CA5080EE6"
+      "sha256": "071D184E227DA95B69ADA489B4A70BDF759350332F444B59F3DBEC894F986793"
     },
     {
       "path": "requirements/runtime-v0.27.1.in",

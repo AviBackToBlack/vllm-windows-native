@@ -9,11 +9,11 @@
     "commit": "6e448d0ea9bf3d88d898b65449ca6dc2aec170ac"
   },
   "accepted_delta": {
-    "implementation_commit": "9f18048a2052072166ccc3b0ffef364e72bb4d11",
-    "tree": "115fa3e10d4b5a45c3e647cb343680a1fc743d18",
+    "implementation_commit": "947573f52816f0ecea62248c06ccf5ea4f196b5f",
+    "tree": "4610a5c5d6f255cc3670ddd645de9a2e5b2389e2",
     "patch": "patches/windows/v0.27.1/0001-native-windows-cuda-sm120.patch",
-    "patch_sha256": "08416EBB43632A0AC485839644A98E875A4AD9EBC49BE193DA25AB804AE6A272",
-    "patch_size_bytes": 154264,
+    "patch_sha256": "121E008ED126CB6AC78FE3E585610E7F52BA1510C36454011EB984D5A0CD25A4",
+    "patch_size_bytes": 157484,
     "clean_apply_to_upstream": true,
     "applied_tree_matches_accepted_tree": true
   },
@@ -54,7 +54,7 @@
     }
   },
   "embedded_dependency_patches": {
-    "cutlass-windows.patch": "F78FCAF1BB6DEBE16EC517859E2F70D4F38F78E7FE74B7F1991F17D23AE39484",
+    "cutlass-windows.patch": "84A35AE1E2CDC5A2502A6FA9BA41767B6A29C56A67A253551ED71235E9C37E06",
     "deepgemm-cutlass-windows.patch": "F108188EB0DBFBD8E8A828BB43C0FD686553ED5ED6E5B5E5D439B26CCF488BE9",
     "deepgemm-windows.patch": "2DD589524126BDCF11FE363DC6D414FB1B9C059B39D3BD7A4E945B848D6992F9",
     "flashkda-cutlass-windows.patch": "FC2AE8ACA448CD0B8011B2D836DB36BFCFA55E5ED1A8563CB28E50F037E2AF2C",
@@ -62,9 +62,9 @@
     "vllm-flash-attn-cutlass-windows.patch": "165B2D8DEFCD80863E3831F7EB4E580EAB41365BB096789F09BFD37CB0F9EE95"
   },
   "artifact": {
-    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl",
-    "size_bytes": 176829605,
-    "sha256": "EA763A7BBC7F3EE445C999F71597C82DF1E22A00715311EFCC2C6B46FB50D23A",
+    "filename": "vllm-0.27.2.dev0+g6e448d0ea.d20260925-cp313-cp313-win_amd64.whl",
+    "size_bytes": 176769128,
+    "sha256": "BD4A6E1D919A53FA98D27D221AD722507313025E6EF698AC32C126FCE5334A5E",
     "zip_test": "pass",
     "native_extension_count": 9,
     "native_extensions": [
@@ -83,6 +83,143 @@
     "os": "Windows 11 x64",
     "gpu": "NVIDIA GeForce RTX 5090",
     "compute_capability": "12.0",
+    "fresh_runtime": {
+      "result": "pass",
+      "python": "3.13.15",
+      "torch": "2.13.0+cu130",
+      "cuda_runtime": "13.0",
+      "wheel_sha256": "BD4A6E1D919A53FA98D27D221AD722507313025E6EF698AC32C126FCE5334A5E",
+      "dependency_lock": "requirements/vllm-runtime-v0.27.1.lock.txt",
+      "dependency_lock_package_count": 159,
+      "dependency_sync": "offline-hash-pinned",
+      "wheel_install": "no-deps-no-index",
+      "pip_check": "pass",
+      "native_imports": "9/9 pass",
+      "wheel_direct_url_verified": true
+    },
+    "sm120_nvfp4_gemm": {
+      "result": "pass",
+      "test": "tests/sm120-nvfp4.ps1",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "compute_capability": "12.0",
+      "support_predicate": true,
+      "native_extension": "vllm/_C_stable_libtorch.pyd",
+      "selected_kernel": "CutlassNvFp4LinearKernel",
+      "cuda_launch_blocking": true,
+      "dtypes": [
+        "float16",
+        "bfloat16"
+      ],
+      "shapes": [
+        [
+          128,
+          128,
+          64
+        ],
+        [
+          128,
+          128,
+          128
+        ],
+        [
+          256,
+          128,
+          64
+        ],
+        [
+          128,
+          256,
+          128
+        ],
+        [
+          150,
+          128,
+          64
+        ],
+        [
+          128,
+          128,
+          96
+        ]
+      ],
+      "cases_passed": 12,
+      "cases_total": 12,
+      "assert_close": {
+        "atol": 0.1,
+        "rtol": 0.1
+      },
+      "marker": "SM120_NVFP4_ACCEPTANCE_OK"
+    },
+    "qwen38_nvfp4_golden_workload": {
+      "result": "pass",
+      "model": {
+        "repository": "Inferact/Qwen3.8-27B-NVFP4",
+        "revision": "6128240ebaf4eaa7bad2b3d1c72c37d677c5f462",
+        "safetensors_files": 7,
+        "safetensors_size_bytes": 26381249312,
+        "config_sha256": "267BE2125EE2EC272555748C87CC636B25A96107946F05491BD6043151C7FE4E",
+        "model_index_sha256": "F9BA0436D933E2362FB1BFA0508931C28B68F1FDDBD5B94E6D50712E36A0636C"
+      },
+      "profile": {
+        "tensor_parallel_size": 1,
+        "max_model_len": 32768,
+        "kv_cache_dtype": "fp8",
+        "enforce_eager": true,
+        "speculative_config": null,
+        "quantization": "modelopt_fp4",
+        "selected_kernel": "CutlassNvFp4LinearKernel"
+      },
+      "offline_generation": {
+        "result": "pass",
+        "weights_load_seconds": 112.53,
+        "model_memory_gib": 24.21,
+        "engine_ready_seconds": 325.887,
+        "kv_cache_tokens": 61440,
+        "max_32768_token_concurrency": 1.88,
+        "generation_seconds": 8.0,
+        "generated_tokens": 13,
+        "generated_text": "Confirmed: native Windows NVFP4 inference is running.",
+        "marker": "QWEN38_NVFP4_OFFLINE_ACCEPTANCE=PASS"
+      },
+      "openai_server": {
+        "result": "pass",
+        "hub_offline": true,
+        "models_http_status": 200,
+        "models_elapsed_ms": 159,
+        "served_model_name": "Inferact/Qwen3.8-27B-NVFP4",
+        "chat_http_status": 200,
+        "visible_chat_elapsed_ms": 13988,
+        "visible_chat_completion_tokens": 58,
+        "visible_chat_finish_reason": "stop",
+        "visible_chat_content": "That's great news—glad the Native Windows NVFP4 API is up and running!",
+        "reasoning_parser": "qwen3",
+        "reasoning_parser_result": "pass",
+        "tool_call_parser": "qwen3_xml",
+        "tool_parser_result": "pass",
+        "tool_call_name": "add_numbers",
+        "tool_call_arguments": {
+          "a": 2,
+          "b": 3
+        },
+        "cleanup": "pass"
+      },
+      "notes": [
+        "The checkpoint reports ModelOpt NVFP4 (quant_algo=NVFP4).",
+        "The engine selected CutlassNvFp4LinearKernel; no NVFP4 emulation fallback was used.",
+        "FP8 KV cache emitted upstream scaling-factor warnings because the checkpoint does not provide calibrated q/prob scaling factors; token generation and HTTP acceptance still passed.",
+        "The non-fatal world-size-1 c10d WinError 10049 warning remains visible on Windows."
+      ]
+    }
+  },
+  "known_limitations": [
+    "FA3 is intentionally absent: upstream FA3 does not support Blackwell SM120.",
+    "DeepGEMM 2.6.1 binary/JIT plumbing is ported, but upstream runtime dispatch has no SM120 kernel backend and returns Unsupported architecture for real GEMM execution.",
+    "Only single-GPU execution is accepted by this milestone; Windows NCCL / tensor parallel / pipeline parallel are not yet accepted.",
+    "A non-fatal PyTorch c10d hostname connection warning (WinError 10049) remains to be investigated."
+  ],
+  "provenance_note": "Community Windows ports were research/reference sources. This manifest records build inputs and validation; line-level provenance/attribution review remains required before a public release.",
+  "historical_pre_nvfp4_validation": {
+    "artifact_scope": "pre-NVFP4 accepted artifacts; retained for historical evidence only",
     "pristine_install": true,
     "pip_check": "pass",
     "native_imports": "9/9 pass",
@@ -104,14 +241,7 @@
       "expected_text_contains": "Dublin"
     }
   },
-  "known_limitations": [
-    "FA3 is intentionally absent: upstream FA3 does not support Blackwell SM120.",
-    "DeepGEMM 2.6.1 binary/JIT plumbing is ported, but upstream runtime dispatch has no SM120 kernel backend and returns Unsupported architecture for real GEMM execution.",
-    "Only single-GPU execution is accepted by this milestone; Windows NCCL / tensor parallel / pipeline parallel are not yet accepted.",
-    "A non-fatal PyTorch c10d hostname connection warning (WinError 10049) remains to be investigated."
-  ],
-  "provenance_note": "Community Windows ports were research/reference sources. This manifest records build inputs and validation; line-level provenance/attribution review remains required before a public release.",
-  "reproducibility_validation": {
+  "historical_pre_nvfp4_reproducibility_validation": {
     "project_commit": "3954185a8bc0ec3f6896116c04cad37a1b11f4d8",
     "source_materialization": "verified-git-tree-raw-blobs",
     "source_tree": "115fa3e10d4b5a45c3e647cb343680a1fc743d18",
