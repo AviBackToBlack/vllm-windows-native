@@ -193,12 +193,12 @@ function Invoke-VllmAcquisitionGitCommand {
         $env:GIT_CONFIG_GLOBAL='NUL'
         $env:GIT_TERMINAL_PROMPT='0'
         $ErrorActionPreference='Continue'
-        $args=New-Object System.Collections.Generic.List[string]
-        if(-not[string]::IsNullOrWhiteSpace($Repository)){$args.Add('-C');$args.Add([IO.Path]::GetFullPath($Repository))}
-        $args.Add('-c');$args.Add('core.longpaths=true')
-        $args.Add('-c');$args.Add('core.hooksPath=NUL')
-        foreach($arg in $Arguments){$args.Add($arg)}
-        $output=@(& git @($args.ToArray()) 2>&1)
+        $gitArguments=New-Object System.Collections.Generic.List[string]
+        if(-not[string]::IsNullOrWhiteSpace($Repository)){$gitArguments.Add('-C');$gitArguments.Add([IO.Path]::GetFullPath($Repository))}
+        $gitArguments.Add('-c');$gitArguments.Add('core.longpaths=true')
+        $gitArguments.Add('-c');$gitArguments.Add('core.hooksPath=NUL')
+        foreach($arg in $Arguments){$gitArguments.Add($arg)}
+        $output=@(& git @($gitArguments.ToArray()) 2>&1)
         $exit=$LASTEXITCODE
     }finally{
         $ErrorActionPreference=$old
@@ -219,7 +219,7 @@ function Invoke-VllmAcquisitionGitCommand {
     $output -join [char]10
 }
 
-function New-VllmAcquisitionGitRepository {
+function Initialize-VllmAcquisitionGitRepository {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Tag,
@@ -246,7 +246,7 @@ function Resolve-VllmAcquisitionReleaseContext {
     $paths=@($tree -split [char]10|ForEach-Object{$_.Trim()}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)-and$_.EndsWith('.json',[StringComparison]::OrdinalIgnoreCase)})
     $snapshot=Get-VllmReleaseGitSnapshot -Repository $Repository -Commit $ProjectCommit
     try{
-        $matches=New-Object System.Collections.Generic.List[object]
+        $releaseMatches=New-Object System.Collections.Generic.List[object]
         foreach($path in $paths){
             try{
                 $file=Get-VllmReleaseSnapshotFile -Snapshot $snapshot -RelativePath $path
@@ -260,7 +260,7 @@ function Resolve-VllmAcquisitionReleaseContext {
             if(-not("release/"+[string]$candidate.release).Equals($Tag,[StringComparison]::Ordinal)){continue}
             if($null-eq$candidate.PSObject.Properties['self_path']-or-not([string]$candidate.self_path).Equals($path,[StringComparison]::Ordinal)){continue}
             $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $path
-            $matches.Add([pscustomobject][ordered]@{
+            $releaseMatches.Add([pscustomobject][ordered]@{
                 release=[string]$context.Release.release
                 tag=[string]$context.Tag
                 project_commit=[string]$snapshot.Commit
@@ -273,8 +273,8 @@ function Resolve-VllmAcquisitionReleaseContext {
                 bundle_filename=[string]$context.BundleFilename
             })
         }
-        if($matches.Count-ne1){throw "Authenticated tag must resolve to exactly one matching release manifest; found $($matches.Count)."}
-        $matches[0]
+        if($releaseMatches.Count-ne1){throw "Authenticated tag must resolve to exactly one matching release manifest; found $($releaseMatches.Count)."}
+        $releaseMatches[0]
     }finally{
         Close-VllmReleaseGitSnapshot -Snapshot $snapshot
     }
@@ -310,8 +310,8 @@ function Get-VllmAcquisitionRemoteRelease {
         $name=[string]$asset.name
         if([string]::IsNullOrWhiteSpace($name)-or-not([IO.Path]::GetFileName($name)).Equals($name,[StringComparison]::Ordinal)-or$name.IndexOfAny([char[]]'*?[]')-ge0){throw "GitHub release asset name is unsafe: $name"}
         if(-not$seenExact.Add($name)-or-not$seenWindows.Add($name)){throw "GitHub release contains a duplicate or case-colliding asset: $name"}
-        $matches=@($expected|Where-Object{([string]$_).Equals($name,[StringComparison]::Ordinal)})
-        if($matches.Count-ne1){throw "GitHub release contains an unexpected asset: $name"}
+        $assetMatches=@($expected|Where-Object{([string]$_).Equals($name,[StringComparison]::Ordinal)})
+        if($assetMatches.Count-ne1){throw "GitHub release contains an unexpected asset: $name"}
         if(-not([string]$asset.state).Equals('uploaded',[StringComparison]::Ordinal)){throw "GitHub release asset is not fully uploaded: $name"}
         $digest=[string]$asset.digest
         if($digest-notmatch'^sha256:[0-9A-Fa-f]{64}$'){throw "GitHub release asset digest is invalid: $name"}
@@ -369,9 +369,9 @@ function Assert-VllmAcquisitionRemoteAssetsMatchLocal {
     param([Parameter(Mandatory)][object[]]$RemoteAssets,[Parameter(Mandatory)][object[]]$LocalAssets)
     if($RemoteAssets.Count-ne4-or$LocalAssets.Count-ne4){throw 'Remote/local acquisition asset count mismatch.'}
     foreach($local in $LocalAssets){
-        $matches=@($RemoteAssets|Where-Object{([string]$_.name).Equals([string]$local.name,[StringComparison]::Ordinal)})
-        if($matches.Count-ne1){throw "Remote release metadata is missing verified local asset: $($local.name)"}
-        $remote=$matches[0]
+        $remoteMatches=@($RemoteAssets|Where-Object{([string]$_.name).Equals([string]$local.name,[StringComparison]::Ordinal)})
+        if($remoteMatches.Count-ne1){throw "Remote release metadata is missing verified local asset: $($local.name)"}
+        $remote=$remoteMatches[0]
         if([int64]$remote.size-ne[int64]$local.size){throw "Remote release asset size mismatch after download: $($local.name)"}
         if(-not([string]$remote.sha256).Equals([string]$local.sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Remote release asset digest mismatch after download: $($local.name)"}
     }
@@ -383,7 +383,7 @@ function ConvertTo-VllmAcquisitionReceiptArtifact {
     [ordered]@{filename=[string]$Asset.name;size_bytes=[int64]$Asset.size;sha256=([string]$Asset.sha256).ToUpperInvariant()}
 }
 
-function New-VllmAcquisitionReceipt {
+function Get-VllmAcquisitionReceipt {
     param(
         [Parameter(Mandatory)]$RepositoryIdentity,
         [Parameter(Mandatory)]$ReleaseContext,
@@ -602,7 +602,7 @@ function Invoke-VllmReleaseAcquisition {
     try{
         $repoIdentity=Assert-VllmAcquisitionRepositoryIdentity -RepositorySlug $RepositorySlug -GhConfigDirectory $ghConfig -GitHubToken $GitHubToken -GhExecutable $GhExecutable -GhCommandInvoker $GhCommandInvoker
         $remoteTagObject=Get-VllmAcquisitionRemoteTagObject -RepositorySlug $RepositorySlug -Tag $Tag -GhConfigDirectory $ghConfig -GitHubToken $GitHubToken -GhExecutable $GhExecutable -GhCommandInvoker $GhCommandInvoker
-        $git=New-VllmAcquisitionGitRepository -Path $gitRepo -Tag $Tag -GitSourceUrl $GitSourceUrl
+        $git=Initialize-VllmAcquisitionGitRepository -Path $gitRepo -Tag $Tag -GitSourceUrl $GitSourceUrl
         if(-not([string]$git.tag_object).Equals($remoteTagObject,[StringComparison]::OrdinalIgnoreCase)){throw "Fetched tag object does not match authenticated GitHub tag object: fetched=$($git.tag_object), remote=$remoteTagObject"}
         $commitRef="refs/tags/$Tag"+'^{commit}'
         $peeled=(Invoke-VllmAcquisitionGitCommand -Repository $gitRepo -Arguments @('rev-parse',$commitRef) -FailureLabel 'Unable to peel authenticated release tag').Trim().ToLowerInvariant()
@@ -631,7 +631,7 @@ function Invoke-VllmReleaseAcquisition {
         }
         $expectedAssets=Get-VllmReleaseExpectedAssets -ArtifactsDirectory $artifacts -OfflineVerification $offline
         $githubVerification=Invoke-VllmGitHubReleaseVerification -RepositorySlug $RepositorySlug -Tag $Tag -ExpectedTagObject $remoteTagObject -ArtifactsDirectory $artifacts -ExpectedAssets $expectedAssets -GhExecutable $GhExecutable -GhJsonInvoker $ghInvoker
-        $receipt=New-VllmAcquisitionReceipt -RepositoryIdentity $repoIdentity -ReleaseContext $context -SignedTag $signed -LocalAssets $localAssets -GitHubVerification $githubVerification
+        $receipt=Get-VllmAcquisitionReceipt -RepositoryIdentity $repoIdentity -ReleaseContext $context -SignedTag $signed -LocalAssets $localAssets -GitHubVerification $githubVerification
         $null=Write-VllmAcquisitionReceipt -Path (Join-Path $candidate 'acquisition-receipt.json') -Receipt $receipt
         if($FaultPoint-eq'BeforeCachePublish'){throw 'FAULT_INJECTED:BeforeCachePublish'}
         $lock=$null
