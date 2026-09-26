@@ -27,7 +27,9 @@ function Enter-VllmAcquisitionHandoffSource {
     Assert-VllmReleaseExactProperties -Value $Acquisition -Expected @(
         'schema_version','component','repository','release','tag','tag_object','project_commit',
         'cache_entry','artifacts_directory','wheel_path','bundle_path','release_index_path',
-        'checksums_path','receipt_path','release_manifest_path'
+        'checksums_path','receipt_path','release_manifest_path','release_manifest_sha256',
+        'runtime_manifest_sha256','signing_principal','signing_key_fingerprint','wheel_sha256',
+        'bundle_sha256','release_index_sha256','checksums_sha256'
     ) -Label 'Acquisition handoff input'
     if([int]$Acquisition.schema_version-ne1-or-not([string]$Acquisition.component).Equals('vllm-windows-native-acquisition',[StringComparison]::Ordinal)){
         throw 'Acquisition handoff input schema/component is unsupported.'
@@ -60,6 +62,21 @@ function Enter-VllmAcquisitionHandoffSource {
         if(-not([string]$pair[0]).Equals([string]$pair[1],[StringComparison]::OrdinalIgnoreCase)){
             throw "Acquisition handoff $($pair[2]) does not match the verified receipt."
         }
+    }
+    foreach($pair in @(
+        @([string]$Acquisition.release_manifest_sha256,[string]$receipt.release.release_manifest_sha256,'release manifest SHA-256'),
+        @([string]$Acquisition.runtime_manifest_sha256,[string]$receipt.release.runtime_manifest_sha256,'runtime manifest SHA-256'),
+        @([string]$Acquisition.wheel_sha256,[string]$receipt.artifacts.wheel.sha256,'wheel SHA-256'),
+        @([string]$Acquisition.bundle_sha256,[string]$receipt.artifacts.bundle.sha256,'bundle SHA-256'),
+        @([string]$Acquisition.release_index_sha256,[string]$receipt.artifacts.index.sha256,'release index SHA-256'),
+        @([string]$Acquisition.checksums_sha256,[string]$receipt.artifacts.checksums.sha256,'checksums SHA-256')
+    )){
+        if(-not([string]$pair[0]).Equals([string]$pair[1],[StringComparison]::OrdinalIgnoreCase)){
+            throw "Acquisition handoff $($pair[2]) does not match the verified acquisition result."
+        }
+    }
+    if(-not([string]$Acquisition.signing_principal).Equals([string]$receipt.signing.principal,[StringComparison]::Ordinal)-or-not([string]$Acquisition.signing_key_fingerprint).Equals([string]$receipt.signing.key_fingerprint,[StringComparison]::Ordinal)){
+        throw 'Acquisition handoff signer identity does not match the verified acquisition result.'
     }
     $cacheRoot=Get-VllmAcquisitionHandoffCacheRoot -CacheEntry $cacheEntry -Receipt $receipt
     $artifacts=Assert-VllmAcquisitionDirectory -Path (Join-Path $cacheEntry 'artifacts') -Label 'Acquisition handoff artifacts'
