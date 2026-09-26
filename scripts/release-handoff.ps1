@@ -1,5 +1,15 @@
 Set-StrictMode -Version Latest
 
+function Test-VllmAcquisitionHandoffSharingViolation {
+    param([Parameter(Mandatory)][Exception]$Exception)
+    $current=$Exception
+    while($null-ne$current){
+        if(($current.HResult-band 0xFFFF)-eq32){return $true}
+        $current=$current.InnerException
+    }
+    $false
+}
+
 function Test-VllmAcquisitionHandoffPathEqual {
     param([Parameter(Mandatory)][string]$A,[Parameter(Mandatory)][string]$B)
     (Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($A))).Equals((Get-VllmPathWithoutTrailingSeparator ([IO.Path]::GetFullPath($B))),[StringComparison]::OrdinalIgnoreCase)
@@ -99,8 +109,8 @@ function Enter-VllmAcquisitionHandoffSource {
     Assert-VllmReleaseOrdinalSequence -Actual $actualNames -Expected $expectedNames -Label 'Acquisition handoff artifact filename set'
     try{
         $guards=Enter-VllmReleaseArtifactGuards -Root $artifacts -Names ([string[]]$expectedNames)
-    }catch [IO.IOException]{
-        if(($_.Exception.HResult-band 0xFFFF)-eq32){throw 'Another verified lifecycle handoff is active for this acquisition cache.'}
+    }catch{
+        if(Test-VllmAcquisitionHandoffSharingViolation -Exception $_.Exception){throw 'Another verified lifecycle handoff is active for this acquisition cache.'}
         throw
     }
     try{
@@ -277,8 +287,8 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
         $handoffParent=Assert-VllmAcquisitionDirectory -Path (Join-Path ([string]$source.CacheRoot) '.handoff') -Label 'Acquisition handoff root' -Create
         $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $handoffParent -Format Guid)
         try{$parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($handoffParent)}
-        catch [IO.IOException]{
-            if(($_.Exception.HResult-band 0xFFFF)-eq32){throw 'Another verified lifecycle handoff is active for this acquisition cache.'}
+        catch{
+            if(Test-VllmAcquisitionHandoffSharingViolation -Exception $_.Exception){throw 'Another verified lifecycle handoff is active for this acquisition cache.'}
             throw
         }
         $parentEntry=Get-VllmPathEntryInfo -Path $handoffParent
