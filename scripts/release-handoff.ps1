@@ -238,7 +238,7 @@ function Get-VllmAcquisitionBundleContract {
 }
 
 function Get-VllmAcquisitionHandoffDirectoryRecord {
-    param([Parameter(Mandatory)][hashtable]$Directories,[Parameter(Mandatory)][string]$RelativeDirectory)
+    param([Parameter(Mandatory)][hashtable]$Directories,[Parameter(Mandatory)][AllowEmptyString()][string]$RelativeDirectory)
     $normalized=if([string]::IsNullOrWhiteSpace($RelativeDirectory)){''}else{(Assert-VllmSafeRelativePath -RelativePath $RelativeDirectory -Label 'Acquisition handoff directory').Replace('\','/')}
     if($Directories.ContainsKey($normalized.ToLowerInvariant())){return $Directories[$normalized.ToLowerInvariant()]}
     $segments=@($normalized -split '/')
