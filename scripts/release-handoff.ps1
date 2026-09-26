@@ -260,7 +260,10 @@ function Get-VllmAcquisitionHandoffDirectoryRecord {
 }
 
 function Initialize-VllmAcquisitionHandoffMaterialization {
-    param([Parameter(Mandatory)]$Acquisition)
+    param(
+        [Parameter(Mandatory)]$Acquisition,
+        [ValidateSet('None','AfterMaterializedWriteBeforeVerify')][string]$FaultPoint='None'
+    )
     $source=$null;$parentGuard=$null;$generation=$null
     $directories=@{};$fileStreams=New-Object System.Collections.Generic.List[object]
     try{
@@ -288,15 +291,19 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
                 $destination=Join-Path $parentRecord.Path $leaf
                 $entry=$entryMap[$relative]
                 if($null-eq$entry){throw "Acquisition handoff extraction source disappeared: $relative"}
+                $writer=$null
                 $sourceStream=$entry.Open()
                 try{
                     $writer=Write-VllmReleasePinnedFile -Path $destination -ExpectedParentGuid $parentRecord.Guid -WriteAction {param($output)$sourceStream.CopyTo($output)}
                 }finally{$sourceStream.Dispose()}
-                $writer.Position=0
-                $identity=Get-VllmReleaseStreamIdentity -Stream $writer
-                if($identity.Size-ne[int64]$member.Size-or-not([string]$identity.Sha256).Equals([string]$member.Sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Acquisition handoff materialized file identity mismatch: $relative"}
-                $writer.Dispose()
-                $writer=$null
+                try{
+                    if($FaultPoint-eq'AfterMaterializedWriteBeforeVerify'){throw 'FAULT_INJECTED:AfterMaterializedWriteBeforeVerify'}
+                    $writer.Position=0
+                    $identity=Get-VllmReleaseStreamIdentity -Stream $writer
+                    if($identity.Size-ne[int64]$member.Size-or-not([string]$identity.Sha256).Equals([string]$member.Sha256,[StringComparison]::OrdinalIgnoreCase)){throw "Acquisition handoff materialized file identity mismatch: $relative"}
+                }finally{
+                    if($null-ne$writer){$writer.Dispose();$writer=$null}
+                }
                 $readHandle=$null;$readStream=$null
                 try{
                     $readHandle=[VllmWindowsNative.ReleaseDirectoryGuard]::OpenRead($destination)
@@ -316,7 +323,6 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
                 }finally{
                     if($null-ne$readStream){$readStream.Dispose()}
                     if($null-ne$readHandle){$readHandle.Dispose()}
-                    if($null-ne$writer){$writer.Dispose()}
                 }
             }
         }finally{$zip.Dispose()}
@@ -409,7 +415,7 @@ function Invoke-VllmAcquisitionUpdateHandoff {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
     param(
         [Parameter(Mandatory)]$Acquisition,
-        [string]$InstallationRoot='D:\AI\vLLM',
+        [string]$InstallationRoot='',
         [switch]$Json,
         [AllowNull()][scriptblock]$LifecycleInvoker=$null
     )
@@ -419,8 +425,8 @@ function Invoke-VllmAcquisitionUpdateHandoff {
         $parameters=[ordered]@{
             ReleaseManifestPath=$materialization.ReleaseManifestPath
             WheelPath=$materialization.WheelPath
-            InstallationRoot=$InstallationRoot
         }
+        if(-not[string]::IsNullOrWhiteSpace($InstallationRoot)){$parameters.InstallationRoot=$InstallationRoot}
         if($WhatIfPreference){$parameters.WhatIf=$true}
         if($PSBoundParameters.ContainsKey('Confirm')){$parameters.Confirm=[bool]$PSBoundParameters['Confirm']}
         if($Json){$parameters.Json=$true}
