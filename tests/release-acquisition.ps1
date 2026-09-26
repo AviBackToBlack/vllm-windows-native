@@ -552,6 +552,11 @@ try{
     Write-Host 'ACQUISITION_RETAG_CONFLICT_OK'
 
     $script:RemoteTagObject=$originalTagObject
+    Assert-Fails {
+        Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot (Join-Path $root 'tag-object-mismatch') -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
+    } 'does not match authenticated GitHub tag object'
+    Write-Host 'ACQUISITION_FETCHED_TAG_OBJECT_MISMATCH_FAIL_CLOSED_OK'
+
     $script:FakeRepositoryId=123
     Assert-Fails {
         Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmAcquisitionRepository -Tag 'release/test-release' -AllowedSignersPath $allowed -CacheRoot (Join-Path $root 'wrong-repo') -GitHubToken 'fixture-token' -GitSourceUrl $fixtureRepo -ExpectedPrincipal 'fixture-release' -ExpectedFingerprint $fingerprint -GhCommandInvoker $fakeGh
