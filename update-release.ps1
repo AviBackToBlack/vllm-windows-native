@@ -1,12 +1,10 @@
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
 param(
     [string]$Repository = 'AviBackToBlack/vllm-windows-native',
     [Parameter(Mandatory)][string]$Tag,
     [Parameter(Mandatory)][string]$AllowedSignersPath,
     [Parameter(Mandatory)][string]$CacheRoot,
     [string]$InstallationRoot = 'D:\AI\vLLM',
-    [switch]$WhatIf,
-    [switch]$Confirm,
     [switch]$Json,
     [string]$GhExecutable = 'gh'
 )
@@ -27,7 +25,7 @@ if($env:OS-ne'Windows_NT'-or-not[Environment]::Is64BitOperatingSystem){
 
 $acquisition=Invoke-VllmReleaseAcquisition -RepositorySlug $Repository -Tag $Tag -AllowedSignersPath $AllowedSignersPath -CacheRoot $CacheRoot -GhExecutable $GhExecutable
 $params=[ordered]@{Acquisition=$acquisition;InstallationRoot=$InstallationRoot}
-if($WhatIf){$params.WhatIf=$true}
-if($PSBoundParameters.ContainsKey('Confirm')){$params.Confirm=[bool]$Confirm}
+if($WhatIfPreference){$params.WhatIf=$true}
+if($PSBoundParameters.ContainsKey('Confirm')){$params.Confirm=[bool]$PSBoundParameters['Confirm']}
 if($Json){$params.Json=$true}
 Invoke-VllmAcquisitionUpdateHandoff @params
