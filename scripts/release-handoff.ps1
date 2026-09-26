@@ -157,14 +157,18 @@ function Get-VllmAcquisitionBundleContract {
         $manifestKey=$manifestRelative.ToLowerInvariant()
         if(-not$entryByKey.ContainsKey($manifestKey)){throw 'Acquisition handoff bundle is missing the authenticated release manifest.'}
         $manifestEntry=$entryByKey[$manifestKey]
-        $manifestStream=$manifestEntry.Open()
+        $manifestInput=$manifestEntry.Open()
+        $manifestStream=New-Object IO.MemoryStream
         try{
+            $manifestInput.CopyTo($manifestStream)
+            $manifestStream.Position=0
             $manifestIdentity=Get-VllmReleaseStreamIdentity -Stream $manifestStream
             if(-not([string]$manifestIdentity.Sha256).Equals([string]$receipt.release.release_manifest_sha256,[StringComparison]::OrdinalIgnoreCase)){
                 throw 'Acquisition handoff release manifest digest does not match the authenticated receipt.'
             }
+            $manifestStream.Position=0
             $manifestText=Read-VllmReleaseUtf8NoBomStream -Stream $manifestStream -Label 'Acquisition handoff release manifest'
-        }finally{$manifestStream.Dispose()}
+        }finally{$manifestInput.Dispose();$manifestStream.Dispose()}
         try{$release=$manifestText|ConvertFrom-Json}catch{throw 'Acquisition handoff release manifest JSON is invalid.'}
         Assert-VllmReleaseExactProperties -Value $release -Expected @('schema_version','component','release','platform','self_path','upstream','windows_patchset','wheel','orchestration','managed_paths','files') -Label 'Acquisition handoff release manifest'
         Assert-VllmReleaseExactProperties -Value $release.upstream -Expected @('repository','tag','commit') -Label 'Acquisition handoff upstream identity'
