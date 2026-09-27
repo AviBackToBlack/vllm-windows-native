@@ -162,6 +162,23 @@ try{
     if($exerciseBlock.IndexOf('-GitSourceUrl',[StringComparison]::OrdinalIgnoreCase)-ge0){throw 'SM-20E trusted Exercise must not override canonical Git transport.'}
     if($exerciseBlock.IndexOf('Invoke-VllmReleaseAcquisition',[StringComparison]::Ordinal)-lt0-or$exerciseBlock.IndexOf('Invoke-VllmSm20eHandoffProof',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Exercise mode does not compose the production acquisition/handoff path.'}
     if($exerciseBlock.IndexOf('Clear-VllmSm20eOwnedHandoffResidue',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Exercise retry does not clean owned stale handoff generations.'}
+    $head=(Invoke-Git -Repository $repoRoot -Arguments @('rev-parse','HEAD') -Capture).Trim().ToLowerInvariant()
+    $parent=(Invoke-Git -Repository $repoRoot -Arguments @('rev-parse','HEAD^') -Capture).Trim().ToLowerInvariant()
+    if(-not(Assert-VllmSm20ePreparedCommitAncestor -Repository $repoRoot -PreparedCommit $parent -HeadCommit $head)){throw 'SM-20E prepared ancestor check did not accept a descendant HEAD.'}
+    Assert-Fails { Assert-VllmSm20ePreparedCommitAncestor -Repository $repoRoot -PreparedCommit $head -HeadCommit $parent | Out-Null } 'not a descendant'
+    Write-Host 'SM20E_POST_PUBLICATION_MAIN_ADVANCE_OK'
+
+    $publishStart=$top.IndexOf("    'Publish' {",[StringComparison]::Ordinal)
+    $verifyStart=$top.IndexOf("    'Verify' {",[StringComparison]::Ordinal)
+    $exerciseStart2=$top.IndexOf("    'Exercise' {",[StringComparison]::Ordinal)
+    if($publishStart-lt0-or$verifyStart-le$publishStart-or$exerciseStart2-le$verifyStart){throw 'SM-20E operator mode ordering is invalid.'}
+    $publishBlock=$top.Substring($publishStart,$verifyStart-$publishStart)
+    $verifyBlock=$top.Substring($verifyStart,$exerciseStart2-$verifyStart)
+    $exerciseBlock2=$top.Substring($exerciseStart2)
+    if($publishBlock.IndexOf('-ExpectedCommit ([string]$state.project_commit)',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Publish no longer pins operator HEAD to the prepared fixture commit.'}
+    if($verifyBlock.IndexOf('Assert-VllmSm20eCurrentMainForExistingFixture',[StringComparison]::Ordinal)-lt0-or$exerciseBlock2.IndexOf('Assert-VllmSm20eCurrentMainForExistingFixture',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Verify/Exercise do not permit reviewed descendant-main continuation.'}
+    Write-Host 'SM20E_POST_PUBLICATION_MODE_SPLIT_OK'
+
     Write-Host 'SM20E_OPERATOR_SURFACE_OK'
 
     Write-Host 'RELEASE_ACQUISITION_ACCEPTANCE_CONTRACT_OK'
