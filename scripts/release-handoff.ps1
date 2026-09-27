@@ -111,7 +111,7 @@ function Enter-VllmAcquisitionHandoffSource {
     try{
         $guards=Enter-VllmReleaseArtifactGuards -Root $artifacts -Names ([string[]]$expectedNames)
     }catch{
-        if(Test-VllmAcquisitionHandoffSharingViolation -Exception $_.Exception){throw 'Another verified lifecycle handoff is active for this acquisition cache.'}
+        if(Test-VllmAcquisitionHandoffSharingViolation -Exception $_.Exception){throw 'Another verified release operation holds this acquisition cache.'}
         throw
     }
     try{
@@ -289,7 +289,7 @@ function Initialize-VllmAcquisitionHandoffMaterialization {
         $parentExpectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $handoffParent -Format Guid)
         try{$parentGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($handoffParent)}
         catch{
-            if(Test-VllmAcquisitionHandoffSharingViolation -Exception $_.Exception){throw 'Another verified lifecycle handoff is active for this acquisition cache.'}
+            if(Test-VllmAcquisitionHandoffSharingViolation -Exception $_.Exception){throw 'Another verified release operation holds this acquisition cache.'}
             throw
         }
         $parentEntry=Get-VllmPathEntryInfo -Path $handoffParent
@@ -435,7 +435,7 @@ function Invoke-VllmAcquisitionInstallHandoff {
     }finally{
         if($null-ne$lifecycleFailure){
             try{Exit-VllmAcquisitionHandoffMaterialization -Materialization $materialization}
-            catch{Write-Warning ('Lifecycle failed and handoff cleanup also failed; preserving lifecycle failure. Cleanup error: '+$_.Exception.Message)}
+            catch{Write-Warning -WarningAction Continue ('Lifecycle failed and handoff cleanup also failed; preserving lifecycle failure. Cleanup error: '+$_.Exception.Message)}
         }else{
             Exit-VllmAcquisitionHandoffMaterialization -Materialization $materialization
         }
@@ -470,7 +470,7 @@ function Invoke-VllmAcquisitionUpdateHandoff {
     }finally{
         if($null-ne$lifecycleFailure){
             try{Exit-VllmAcquisitionHandoffMaterialization -Materialization $materialization}
-            catch{Write-Warning ('Lifecycle failed and handoff cleanup also failed; preserving lifecycle failure. Cleanup error: '+$_.Exception.Message)}
+            catch{Write-Warning -WarningAction Continue ('Lifecycle failed and handoff cleanup also failed; preserving lifecycle failure. Cleanup error: '+$_.Exception.Message)}
         }else{
             Exit-VllmAcquisitionHandoffMaterialization -Materialization $materialization
         }
