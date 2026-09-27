@@ -117,6 +117,29 @@ try{
     $removed=Clear-VllmSm20eOwnedHandoffResidue -CacheRoot $retryCache
     if([int]$removed-ne1-or(Test-Path -LiteralPath $ownedGeneration)-or-not(Test-Path -LiteralPath $foreignEntry -PathType Container)){throw 'SM-20E retry handoff cleanup did not selectively remove only the owned GUID generation.'}
     Write-Host 'SM20E_HANDOFF_RETRY_CLEANUP_OK'
+
+    $junctionCache=Join-Path $root 'junction-cache'
+    $junctionTarget=Join-Path $root 'junction-target'
+    $junctionGeneration=Join-Path $junctionTarget 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    [void][IO.Directory]::CreateDirectory($junctionGeneration)
+    $sentinel=Join-Path $junctionGeneration 'sentinel.txt'
+    [IO.File]::WriteAllText($sentinel,'keep',[Text.UTF8Encoding]::new($false))
+    [void][IO.Directory]::CreateDirectory($junctionCache)
+    $junctionRoot=Join-Path $junctionCache '.handoff'
+    $null=New-Item -ItemType Junction -Path $junctionRoot -Target $junctionTarget -ErrorAction Stop
+    Assert-Fails { Clear-VllmSm20eOwnedHandoffResidue -CacheRoot $junctionCache | Out-Null } 'not a regular directory'
+    if(-not(Test-Path -LiteralPath $sentinel -PathType Leaf)){throw 'SM-20E retry cleanup followed a reparse-point handoff root outside the cache boundary.'}
+    Remove-Item -LiteralPath $junctionRoot -Force
+
+    $helperSource=Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\release-acquisition-acceptance.ps1') -Raw
+    $helperStart=$helperSource.IndexOf('function Clear-VllmSm20eOwnedHandoffResidue',[StringComparison]::Ordinal)
+    $helperEnd=$helperSource.IndexOf('function New-VllmSm20eUntrustedRecoveryState',[StringComparison]::Ordinal)
+    if($helperStart-lt0-or$helperEnd-le$helperStart){throw 'SM-20E retry cleanup helper source range is missing.'}
+    $helperBlock=$helperSource.Substring($helperStart,$helperEnd-$helperStart)
+    $openIndex=$helperBlock.IndexOf('ReleaseDirectoryGuard]::Open($handoffRoot)',[StringComparison]::Ordinal)
+    $postOpenEntryIndex=$helperBlock.IndexOf('$pinnedEntry=Get-VllmPathEntryInfo -Path $handoffRoot',[StringComparison]::Ordinal)
+    if($openIndex-lt0-or$postOpenEntryIndex-le$openIndex){throw 'SM-20E retry cleanup does not revalidate the pinned handoff root after guard acquisition.'}
+    Write-Host 'SM20E_HANDOFF_ROOT_PIN_REVALIDATION_OK'
     [IO.File]::WriteAllText([string]$firstExercise.proof,'{}',[Text.UTF8Encoding]::new($false))
     Assert-Fails { Enter-VllmSm20eExerciseRoot -Workspace $exerciseWorkspace -State $exerciseState -Confirm:$false | Out-Null } 'already completed'
     Remove-Item -LiteralPath ([string]$firstExercise.proof) -Force
