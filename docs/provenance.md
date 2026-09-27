@@ -13,6 +13,35 @@ Every tested runtime bundle must record, at minimum:
 
 Community Windows ports may be used as research/reference sources. Any copied code or patch material must retain applicable license/copyright notices and be documented explicitly.
 
+## SM-21 community Windows implementation review
+
+The public-release provenance gate was completed against the exact canonical Windows patchset, not against moving repository heads. The machine-readable review record is [docs/provenance/windows-reference-review-v0.27.1.json](provenance/windows-reference-review-v0.27.1.json).
+
+Canonical patchset reviewed:
+
+- implementation commit: 947573f52816f0ecea62248c06ccf5ea4f196b5f
+- patch tree: 4610a5c5d6f255cc3670ddd645de9a2e5b2389e2
+- patch: patches/windows/v0.27.1/0001-native-windows-cuda-sm120.patch
+- patch SHA-256: 121E008ED126CB6AC78FE3E585610E7F52BA1510C36454011EB984D5A0CD25A4
+
+### aivrar/vllm-windows-build
+
+The exact research snapshot recorded by the original porting inventory was recovered from commit 05402d4283f5a52e0fffcc2e04b115f6666ccbb1 (Release vLLM 0.27.1 Windows CUDA 13.0). Its vllm-windows-v10.patch is 167,335 bytes with SHA-256 4B6C9CD543414EF3ED1EB7FCBD7F39CE6BE10BDC97D901261977EE905346C988. This historical identity is authoritative for the provenance review; a later moving master is not.
+
+A conservative same-file exact-text comparison of contiguous added blocks found **36 verbatim matching blocks across 15 canonical patch files**. The evidence JSON records the canonical-patch line range, reference-patch line range, added-line count, and SHA-256 for every matched block. The affected implementation areas include Win32 file I/O and timing, MSVC/nvcc compatibility, Mamba dispatch, TopK/MoE kernels, quantization helpers, and Windows nvcc discovery.
+
+Those matched areas are therefore classified as **adapted/incorporated from the MIT-licensed aivrar reference**, not as independently implemented. The required Copyright (c) 2025 aivrar MIT notice is retained in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Unmatched project changes are not automatically classified as independent solely because this exact-match detector did not match them; the design-history review remains part of the classification.
+
+### SystemPanic/vllm-windows
+
+The branch snapshot contemporaneous with the porting inventory is vllm-for-windows commit 98dff2a81d747d1dba01a47f939f48c3526d4206, licensed Apache-2.0. The project used SystemPanic as an independent cross-check for Windows architecture questions, especially whether Blackwell SM120 paths should be categorically disabled.
+
+The same conservative scan found **0 verbatim canonical added blocks** in the corresponding files at that snapshot. SystemPanic is therefore classified as a **research/design cross-check source** for the canonical patchset, with no copied/incorporated text detected by the recorded review. No SystemPanic-specific notice is required beyond the project's existing Apache-2.0 licensing obligations because no such material was identified as incorporated.
+
+The separate Win32 final-path helper adaptation from AviBackToBlack/unsloth-studio-windows-native remains documented below and in THIRD_PARTY_NOTICES.md. The devnen/vllm-windows name appears only in ADR 0001's negative scope statement (this project is not a downstream wrapper); no repository evidence records it as materially influencing the canonical patchset. No other community Windows implementation is recorded by the porting inventory as materially supplying canonical patch text for this release.
+
+The exact canonical wheel BD4A6E1D919A53FA98D27D221AD722507313025E6EF698AC32C126FCE5334A5E was also inspected as a ZIP artifact during this gate. It retains the upstream Apache-2.0 license at vllm-0.27.2.dev0+g6e448d0ea.d20260925.dist-info/licenses/LICENSE.
+
 ## Lifecycle safety reference
 
 The Win32 final-path interop used by the lifecycle safety helpers is adapted from the author's separate `AviBackToBlack/unsloth-studio-windows-native` implementation. Exact tree/blob/file hashes and the retained MIT license notice are recorded in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
@@ -69,7 +98,7 @@ The current Qwen-capable project wheel is vllm-0.27.2.dev0+g6e448d0ea.d20260925-
 
 ## Top-level installer and release-ownership acceptance
 
-The accepted installable runtime distribution is described by [manifests/release/v0.27.1-windows-x86_64.json](../manifests/release/v0.27.1-windows-x86_64.json). The manifest records the release-owned distribution files plus the canonical upstream/Windows-patchset identities, final project-wheel identity, orchestration paths, and generated managed-path ownership. The Qwen-capable release uses distinct identity `v0.27.1-native-windows-single-gpu-sm120-nvfp4`; its release-manifest SHA-256 is `BE5081A99FB9E2921A28C0B8155AA5F5A3C391AED329DE9D5F7ADA83B1C77DBC`. Text payloads used by the release manifest are repository-normalized to LF so the recorded bytes do not depend on a developer checkout's core.autocrlf behavior.
+The accepted installable runtime distribution is described by [manifests/release/v0.27.1-windows-x86_64.json](../manifests/release/v0.27.1-windows-x86_64.json). The manifest records the release-owned distribution files plus the canonical upstream/Windows-patchset identities, final project-wheel identity, orchestration paths, and generated managed-path ownership. The Qwen-capable release uses distinct identity `v0.27.1-native-windows-single-gpu-sm120-nvfp4`; its release-manifest SHA-256 is `BF936B4C2CF1858FDC101C586CFA26C3933C4E0D0E034842079065B7B6E603DA`. Text payloads used by the release manifest are repository-normalized to LF so the recorded bytes do not depend on a developer checkout's core.autocrlf behavior.
 
 `install.ps1` validates the source release payload and caller-supplied wheel before runtime mutation, copies the verified distribution into the installation root, and runs only the installed bootstrap copies. It then resumes the independently receipt-backed CPython, uv, unseeded venv, 28-package dependency, and final managed-vLLM layers from the highest state whose provenance can be revalidated. The top-level installer uses a separate `state/install-orchestrator.lock` so it can hold an install-wide coordinator without self-deadlocking the lower-level `.vllm-operation.lock`. Successful completion is committed atomically as `state/install-state.json`; the temporary candidate is parsed and fully validated against the install-state contract before the atomic rename, and the committed state is validated again after activation; the state cryptographically binds the release manifest, installed distribution-file set, Python/uv and runtime receipts, upstream and patchset identities, exact wheel, installation/model roots, and a generation ID. Directory presence alone is never interpreted as completed ownership.
 

@@ -26,7 +26,9 @@ if(-not([string]$identity.tag).Equals('release/sm20e-acceptance-20260927-01',[St
 if(([string]$identity.release).IndexOf('v1.0',[StringComparison]::OrdinalIgnoreCase)-ge0){throw 'SM-20E fixture must never use a GA-looking release identity.'}
 if([int64]$identity.wheel_size-ne815-or-not([string]$identity.wheel_sha256).Equals('908E763E762A2A6CE392B0E9DB04FA0F5AFD614F16A15AB805DE61D3BD6E8481',[StringComparison]::Ordinal)){throw 'SM-20E reviewed wheel identity drifted.'}
 
-$commit=(Invoke-Git -Repository $repoRoot -Arguments @('rev-parse','HEAD') -Capture).Trim().ToLowerInvariant()
+$currentCommit=(Invoke-Git -Repository $repoRoot -Arguments @('rev-parse','HEAD') -Capture).Trim().ToLowerInvariant()
+$commit='c56e549bc59731b9a72aaf529020be85f590658b'
+$null=Assert-VllmSm20ePreparedCommitAncestor -Repository $repoRoot -PreparedCommit $commit -HeadCommit $currentCommit
 $snapshot=Get-VllmReleaseGitSnapshot -Repository $repoRoot -Commit $commit
 try{
     $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $script:VllmSm20eReleaseManifestPath

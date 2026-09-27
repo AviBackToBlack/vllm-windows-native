@@ -142,8 +142,13 @@
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "size_bytes": 1564,
-      "sha256": "CB636445DB435C64F72B7E1A6F189096E691AD14B62FC979A06B56618ACEB21B"
+      "size_bytes": 3165,
+      "sha256": "D7FF904C3FED93A50E731FE30CF2A364768DCFC96ABE8A558E860B2CB92DCD06"
+    },
+    {
+      "path": "docs/provenance/windows-reference-review-v0.27.1.json",
+      "size_bytes": 19588,
+      "sha256": "C16A0039218AEA1FE027DC866F26C98EF55288EB98B0AF83798B30401752AF1D"
     },
     {
       "path": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
