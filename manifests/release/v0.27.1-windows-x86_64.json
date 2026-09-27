@@ -146,6 +146,11 @@
       "sha256": "D7FF904C3FED93A50E731FE30CF2A364768DCFC96ABE8A558E860B2CB92DCD06"
     },
     {
+      "path": "docs/provenance/windows-reference-review-v0.27.1.json",
+      "size_bytes": 19623,
+      "sha256": "C9573EDA5443A0FA1F10AB320D93A3A2B80C9733D5D65983F32C60CEC1CAE7E4"
+    },
+    {
       "path": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
       "size_bytes": 1222,
       "sha256": "82CC0096BBB2709147076035477D38361C3EAC960B4E770A8B17437602341833"
