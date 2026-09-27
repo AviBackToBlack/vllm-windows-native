@@ -245,8 +245,9 @@ function Enter-VllmSm20eExerciseRoot {
         $null=Write-VllmAtomicJsonFile -Path $ownerPath -Value $owner -Depth 6 -Validate $validator
         [pscustomobject][ordered]@{root=$root;owner=$ownerPath;proof=$proofPath;retry=$false}
     }catch{
+        $setupFailure=$_
         try{Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop}catch{Write-Warning -WarningAction Continue ('SM-20E exercise-root setup failed and cleanup was incomplete: '+$_.Exception.Message)}
-        throw
+        throw $setupFailure
     }
 }
 
