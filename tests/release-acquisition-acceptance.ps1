@@ -162,10 +162,21 @@ try{
     if($exerciseBlock.IndexOf('-GitSourceUrl',[StringComparison]::OrdinalIgnoreCase)-ge0){throw 'SM-20E trusted Exercise must not override canonical Git transport.'}
     if($exerciseBlock.IndexOf('Invoke-VllmReleaseAcquisition',[StringComparison]::Ordinal)-lt0-or$exerciseBlock.IndexOf('Invoke-VllmSm20eHandoffProof',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Exercise mode does not compose the production acquisition/handoff path.'}
     if($exerciseBlock.IndexOf('Clear-VllmSm20eOwnedHandoffResidue',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Exercise retry does not clean owned stale handoff generations.'}
-    $head=(Invoke-Git -Repository $repoRoot -Arguments @('rev-parse','HEAD') -Capture).Trim().ToLowerInvariant()
-    $parent=(Invoke-Git -Repository $repoRoot -Arguments @('rev-parse','HEAD^') -Capture).Trim().ToLowerInvariant()
-    if(-not(Assert-VllmSm20ePreparedCommitAncestor -Repository $repoRoot -PreparedCommit $parent -HeadCommit $head)){throw 'SM-20E prepared ancestor check did not accept a descendant HEAD.'}
-    Assert-Fails { Assert-VllmSm20ePreparedCommitAncestor -Repository $repoRoot -PreparedCommit $head -HeadCommit $parent | Out-Null } 'not a descendant'
+    $ancestryRepo=Join-Path $root 'ancestry-repo'
+    [void][IO.Directory]::CreateDirectory($ancestryRepo)
+    Invoke-Git -Repository $ancestryRepo -Arguments @('init')
+    Invoke-Git -Repository $ancestryRepo -Arguments @('symbolic-ref','HEAD','refs/heads/main')
+    $ancestryFile=Join-Path $ancestryRepo 'fixture.txt'
+    [IO.File]::WriteAllText($ancestryFile,'prepared'+[char]10,[Text.UTF8Encoding]::new($false))
+    Invoke-Git -Repository $ancestryRepo -Arguments @('add','fixture.txt')
+    Invoke-Git -Repository $ancestryRepo -Arguments @('-c','user.name=SM20E Test','-c','user.email=sm20e-test@invalid.local','commit','-m','prepared')
+    $prepared=(Invoke-Git -Repository $ancestryRepo -Arguments @('rev-parse','HEAD') -Capture).Trim().ToLowerInvariant()
+    [IO.File]::AppendAllText($ancestryFile,'current'+[char]10,[Text.UTF8Encoding]::new($false))
+    Invoke-Git -Repository $ancestryRepo -Arguments @('add','fixture.txt')
+    Invoke-Git -Repository $ancestryRepo -Arguments @('-c','user.name=SM20E Test','-c','user.email=sm20e-test@invalid.local','commit','-m','current')
+    $current=(Invoke-Git -Repository $ancestryRepo -Arguments @('rev-parse','HEAD') -Capture).Trim().ToLowerInvariant()
+    if(-not(Assert-VllmSm20ePreparedCommitAncestor -Repository $ancestryRepo -PreparedCommit $prepared -HeadCommit $current)){throw 'SM-20E prepared ancestor check did not accept a descendant HEAD.'}
+    Assert-Fails { Assert-VllmSm20ePreparedCommitAncestor -Repository $ancestryRepo -PreparedCommit $current -HeadCommit $prepared | Out-Null } 'not a descendant'
     Write-Host 'SM20E_POST_PUBLICATION_MAIN_ADVANCE_OK'
 
     $publishStart=$top.IndexOf("    'Publish' {",[StringComparison]::Ordinal)
