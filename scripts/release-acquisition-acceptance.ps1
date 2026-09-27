@@ -202,6 +202,54 @@ function Test-VllmSm20ePrivateKeyAbsent {
     $true
 }
 
+function Assert-VllmSm20eExerciseOwner {
+    param([Parameter(Mandatory)]$Owner,[Parameter(Mandatory)]$State)
+    Assert-VllmReleaseExactProperties -Value $Owner -Expected @('schema_version','component','release','tag','project_commit','tag_object') -Label 'SM-20E exercise owner'
+    if([int]$Owner.schema_version-ne1-or-not([string]$Owner.component).Equals('vllm-windows-native-sm20e-exercise',[StringComparison]::Ordinal)-or
+       -not([string]$Owner.release).Equals([string]$State.release,[StringComparison]::Ordinal)-or
+       -not([string]$Owner.tag).Equals([string]$State.tag,[StringComparison]::Ordinal)-or
+       -not([string]$Owner.project_commit).Equals([string]$State.project_commit,[StringComparison]::OrdinalIgnoreCase)-or
+       -not([string]$Owner.tag_object).Equals([string]$State.tag_object,[StringComparison]::OrdinalIgnoreCase)){
+        throw 'SM-20E exercise ownership marker does not match the trusted acceptance identity.'
+    }
+    $Owner
+}
+
+function Enter-VllmSm20eExerciseRoot {
+    [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
+    param([Parameter(Mandatory)][string]$Workspace,[Parameter(Mandatory)]$State)
+    $root=Join-Path ([IO.Path]::GetFullPath($Workspace)) 'exercise'
+    $ownerPath=Join-Path $root 'sm20e-exercise-owner.json'
+    $proofPath=Join-Path $root 'sm20e-proof.json'
+    $entry=Get-VllmPathEntryInfo -Path $root
+    if($entry.Exists){
+        if(-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "SM-20E exercise root must be a regular directory: $root"}
+        if(Test-Path -LiteralPath $proofPath -PathType Leaf){throw "SM-20E trusted exercise already completed; proof exists: $proofPath"}
+        if(-not(Test-Path -LiteralPath $ownerPath -PathType Leaf)){throw "Existing SM-20E exercise root is not owned by this acceptance run: $root"}
+        try{$owner=Get-Content -LiteralPath $ownerPath -Raw|ConvertFrom-Json}catch{throw 'SM-20E exercise ownership marker is invalid JSON.'}
+        $null=Assert-VllmSm20eExerciseOwner -Owner $owner -State $State
+        return [pscustomobject][ordered]@{root=$root;owner=$ownerPath;proof=$proofPath;retry=$true}
+    }
+    if(-not$PSCmdlet.ShouldProcess($root,'Create owned SM-20E trusted exercise root')){return}
+    [void][IO.Directory]::CreateDirectory($root)
+    try{
+        $owner=[ordered]@{
+            schema_version=1
+            component='vllm-windows-native-sm20e-exercise'
+            release=[string]$State.release
+            tag=[string]$State.tag
+            project_commit=[string]$State.project_commit
+            tag_object=[string]$State.tag_object
+        }
+        $validator={param($candidate,$candidatePath)$null=$candidatePath;$null=Assert-VllmSm20eExerciseOwner -Owner $candidate -State $State}
+        $null=Write-VllmAtomicJsonFile -Path $ownerPath -Value $owner -Depth 6 -Validate $validator
+        [pscustomobject][ordered]@{root=$root;owner=$ownerPath;proof=$proofPath;retry=$false}
+    }catch{
+        try{Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop}catch{Write-Warning -WarningAction Continue ('SM-20E exercise-root setup failed and cleanup was incomplete: '+$_.Exception.Message)}
+        throw
+    }
+}
+
 function New-VllmSm20eUntrustedRecoveryState {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
     param([Parameter(Mandatory)][string]$CacheRoot)
