@@ -107,7 +107,7 @@ try{
     if(-not[bool]$retryExercise.retry-or-not([string]$retryExercise.root).Equals([string]$firstExercise.root,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E incomplete exercise did not resume from its owned root.'}
     [IO.File]::WriteAllText([string]$firstExercise.proof,'{}',[Text.UTF8Encoding]::new($false))
     Assert-Fails { Enter-VllmSm20eExerciseRoot -Workspace $exerciseWorkspace -State $exerciseState -Confirm:$false | Out-Null } 'already completed'
-    Remove-Item -LiteralPath [string]$firstExercise.proof -Force
+    Remove-Item -LiteralPath ([string]$firstExercise.proof) -Force
 
     $foreignWorkspace=Join-Path $root 'foreign-exercise-workspace'
     [void][IO.Directory]::CreateDirectory((Join-Path $foreignWorkspace 'exercise'))
