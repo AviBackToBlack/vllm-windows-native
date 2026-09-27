@@ -217,7 +217,7 @@
     "Only single-GPU execution is accepted by this milestone; Windows NCCL / tensor parallel / pipeline parallel are not yet accepted.",
     "A non-fatal PyTorch c10d hostname connection warning (WinError 10049) remains to be investigated."
   ],
-  "provenance_note": "Community Windows ports were research/reference sources. This manifest records build inputs and validation; line-level provenance/attribution review remains required before a public release.",
+  "provenance_note": "SM-21 line-level community Windows provenance/licensing review completed. The canonical patchset contains MIT-licensed adapted/incorporated material from aivrar/vllm-windows-build with the required notice retained in THIRD_PARTY_NOTICES.md; SystemPanic/vllm-windows was a research/design cross-check source with no verbatim canonical added blocks found by the recorded review. See docs/provenance.md and docs/provenance/windows-reference-review-v0.27.1.json.",
   "historical_pre_nvfp4_validation": {
     "artifact_scope": "pre-NVFP4 accepted artifacts; retained for historical evidence only",
     "pristine_install": true,

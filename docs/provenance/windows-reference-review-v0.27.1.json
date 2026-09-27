@@ -1,0 +1,613 @@
+{
+  "schema_version": 1,
+  "review": {
+    "gate": "SM-21 public-release provenance/licensing",
+    "date": "2026-09-27",
+    "method": "Exact same-file comparison of contiguous added-text blocks from the canonical project patch. Candidate blocks require at least two meaningful lines and 60 characters; matches are exact text matches after diff-marker removal and LF normalization. This conservative copied/adapted-code detector is supplemented by repository design-history review.",
+    "thresholds": {
+      "minimum_meaningful_lines": 2,
+      "minimum_text_characters": 60
+    }
+  },
+  "canonical_patchset": {
+    "implementation_commit": "947573f52816f0ecea62248c06ccf5ea4f196b5f",
+    "tree": "4610a5c5d6f255cc3670ddd645de9a2e5b2389e2",
+    "path": "patches/windows/v0.27.1/0001-native-windows-cuda-sm120.patch",
+    "sha256": "121E008ED126CB6AC78FE3E585610E7F52BA1510C36454011EB984D5A0CD25A4",
+    "candidate_added_blocks": 110
+  },
+  "references": {
+    "aivrar_vllm_windows_build": {
+      "repository": "aivrar/vllm-windows-build",
+      "historical_commit": "05402d4283f5a52e0fffcc2e04b115f6666ccbb1",
+      "patch_path": "vllm-windows-v10.patch",
+      "patch_sha256": "4B6C9CD543414EF3ED1EB7FCBD7F39CE6BE10BDC97D901261977EE905346C988",
+      "license": "MIT",
+      "classification": "adapted_or_incorporated_material_present",
+      "exact_added_block_match_count": 36,
+      "matched_file_count": 15,
+      "matched_files": [
+        {
+          "path": "csrc/cumem_allocator.cpp",
+          "block_count": 1
+        },
+        {
+          "path": "csrc/fs_io.cpp",
+          "block_count": 4
+        },
+        {
+          "path": "csrc/libtorch_stable/attention/merge_attn_states.cu",
+          "block_count": 1
+        },
+        {
+          "path": "csrc/libtorch_stable/core/math.hpp",
+          "block_count": 1
+        },
+        {
+          "path": "csrc/libtorch_stable/mamba/selective_scan_fwd.cu",
+          "block_count": 5
+        },
+        {
+          "path": "csrc/libtorch_stable/moe/grouped_topk_kernels.cu",
+          "block_count": 4
+        },
+        {
+          "path": "csrc/libtorch_stable/moe/marlin_moe_wna16/generate_kernels.py",
+          "block_count": 2
+        },
+        {
+          "path": "csrc/libtorch_stable/moe/topk_softplus_sqrt_kernels.cu",
+          "block_count": 1
+        },
+        {
+          "path": "csrc/libtorch_stable/persistent_topk.cuh",
+          "block_count": 1
+        },
+        {
+          "path": "csrc/libtorch_stable/quantization/activation_kernels.cu",
+          "block_count": 5
+        },
+        {
+          "path": "csrc/libtorch_stable/quantization/marlin/generate_kernels.py",
+          "block_count": 2
+        },
+        {
+          "path": "csrc/libtorch_stable/torch_utils.h",
+          "block_count": 1
+        },
+        {
+          "path": "csrc/quantization/utils.cuh",
+          "block_count": 2
+        },
+        {
+          "path": "csrc/spinloop.cpp",
+          "block_count": 5
+        },
+        {
+          "path": "setup.py",
+          "block_count": 1
+        }
+      ],
+      "matches": [
+        {
+          "file": "csrc/cumem_allocator.cpp",
+          "canonical_patch_lines": [
+            475,
+            478
+          ],
+          "reference_patch_lines": [
+            343,
+            346
+          ],
+          "added_lines": 4,
+          "block_sha256": "0971B21F9898224DA5DEF5B3FCFD70CD61AD15A41F472C14BDC7453E62AC2F42",
+          "first_line": "#ifdef _MSC_VER"
+        },
+        {
+          "file": "csrc/fs_io.cpp",
+          "canonical_patch_lines": [
+            502,
+            506
+          ],
+          "reference_patch_lines": [
+            370,
+            374
+          ],
+          "added_lines": 5,
+          "block_sha256": "1468CD060E467D1F33CDD1229689CCF3D6E9EAFFE3B55AE56EE9A5A32E84E3D0",
+          "first_line": "#ifndef _WIN32"
+        },
+        {
+          "file": "csrc/fs_io.cpp",
+          "canonical_patch_lines": [
+            523,
+            562
+          ],
+          "reference_patch_lines": [
+            391,
+            430
+          ],
+          "added_lines": 40,
+          "block_sha256": "94801D180F088A3B8F590698C06B54AF0AF75B97B3EEFB3271E19C4F23C079A8",
+          "first_line": "#ifdef _WIN32"
+        },
+        {
+          "file": "csrc/fs_io.cpp",
+          "canonical_patch_lines": [
+            578,
+            595
+          ],
+          "reference_patch_lines": [
+            446,
+            463
+          ],
+          "added_lines": 18,
+          "block_sha256": "BAC433E5AA576791D21A3998C0D93BD5B56937E38C04F0015BB1DF423771325E",
+          "first_line": "#ifdef _WIN32"
+        },
+        {
+          "file": "csrc/fs_io.cpp",
+          "canonical_patch_lines": [
+            610,
+            612
+          ],
+          "reference_patch_lines": [
+            478,
+            480
+          ],
+          "added_lines": 3,
+          "block_sha256": "F0D274219300B775F1237AB8C157C766D7CB316E1961883E773757A76F2C42AB",
+          "first_line": "std::error_code error;"
+        },
+        {
+          "file": "csrc/libtorch_stable/attention/merge_attn_states.cu",
+          "canonical_patch_lines": [
+            684,
+            685
+          ],
+          "reference_patch_lines": [
+            552,
+            553
+          ],
+          "added_lines": 2,
+          "block_sha256": "4AB0A09626EC2A2B0B7C03F3910AA26EEEA11B9E64B020987662436638715EEF",
+          "first_line": "p_lse = isinf(p_lse) ? -std::numeric_limits<float>::infinity() : p_lse;"
+        },
+        {
+          "file": "csrc/libtorch_stable/core/math.hpp",
+          "canonical_patch_lines": [
+            707,
+            713
+          ],
+          "reference_patch_lines": [
+            604,
+            610
+          ],
+          "added_lines": 7,
+          "block_sha256": "93A455E7DEAD9944FED0F66ADDD3B6DEA53B9734E58F37C5C67A1960FBBD6A2A",
+          "first_line": "uint32_t v = num - 1;"
+        },
+        {
+          "file": "csrc/libtorch_stable/mamba/selective_scan_fwd.cu",
+          "canonical_patch_lines": [
+            752,
+            756
+          ],
+          "reference_patch_lines": [
+            649,
+            653
+          ],
+          "added_lines": 5,
+          "block_sha256": "084862BFE4909E70DC91DDA0297063C7419C7057949C9166C4110F3ACD602413",
+          "first_line": "// Helper to avoid nested BOOL_SWITCH lambdas: MSVC doesn't propagate"
+        },
+        {
+          "file": "csrc/libtorch_stable/mamba/selective_scan_fwd.cu",
+          "canonical_patch_lines": [
+            769,
+            773
+          ],
+          "reference_patch_lines": [
+            666,
+            670
+          ],
+          "added_lines": 5,
+          "block_sha256": "F445EEB19A198F0158BEE4139A0DCB9B8DF978B70BADAF53EA4FC3AA00012FB8",
+          "first_line": "using Ktraits = Selective_Scan_fwd_kernel_traits<kNThreads, kNItems, kNRows, kIsEvenLen, kIsVariableB, kIsVariableC, kHasZ, kVarlen, input_t, weight_t, state_t>;"
+        },
+        {
+          "file": "csrc/libtorch_stable/mamba/selective_scan_fwd.cu",
+          "canonical_patch_lines": [
+            777,
+            778
+          ],
+          "reference_patch_lines": [
+            674,
+            675
+          ],
+          "added_lines": 2,
+          "block_sha256": "469F74AC9FB6B7B16635C3B2E96DD325175A279DC364EEAE6CB09AD2BAB967C4",
+          "first_line": "STD_CUDA_CHECK(hipFuncSetAttribute("
+        },
+        {
+          "file": "csrc/libtorch_stable/mamba/selective_scan_fwd.cu",
+          "canonical_patch_lines": [
+            782,
+            783
+          ],
+          "reference_patch_lines": [
+            679,
+            680
+          ],
+          "added_lines": 2,
+          "block_sha256": "D67E3271191B363607043970473686329686B10C95D8C8BFBB87792BBB86ECD3",
+          "first_line": "STD_CUDA_CHECK(cudaFuncSetAttribute("
+        },
+        {
+          "file": "csrc/libtorch_stable/mamba/selective_scan_fwd.cu",
+          "canonical_patch_lines": [
+            791,
+            822
+          ],
+          "reference_patch_lines": [
+            688,
+            719
+          ],
+          "added_lines": 32,
+          "block_sha256": "A7636CB10AD977B1BED785B8A9772405ED9A993EEA56C5B2AB6D6AF810790830",
+          "first_line": "}"
+        },
+        {
+          "file": "csrc/libtorch_stable/moe/grouped_topk_kernels.cu",
+          "canonical_patch_lines": [
+            836,
+            837
+          ],
+          "reference_patch_lines": [
+            733,
+            734
+          ],
+          "added_lines": 2,
+          "block_sha256": "56EF43BAC9159EA4A0C3E7F174E2B2FF0135CC4F7CE5228D701CDB6268ACECDE",
+          "first_line": "__shared__ float __align__(128) smemScoreSigmoid[MaxNumExperts];"
+        },
+        {
+          "file": "csrc/libtorch_stable/moe/grouped_topk_kernels.cu",
+          "canonical_patch_lines": [
+            853,
+            854
+          ],
+          "reference_patch_lines": [
+            750,
+            751
+          ],
+          "added_lines": 2,
+          "block_sha256": "F898608926ED1E3342F19AEE3B4C2EBF2F5DD72C359B60D7EEEBE78B990F42AC",
+          "first_line": "__shared__ float __align__(128) smemInterTopScores[NumInterTopK];"
+        },
+        {
+          "file": "csrc/libtorch_stable/moe/grouped_topk_kernels.cu",
+          "canonical_patch_lines": [
+            873,
+            874
+          ],
+          "reference_patch_lines": [
+            761,
+            762
+          ],
+          "added_lines": 2,
+          "block_sha256": "1DEC18ADD864A5A0B1001781510173C697929E2B7FD59CB4C828E53B6709514E",
+          "first_line": "alignas(128) __shared__ float biased_scores[MaxNumExperts];"
+        },
+        {
+          "file": "csrc/libtorch_stable/moe/grouped_topk_kernels.cu",
+          "canonical_patch_lines": [
+            886,
+            887
+          ],
+          "reference_patch_lines": [
+            774,
+            775
+          ],
+          "added_lines": 2,
+          "block_sha256": "243A2BA3F09BF59A6B881ABEDA26D30F4B866BE5960F158C1DDB5937A693CFFB",
+          "first_line": "alignas(128) __shared__ float intermediate_scores[NumIntermediate];"
+        },
+        {
+          "file": "csrc/libtorch_stable/moe/marlin_moe_wna16/generate_kernels.py",
+          "canonical_patch_lines": [
+            908,
+            909
+          ],
+          "reference_patch_lines": [
+            788,
+            789
+          ],
+          "added_lines": 2,
+          "block_sha256": "DBF3651DE632E878CB9D314F824A55F0F5A9FA679AE4F613030114A585FFCEBC",
+          "first_line": "if os.path.exists(filename):"
+        },
+        {
+          "file": "csrc/libtorch_stable/moe/marlin_moe_wna16/generate_kernels.py",
+          "canonical_patch_lines": [
+            913,
+            914
+          ],
+          "reference_patch_lines": [
+            793,
+            794
+          ],
+          "added_lines": 2,
+          "block_sha256": "CBD32BD40D7F67EDBA2FDC6C2395B4A6D76AAFE8030341ED802FB5C051B75C95",
+          "first_line": "if os.path.exists(filename):"
+        },
+        {
+          "file": "csrc/libtorch_stable/moe/topk_softplus_sqrt_kernels.cu",
+          "canonical_patch_lines": [
+            935,
+            956
+          ],
+          "reference_patch_lines": [
+            815,
+            836
+          ],
+          "added_lines": 22,
+          "block_sha256": "D5414F856821D686F29053F6A5FAA52A644FAE2AD9EC3CEA3233E29BA2B5C64D",
+          "first_line": "#if defined(_WIN32)"
+        },
+        {
+          "file": "csrc/libtorch_stable/persistent_topk.cuh",
+          "canonical_patch_lines": [
+            989,
+            991
+          ],
+          "reference_patch_lines": [
+            869,
+            871
+          ],
+          "added_lines": 3,
+          "block_sha256": "ED1078E55B9C418BCE90AC24379B2892B7E12BD4EF1435FBB357BBFB3B6B54F3",
+          "first_line": "#ifdef _MSC_VER"
+        },
+        {
+          "file": "csrc/libtorch_stable/quantization/activation_kernels.cu",
+          "canonical_patch_lines": [
+            1049,
+            1050
+          ],
+          "reference_patch_lines": [
+            929,
+            930
+          ],
+          "added_lines": 2,
+          "block_sha256": "13630FBF273A7ADDE31404E364E0412E63167F4DFC1D5993655039FC9BC5BAC1",
+          "first_line": "int4* s_hidden_load = smem_128 + warp_id * ((2 * 128 / 8) * NUM_STAGES);"
+        },
+        {
+          "file": "csrc/libtorch_stable/quantization/activation_kernels.cu",
+          "canonical_patch_lines": [
+            1063,
+            1067
+          ],
+          "reference_patch_lines": [
+            943,
+            947
+          ],
+          "added_lines": 5,
+          "block_sha256": "F6CEC3B1BCE248CAA8896325065E018BD8BA76844414A7F45084F92A9E3B158A",
+          "first_line": "int64_t* smem_compute_ptr = reinterpret_cast<int64_t*>(smem_128) +"
+        },
+        {
+          "file": "csrc/libtorch_stable/quantization/activation_kernels.cu",
+          "canonical_patch_lines": [
+            1077,
+            1078
+          ],
+          "reference_patch_lines": [
+            957,
+            958
+          ],
+          "added_lines": 2,
+          "block_sha256": "343B2A34F5B56336AB0A72D8B0435B822D57A846DD9C367A6BE094571CB1E647",
+          "first_line": "const int4* input_128_ptr ="
+        },
+        {
+          "file": "csrc/libtorch_stable/quantization/activation_kernels.cu",
+          "canonical_patch_lines": [
+            1110,
+            1111
+          ],
+          "reference_patch_lines": [
+            990,
+            991
+          ],
+          "added_lines": 2,
+          "block_sha256": "4AB64B8B4FFCA7576AED92CD5DB34870A9C1D4A81B50636B9F00A26FE365E45F",
+          "first_line": "int64_t* gate64_ptr = s_gate64_ptr + compute_pipeline_offset_64;"
+        },
+        {
+          "file": "csrc/libtorch_stable/quantization/activation_kernels.cu",
+          "canonical_patch_lines": [
+            1119,
+            1120
+          ],
+          "reference_patch_lines": [
+            999,
+            1000
+          ],
+          "added_lines": 2,
+          "block_sha256": "6DEE6B95F121939E94E1424DDB69865E0806F004328D582D555FC2CC7B0A03C0",
+          "first_line": "int64_t gate64 = *gate64_ptr;"
+        },
+        {
+          "file": "csrc/libtorch_stable/quantization/marlin/generate_kernels.py",
+          "canonical_patch_lines": [
+            1283,
+            1284
+          ],
+          "reference_patch_lines": [
+            1181,
+            1182
+          ],
+          "added_lines": 2,
+          "block_sha256": "DBF3651DE632E878CB9D314F824A55F0F5A9FA679AE4F613030114A585FFCEBC",
+          "first_line": "if os.path.exists(filename):"
+        },
+        {
+          "file": "csrc/libtorch_stable/quantization/marlin/generate_kernels.py",
+          "canonical_patch_lines": [
+            1288,
+            1289
+          ],
+          "reference_patch_lines": [
+            1186,
+            1187
+          ],
+          "added_lines": 2,
+          "block_sha256": "CBD32BD40D7F67EDBA2FDC6C2395B4A6D76AAFE8030341ED802FB5C051B75C95",
+          "first_line": "if os.path.exists(filename):"
+        },
+        {
+          "file": "csrc/libtorch_stable/torch_utils.h",
+          "canonical_patch_lines": [
+            1332,
+            1335
+          ],
+          "reference_patch_lines": [
+            1252,
+            1255
+          ],
+          "added_lines": 4,
+          "block_sha256": "E5803AFE6AA57FA3CE383DAFEB15CC6102DD0F4C8E001F1DF7D2B03DE0E10A95",
+          "first_line": "#ifndef TORCH_UTILS_CHECK"
+        },
+        {
+          "file": "csrc/quantization/utils.cuh",
+          "canonical_patch_lines": [
+            1347,
+            1348
+          ],
+          "reference_patch_lines": [
+            1267,
+            1268
+          ],
+          "added_lines": 2,
+          "block_sha256": "B12F539AE888B415BDA6151EE7B292DE4ACB11027A855C3B52D94405EA8C8777",
+          "first_line": "// Function template instead of variable template: MSVC nvcc can't apply"
+        },
+        {
+          "file": "csrc/quantization/utils.cuh",
+          "canonical_patch_lines": [
+            1352,
+            1354
+          ],
+          "reference_patch_lines": [
+            1272,
+            1274
+          ],
+          "added_lines": 3,
+          "block_sha256": "CC92C364A08BFCB1076774F42923431305112931AC42E537332A7705B4DFA7EF",
+          "first_line": "MAYBE_HOST_DEVICE static inline constexpr T quant_type_max_v() {"
+        },
+        {
+          "file": "csrc/spinloop.cpp",
+          "canonical_patch_lines": [
+            1387,
+            1391
+          ],
+          "reference_patch_lines": [
+            1307,
+            1311
+          ],
+          "added_lines": 5,
+          "block_sha256": "1191C96C0A4DE4224862867F09C1BBC69FC4024C34B44EF097904684BD7F73BB",
+          "first_line": "#if defined(_WIN32)"
+        },
+        {
+          "file": "csrc/spinloop.cpp",
+          "canonical_patch_lines": [
+            1403,
+            1408
+          ],
+          "reference_patch_lines": [
+            1323,
+            1328
+          ],
+          "added_lines": 6,
+          "block_sha256": "AC7BBB83668064989BFE7FDD4762AD385649AFDCB1BF6D464E23E17A239C7A85",
+          "first_line": "#if !defined(_WIN32)"
+        },
+        {
+          "file": "csrc/spinloop.cpp",
+          "canonical_patch_lines": [
+            1416,
+            1433
+          ],
+          "reference_patch_lines": [
+            1336,
+            1353
+          ],
+          "added_lines": 18,
+          "block_sha256": "87F5585EAFF57A788389A5FA82A5B9EADF15293066084702E2D1E54BDAD3E14F",
+          "first_line": "static int get_monotonic_time(struct timespec* t) {"
+        },
+        {
+          "file": "csrc/spinloop.cpp",
+          "canonical_patch_lines": [
+            1443,
+            1444
+          ],
+          "reference_patch_lines": [
+            1363,
+            1364
+          ],
+          "added_lines": 2,
+          "block_sha256": "E7ED3829CCA4C94EBD7EC9986B19CA15D996DA11EC65C1C16F524F5C3A73035A",
+          "first_line": "if (get_monotonic_time(&t_start) != 0) {"
+        },
+        {
+          "file": "csrc/spinloop.cpp",
+          "canonical_patch_lines": [
+            1454,
+            1455
+          ],
+          "reference_patch_lines": [
+            1374,
+            1375
+          ],
+          "added_lines": 2,
+          "block_sha256": "5AD469CA9C1D12691F92A7A16D5000610D571DE0663C46413ECD30A6CEA93C79",
+          "first_line": "if (get_monotonic_time(&t_now) != 0) {"
+        },
+        {
+          "file": "setup.py",
+          "canonical_patch_lines": [
+            2835,
+            2836
+          ],
+          "reference_patch_lines": [
+            2021,
+            2022
+          ],
+          "added_lines": 2,
+          "block_sha256": "DA3B8D2E70B80EFF205C06C2AFE0E2A62D9BE1558AE1D449F4DA9818723FC3B0",
+          "first_line": "nvcc_name = \"nvcc.exe\" if sys.platform == \"win32\" else \"nvcc\""
+        }
+      ]
+    },
+    "systempanic_vllm_windows": {
+      "repository": "SystemPanic/vllm-windows",
+      "branch": "vllm-for-windows",
+      "historical_commit": "98dff2a81d747d1dba01a47f939f48c3526d4206",
+      "license": "Apache-2.0",
+      "classification": "research_and_cross_check_source_no_verbatim_canonical_added_block_match_found",
+      "exact_added_block_match_count": 0,
+      "matches": []
+    }
+  },
+  "existing_separate_provenance": {
+    "repository": "AviBackToBlack/unsloth-studio-windows-native",
+    "area": "Win32 final-path interop in scripts/common.ps1",
+    "status": "already documented in docs/provenance.md and THIRD_PARTY_NOTICES.md"
+  }
+}

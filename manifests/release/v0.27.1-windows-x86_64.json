@@ -142,8 +142,8 @@
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "size_bytes": 1564,
-      "sha256": "CB636445DB435C64F72B7E1A6F189096E691AD14B62FC979A06B56618ACEB21B"
+      "size_bytes": 3165,
+      "sha256": "D7FF904C3FED93A50E731FE30CF2A364768DCFC96ABE8A558E860B2CB92DCD06"
     },
     {
       "path": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
