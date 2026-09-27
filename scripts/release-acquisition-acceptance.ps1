@@ -266,41 +266,7 @@ function Clear-VllmSm20eOwnedHandoffResidue {
         if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E handoff root guard resolves outside the expected cache-local path.'}
         $removed=0
         foreach($child in @(Get-ChildItem -LiteralPath $handoffRoot -Force)){
-            if(-not$child.PSIsContainer-or(($child.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0)-or$child.Name-cnotmatch'^[0-9a-f]{32}    [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
-    param([Parameter(Mandatory)][string]$CacheRoot)
-    $root=[IO.Path]::GetFullPath($CacheRoot)
-    if(-not$PSCmdlet.ShouldProcess($root,'Create deliberately stale/partial/untrusted SM-20E recovery cache state')){return}
-    [void][IO.Directory]::CreateDirectory((Join-Path $root '.staging\abandoned-generation'))
-    [IO.File]::WriteAllText((Join-Path $root '.staging\abandoned-generation\partial.bin'),'partial',[Text.UTF8Encoding]::new($false))
-    $garbage=Join-Path (Join-Path (Join-Path $root 'verified') ([string]$script:VllmAcquisitionRepositoryId)) ('1'*40)
-    [void][IO.Directory]::CreateDirectory($garbage)
-    [IO.File]::WriteAllText((Join-Path $garbage 'acquisition-receipt.json'),'{not-json',[Text.UTF8Encoding]::new($false))
-    [pscustomobject][ordered]@{staging=(Join-Path $root '.staging\abandoned-generation');garbage=$garbage}
-}
-
-function Invoke-VllmSm20eHandoffProof {
-    param([Parameter(Mandatory)]$Acquisition)
-    $invoker={
-        param($Mode,$ScriptPath,$Parameters)
-        [pscustomobject][ordered]@{
-            mode=$Mode
-            script_path=[IO.Path]::GetFullPath($ScriptPath)
-            release_manifest_path=[IO.Path]::GetFullPath([string]$Parameters.ReleaseManifestPath)
-            wheel_path=[IO.Path]::GetFullPath([string]$Parameters.WheelPath)
-        }
-    }
-    $install=Invoke-VllmAcquisitionInstallHandoff -Acquisition $Acquisition -LifecycleInvoker $invoker
-    $update=Invoke-VllmAcquisitionUpdateHandoff -Acquisition $Acquisition -WhatIf -LifecycleInvoker $invoker
-    foreach($proof in @($install,$update)){
-        if(([string]$proof.script_path).IndexOf('.handoff',[StringComparison]::OrdinalIgnoreCase)-lt0){throw 'SM-20E lifecycle script was not handed off from the verified materialized distribution.'}
-        $distribution=Split-Path -Parent ([string]$proof.script_path)
-        if(-not([string]$proof.release_manifest_path).StartsWith($distribution,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E release manifest handoff is outside the materialized distribution.'}
-        if(-not([string]$proof.wheel_path).Equals([string]$Acquisition.wheel_path,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E wheel handoff path changed.'}
-    }
-    if(-not([string]$install.mode).Equals('install',[StringComparison]::Ordinal)-or-not([string]$update.mode).Equals('update',[StringComparison]::Ordinal)){throw 'SM-20E lifecycle handoff modes are incorrect.'}
-    [pscustomobject][ordered]@{install=$install;update=$update}
-}
-){continue}
+            if(-not$child.PSIsContainer-or(($child.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0)-or$child.Name-cnotmatch'^[0-9a-f]{32}$'){continue}
             $childGuard=$null
             try{
                 $childGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($child.FullName)
