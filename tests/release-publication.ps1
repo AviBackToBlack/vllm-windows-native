@@ -76,6 +76,28 @@ try{
         $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
         $assetPlan.Add([pscustomobject][ordered]@{name=$name;path=$path;size=[int64]$item.Length;sha256=$hash})
     }
+
+    $planRoot=Join-Path $root 'asset-plan-materialization'
+    [void][IO.Directory]::CreateDirectory($planRoot)
+    $planWheel='plan-wheel.whl'
+    $planBundle='vllm-windows-native-plan.zip'
+    [IO.File]::WriteAllText((Join-Path $planRoot $planWheel),'wheel',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $planRoot $planBundle),'bundle',[Text.UTF8Encoding]::new($false))
+    $planIndex=[ordered]@{wheel=[ordered]@{filename=$planWheel};bundle=[ordered]@{filename=$planBundle}}|ConvertTo-Json -Compress
+    [IO.File]::WriteAllText((Join-Path $planRoot 'release-index.json'),$planIndex+[char]10,[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $planRoot 'SHA256SUMS'),'fixture',[Text.UTF8Encoding]::new($false))
+    $planOffline=[pscustomobject][ordered]@{
+        wheel_sha256=(Get-FileHash -LiteralPath (Join-Path $planRoot $planWheel) -Algorithm SHA256).Hash
+        bundle_sha256=(Get-FileHash -LiteralPath (Join-Path $planRoot $planBundle) -Algorithm SHA256).Hash
+        index_sha256=(Get-FileHash -LiteralPath (Join-Path $planRoot 'release-index.json') -Algorithm SHA256).Hash
+        checksums_sha256=(Get-FileHash -LiteralPath (Join-Path $planRoot 'SHA256SUMS') -Algorithm SHA256).Hash
+    }
+    $materializedPlan=[object[]](Get-VllmReleasePublicationAssetPlan -ArtifactsDirectory $planRoot -OfflineVerification $planOffline)
+    if($materializedPlan.Count-ne4){throw "Publication asset-plan materialization returned wrong count: $($materializedPlan.Count)"}
+    foreach($name in @($planWheel,$planBundle,'release-index.json','SHA256SUMS')){
+        if(@($materializedPlan|Where-Object{([string]$_.name).Equals($name,[StringComparison]::Ordinal)}).Count-ne1){throw "Publication asset-plan materialization lost asset: $name"}
+    }
+    Write-Host 'RELEASE_PUBLICATION_ASSET_PLAN_OK'
     function Get-FakeReleaseObject {
         param([string]$Body,[bool]$Draft=$true)
         [pscustomobject][ordered]@{
