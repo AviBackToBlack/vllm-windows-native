@@ -93,7 +93,7 @@ try{
     Write-Host 'SM20E_STATE_CONTRACT_OK'
 
     $recovery=Join-Path $root 'recovery-cache'
-    $untrusted=New-VllmSm20eUntrustedRecoveryState -CacheRoot $recovery
+    $untrusted=New-VllmSm20eUntrustedRecoveryState -CacheRoot $recovery -Confirm:$false
     if(-not(Test-Path -LiteralPath $untrusted.staging -PathType Container)-or-not(Test-Path -LiteralPath (Join-Path $untrusted.staging 'partial.bin') -PathType Leaf)-or-not(Test-Path -LiteralPath (Join-Path $untrusted.garbage 'acquisition-receipt.json') -PathType Leaf)){throw 'SM-20E untrusted recovery state fixture is incomplete.'}
     Write-Host 'SM20E_RECOVERY_FIXTURE_OK'
 
