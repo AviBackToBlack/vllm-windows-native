@@ -13,8 +13,7 @@
     "implementation_commit": "947573f52816f0ecea62248c06ccf5ea4f196b5f",
     "tree": "4610a5c5d6f255cc3670ddd645de9a2e5b2389e2",
     "path": "patches/windows/v0.27.1/0001-native-windows-cuda-sm120.patch",
-    "sha256": "121E008ED126CB6AC78FE3E585610E7F52BA1510C36454011EB984D5A0CD25A4",
-    "candidate_added_blocks": 110
+    "sha256": "121E008ED126CB6AC78FE3E585610E7F52BA1510C36454011EB984D5A0CD25A4"
   },
   "references": {
     "aivrar_vllm_windows_build": {

@@ -45,7 +45,15 @@ if(-not(Test-Path -LiteralPath $outerPatchPath -PathType Leaf)){throw "Accepted 
 $outerPatchLines=@(Get-Content -LiteralPath $outerPatchPath -Encoding UTF8)
 $provenanceSha=[Security.Cryptography.SHA256]::Create()
 try{
-    $validatedFiles=@{}
+    $recordedFileCounts=@{}
+    $recordedTotal=0
+    foreach($entry in @($aiv.matched_files)){
+        $path=[string]$entry.path;$count=[int]$entry.block_count
+        if([string]::IsNullOrWhiteSpace($path)-or$count -lt 1-or$recordedFileCounts.ContainsKey($path)){throw 'Malformed or duplicate provenance matched_files entry.'}
+        $recordedFileCounts[$path]=$count;$recordedTotal += $count
+    }
+    if($recordedTotal -ne [int]$aiv.exact_added_block_match_count -or $recordedFileCounts.Count -ne [int]$aiv.matched_file_count){throw 'Provenance matched_files summary does not agree with recorded totals.'}
+    $actualFileCounts=@{}
     foreach($match in @($aiv.matches)){
         $range=@($match.canonical_patch_lines)
         if($range.Count -ne 2){throw 'Malformed canonical provenance patch-line range.'}
@@ -70,9 +78,12 @@ try{
         $payload=([string]::Join([char]10,[string[]]$added))+[char]10
         $actual=([BitConverter]::ToString($provenanceSha.ComputeHash([Text.Encoding]::UTF8.GetBytes($payload)))).Replace('-','')
         if($actual -ne [string]$match.block_sha256){throw "Canonical provenance block digest drifted: $file $start-$end"}
-        $validatedFiles[$file]=$true
+        if($actualFileCounts.ContainsKey($file)){$actualFileCounts[$file]++}else{$actualFileCounts[$file]=1}
     }
-    if(@($aiv.matches).Count -ne [int]$aiv.exact_added_block_match_count -or $validatedFiles.Count -ne [int]$aiv.matched_file_count){throw 'Canonical provenance match records do not agree with recorded totals.'}
+    if(@($aiv.matches).Count -ne [int]$aiv.exact_added_block_match_count -or $actualFileCounts.Count -ne [int]$aiv.matched_file_count){throw 'Canonical provenance match records do not agree with recorded totals.'}
+    foreach($path in @($recordedFileCounts.Keys)){
+        if(-not $actualFileCounts.ContainsKey($path)-or[int]$actualFileCounts[$path] -ne [int]$recordedFileCounts[$path]){throw "Canonical provenance per-file count drifted: $path"}
+    }
 }finally{$provenanceSha.Dispose()}
 Write-Host "PUBLIC_RELEASE_PROVENANCE_OK aivrar_blocks=$([int]$aiv.exact_added_block_match_count) files=$([int]$aiv.matched_file_count) systempanic_blocks=$([int]$sp.exact_added_block_match_count)"
 $utf8NoBom=New-Object System.Text.UTF8Encoding($false)

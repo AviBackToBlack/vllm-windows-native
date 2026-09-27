@@ -147,8 +147,8 @@
     },
     {
       "path": "docs/provenance/windows-reference-review-v0.27.1.json",
-      "size_bytes": 19623,
-      "sha256": "C9573EDA5443A0FA1F10AB320D93A3A2B80C9733D5D65983F32C60CEC1CAE7E4"
+      "size_bytes": 19588,
+      "sha256": "C16A0039218AEA1FE027DC866F26C98EF55288EB98B0AF83798B30401752AF1D"
     },
     {
       "path": "manifests/bootstrap/cpython-3.13.15-windows-x86_64.json",
