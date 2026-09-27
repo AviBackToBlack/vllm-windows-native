@@ -147,7 +147,8 @@ function Write-VllmSm20eState {
     $path=Join-Path ([IO.Path]::GetFullPath($Workspace)) $script:VllmSm20eStateFile
     $null=Assert-VllmSm20eStateObject -State $State
     $validator={param($candidate,$candidatePath)$null=$candidatePath;$null=Assert-VllmSm20eStateObject -State $candidate}
-    Write-VllmAtomicJsonFile -Path $path -Value $State -Depth 12 -Validate $validator
+    $null=Write-VllmAtomicJsonFile -Path $path -Value $State -Depth 12 -Validate $validator
+    $path
 }
 
 function Read-VllmSm20eState {
