@@ -251,6 +251,41 @@ function Enter-VllmSm20eExerciseRoot {
     }
 }
 
+function Clear-VllmSm20eOwnedHandoffResidue {
+    param([Parameter(Mandatory)][string]$CacheRoot)
+    $handoffRoot=Join-Path ([IO.Path]::GetFullPath($CacheRoot)) '.handoff'
+    if(-not(Test-Path -LiteralPath $handoffRoot)){return 0}
+    $entry=Get-VllmPathEntryInfo -Path $handoffRoot
+    if(-not$entry.Exists-or-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "SM-20E handoff root is not a regular directory: $handoffRoot"}
+    $expectedGuid=Get-VllmPathWithoutTrailingSeparator (Get-VllmPhysicalCandidatePath -Path $handoffRoot -Format Guid)
+    $rootGuard=$null
+    try{
+        try{$rootGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($handoffRoot)}
+        catch{throw "Unable to lock SM-20E handoff root for retry cleanup: $($_.Exception.Message)"}
+        $pinnedEntry=Get-VllmPathEntryInfo -Path $handoffRoot
+        if(-not$pinnedEntry.Exists-or-not$pinnedEntry.IsDirectory-or$pinnedEntry.IsReparsePoint){throw "SM-20E pinned handoff root changed type or became a reparse point: $handoffRoot"}
+        $actualGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($rootGuard))
+        if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E handoff root guard resolves outside the expected cache-local path.'}
+        $removed=0
+        foreach($child in @(Get-ChildItem -LiteralPath $handoffRoot -Force)){
+            if(-not$child.PSIsContainer-or(($child.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0)-or$child.Name-cnotmatch'^[0-9a-f]{32}$'){continue}
+            $childGuard=$null
+            try{
+                $childGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($child.FullName)
+                $physical=Get-VllmCanonicalExistingPath -Path $child.FullName -Format Dos
+                $identity=[VllmWindowsNative.NativePath]::GetFileIdentity($childGuard)
+                Invoke-VllmReleaseOwnedTempCleanup -Path $child.FullName -ExpectedPhysical $physical -ExpectedIdentity $identity -ExistingRootGuard $childGuard
+                $removed++
+            }finally{
+                if($null-ne$childGuard){$childGuard.Dispose()}
+            }
+        }
+        return $removed
+    }finally{
+        if($null-ne$rootGuard){$rootGuard.Dispose()}
+    }
+}
+
 function New-VllmSm20eUntrustedRecoveryState {
     [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
     param([Parameter(Mandatory)][string]$CacheRoot)
