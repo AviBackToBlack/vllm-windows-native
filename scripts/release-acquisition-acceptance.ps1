@@ -179,7 +179,6 @@ function Get-VllmSm20eVerifiedLocalContext {
 
 function Get-VllmSm20ePublishedVerification {
     param(
-        [Parameter(Mandatory)][string]$Workspace,
         [Parameter(Mandatory)]$State,
         [Parameter(Mandatory)]$LocalContext,
         [string]$GhExecutable='gh'
@@ -204,8 +203,10 @@ function Test-VllmSm20ePrivateKeyAbsent {
 }
 
 function New-VllmSm20eUntrustedRecoveryState {
+    [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
     param([Parameter(Mandatory)][string]$CacheRoot)
     $root=[IO.Path]::GetFullPath($CacheRoot)
+    if(-not$PSCmdlet.ShouldProcess($root,'Create deliberately stale/partial/untrusted SM-20E recovery cache state')){return}
     [void][IO.Directory]::CreateDirectory((Join-Path $root '.staging\abandoned-generation'))
     [IO.File]::WriteAllText((Join-Path $root '.staging\abandoned-generation\partial.bin'),'partial',[Text.UTF8Encoding]::new($false))
     $garbage=Join-Path (Join-Path (Join-Path $root 'verified') ([string]$script:VllmAcquisitionRepositoryId)) ('1'*40)
