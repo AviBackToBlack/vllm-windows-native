@@ -130,7 +130,7 @@ function Get-VllmReleasePublicationAssetPlan {
         })
     }
     if($plan.Count-ne4){throw "Release publication requires exactly four assets, got $($plan.Count)."}
-    @($plan)
+    return $plan.ToArray()
 }
 
 function Assert-VllmReleasePublicationAssetStable {
