@@ -262,6 +262,8 @@ function Clear-VllmSm20eOwnedHandoffResidue {
     try{
         try{$rootGuard=[VllmWindowsNative.ReleaseDirectoryGuard]::Open($handoffRoot)}
         catch{throw "Unable to lock SM-20E handoff root for retry cleanup: $($_.Exception.Message)"}
+        $pinnedEntry=Get-VllmPathEntryInfo -Path $handoffRoot
+        if(-not$pinnedEntry.Exists-or-not$pinnedEntry.IsDirectory-or$pinnedEntry.IsReparsePoint){throw "SM-20E pinned handoff root changed type or became a reparse point: $handoffRoot"}
         $actualGuid=Get-VllmPathWithoutTrailingSeparator ([VllmWindowsNative.NativePath]::GetFinalPathGuid($rootGuard))
         if(-not$actualGuid.Equals($expectedGuid,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E handoff root guard resolves outside the expected cache-local path.'}
         $removed=0
