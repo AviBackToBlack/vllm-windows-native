@@ -8,8 +8,8 @@ $script:VllmSm20eReleaseManifestPath='manifests/release/'+$script:VllmSm20eRelea
 $script:VllmSm20eRuntimeManifestPath='manifests/runtime/'+$script:VllmSm20eRelease+'.json'
 $script:VllmSm20eWheelVersion='0.0.0+sm20e.20260927'
 $script:VllmSm20eWheelName='vllm-'+$script:VllmSm20eWheelVersion+'-cp313-cp313-win_amd64.whl'
-$script:VllmSm20eWheelSize=[int64]658
-$script:VllmSm20eWheelSha256='8B06F113C0EC5B9DF92342C758C9DDA19766B85D4F068CFC53867E65468844AA'
+$script:VllmSm20eWheelSize=[int64]815
+$script:VllmSm20eWheelSha256='908E763E762A2A6CE392B0E9DB04FA0F5AFD614F16A15AB805DE61D3BD6E8481'
 $script:VllmSm20eStateFile='sm20e-acceptance-state.json'
 
 function Get-VllmSm20eIdentity {
@@ -42,6 +42,7 @@ function New-VllmSm20eSyntheticWheel {
     try{
         $entries=[ordered]@{}
         $entries['vllm/__init__.py']="__version__ = '$($script:VllmSm20eWheelVersion)'"+[char]10
+        $entries['vllm/_sm20e_fixture.pyd']='SM20E-NON-PRODUCTION-NATIVE-FIXTURE'
         $entries['vllm-'+$script:VllmSm20eWheelVersion+'.dist-info/METADATA']='Metadata-Version: 2.1'+[char]10+'Name: vllm'+[char]10+'Version: '+$script:VllmSm20eWheelVersion+[char]10
         $entries['vllm-'+$script:VllmSm20eWheelVersion+'.dist-info/WHEEL']='Wheel-Version: 1.0'+[char]10+'Generator: vllm-windows-native-sm20e'+[char]10+'Root-Is-Purelib: false'+[char]10+'Tag: cp313-cp313-win_amd64'+[char]10
         $members=New-Object System.Collections.Generic.List[object]
