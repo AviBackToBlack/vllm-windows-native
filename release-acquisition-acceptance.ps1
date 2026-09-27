@@ -158,6 +158,14 @@ switch($Mode){
         $exerciseRoot=[string]$exerciseSession.root
         $cleanCache=Join-Path $exerciseRoot 'clean-cache'
         $recoveryCache=Join-Path $exerciseRoot 'recovery-cache'
+        if([bool]$exerciseSession.retry){
+            $cleaned=@(
+                Clear-VllmSm20eOwnedHandoffResidue -CacheRoot $cleanCache
+                Clear-VllmSm20eOwnedHandoffResidue -CacheRoot $recoveryCache
+            )
+            $removed=0;foreach($count in $cleaned){$removed+=[int]$count}
+            if($removed-gt0){Write-Verbose "SM-20E retry removed $removed owned stale handoff generation(s)."}
+        }
         $allowed=Join-Path $workspaceFull 'signing\allowed-signers'
 
         $clean=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmSm20eRepositorySlug -Tag ([string]$state.tag) -AllowedSignersPath $allowed -CacheRoot $cleanCache -GhExecutable $GhExecutable -ExpectedPrincipal ([string]$state.principal) -ExpectedFingerprint ([string]$state.key_fingerprint)
