@@ -32,7 +32,7 @@ try{
     $context=Get-VllmReleaseContext -Snapshot $snapshot -ReleaseManifestPath $script:VllmSm20eReleaseManifestPath
     if(-not([string]$context.Release.release).Equals($script:VllmSm20eRelease,[StringComparison]::Ordinal)-or-not([string]$context.Tag).Equals($script:VllmSm20eTag,[StringComparison]::Ordinal)){throw 'SM-20E reviewed manifest identity mismatch.'}
     if(@($context.Members).Count-ne30){throw "SM-20E fixture bundle member count drifted: $(@($context.Members).Count)"}
-    if(@($context.NativeExtensions).Count-ne1-or-not([string]$context.NativeExtensions[0]).Equals('vllm/_sm20e_fixture.pyd',[StringComparison]::Ordinal)){throw 'SM-20E synthetic native extension identity mismatch.'}
+    if(@($context.NativeExtensions).Count-ne1-or-not([string](@($context.NativeExtensions)[0])).Equals('vllm/_sm20e_fixture.pyd',[StringComparison]::Ordinal)){throw 'SM-20E synthetic native extension identity mismatch.'}
 }finally{Close-VllmReleaseGitSnapshot -Snapshot $snapshot}
 Write-Host 'SM20E_MANIFEST_CONTRACT_OK'
 
