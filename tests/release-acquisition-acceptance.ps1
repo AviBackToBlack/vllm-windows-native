@@ -97,6 +97,28 @@ try{
     if(-not(Test-Path -LiteralPath $untrusted.staging -PathType Container)-or-not(Test-Path -LiteralPath (Join-Path $untrusted.staging 'partial.bin') -PathType Leaf)-or-not(Test-Path -LiteralPath (Join-Path $untrusted.garbage 'acquisition-receipt.json') -PathType Leaf)){throw 'SM-20E untrusted recovery state fixture is incomplete.'}
     Write-Host 'SM20E_RECOVERY_FIXTURE_OK'
 
+    $exerciseWorkspace=Join-Path $root 'exercise-workspace'
+    [void][IO.Directory]::CreateDirectory($exerciseWorkspace)
+    $exerciseState=($state|ConvertTo-Json -Depth 12|ConvertFrom-Json)
+    $exerciseState.tag_object=('b'*40)
+    $firstExercise=Enter-VllmSm20eExerciseRoot -Workspace $exerciseWorkspace -State $exerciseState -Confirm:$false
+    if([bool]$firstExercise.retry-or-not(Test-Path -LiteralPath $firstExercise.owner -PathType Leaf)){throw 'SM-20E first exercise entry did not create an owned root.'}
+    $retryExercise=Enter-VllmSm20eExerciseRoot -Workspace $exerciseWorkspace -State $exerciseState -Confirm:$false
+    if(-not[bool]$retryExercise.retry-or-not([string]$retryExercise.root).Equals([string]$firstExercise.root,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E incomplete exercise did not resume from its owned root.'}
+    [IO.File]::WriteAllText([string]$firstExercise.proof,'{}',[Text.UTF8Encoding]::new($false))
+    Assert-Fails { Enter-VllmSm20eExerciseRoot -Workspace $exerciseWorkspace -State $exerciseState -Confirm:$false | Out-Null } 'already completed'
+    Remove-Item -LiteralPath [string]$firstExercise.proof -Force
+
+    $foreignWorkspace=Join-Path $root 'foreign-exercise-workspace'
+    [void][IO.Directory]::CreateDirectory((Join-Path $foreignWorkspace 'exercise'))
+    Assert-Fails { Enter-VllmSm20eExerciseRoot -Workspace $foreignWorkspace -State $exerciseState -Confirm:$false | Out-Null } 'not owned'
+    $wrongOwner=Get-Content -LiteralPath $firstExercise.owner -Raw|ConvertFrom-Json
+    $wrongOwner.tag_object=('c'*40)
+    $wrongOwnerPath=Join-Path $foreignWorkspace 'exercise\sm20e-exercise-owner.json'
+    $null=Write-VllmAtomicJsonFile -Path $wrongOwnerPath -Value $wrongOwner -Depth 6
+    Assert-Fails { Enter-VllmSm20eExerciseRoot -Workspace $foreignWorkspace -State $exerciseState -Confirm:$false | Out-Null } 'does not match'
+    Write-Host 'SM20E_EXERCISE_RETRY_CONTRACT_OK'
+
     $top=Get-Content -LiteralPath (Join-Path $repoRoot 'release-acquisition-acceptance.ps1') -Raw
     if($top.IndexOf("ValidateSet('Prepare','Publish','Verify','Exercise')",[StringComparison]::Ordinal)-lt0){throw 'SM-20E top-level mode surface drifted.'}
     $exerciseStart=$top.IndexOf("    'Exercise' {",[StringComparison]::Ordinal)
