@@ -344,7 +344,7 @@ try{
     try{
         Assert-Fails {
             Initialize-VllmAcquisitionHandoffMaterialization -Acquisition $fixture.Acquisition | Out-Null
-        } 'Another verified lifecycle handoff is active for this acquisition cache.'
+        } 'Another verified release operation holds this acquisition cache.'
     }finally{
         Exit-VllmAcquisitionHandoffMaterialization -Materialization $heldMaterialization
     }
@@ -357,11 +357,14 @@ try{
         $script:cleanupBlocker=[IO.File]::Open([string]$ScriptPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
         throw 'INJECTED_PRIMARY_LIFECYCLE_FAILURE'
     }
+    $oldWarningPreference=$WarningPreference
     try{
+        $WarningPreference='Stop'
         Assert-Fails {
             Invoke-VllmAcquisitionInstallHandoff -Acquisition $fixture.Acquisition -LifecycleInvoker $maskingProbe
         } 'INJECTED_PRIMARY_LIFECYCLE_FAILURE'
     }finally{
+        $WarningPreference=$oldWarningPreference
         if($null-ne$script:cleanupBlocker){$script:cleanupBlocker.Dispose();$script:cleanupBlocker=$null}
     }
     $residue=@()
