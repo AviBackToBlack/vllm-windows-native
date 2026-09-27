@@ -258,7 +258,23 @@ Verified entries are committed atomically below `<CacheRoot>\verified\1361670545
 
 GitHub CLI transport is isolated from ambient host/config state. An existing `GH_TOKEN` may be supplied as the read credential; otherwise acquisition obtains the current GitHub.com credential with `gh auth token --hostname github.com` before entering the isolated child environment. The credential is never stored in the cache or provenance receipt.
 
-This slice intentionally stops at a verified local release artifact set. Materializing the verified distribution bundle and handing exact local manifest/wheel paths into `install.ps1` / `update.ps1` remains SM-20C.
+SM-20C adds the lifecycle handoff wrappers. They perform the same exact-tag acquisition first, then materialize the already verified distribution bundle into a private cache-local handoff generation and invoke the release-owned `install.ps1` or `update.ps1` from that materialized distribution. The verified cache entry itself is never extracted in place or mutated.
+
+Install an exact published release:
+
+```powershell
+.\install-release.ps1 -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers' -CacheRoot 'C:\AI\vLLM-acquisition-cache' -InstallationRoot 'D:\AI\vLLM'
+```
+
+Update an existing installation to an exact published release:
+
+```powershell
+.\update-release.ps1 -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers' -CacheRoot 'C:\AI\vLLM-acquisition-cache' -InstallationRoot 'D:\AI\vLLM'
+```
+
+Use `-WhatIf` on `update-release.ps1` for the existing non-mutating update plan, and `-Confirm:$false` when the existing update confirmation is intentionally suppressed. Install-specific options such as `-ModelsRoot`, `-PythonArchivePath`, `-UvArchivePath`, and `-Offline` are passed through unchanged.
+
+The handoff re-binds the cache receipt to the in-memory verified acquisition result, pins the four verified release assets while materialization/lifecycle execution is active, revalidates the authenticated release/runtime manifest digests and wheel identity, accepts only the exact manifest-declared canonical ZIP members, writes the materialized files through pinned file/directory handles, and keeps read-only handles open through lifecycle execution. The materialized entrypoints therefore see their own verified distribution as `$PSScriptRoot`, preserving the existing installer/updater source-payload validation without moving any network trust into those transaction engines. The temporary `<CacheRoot>\.handoff\<generation>\` tree is guarded and removed after success or failure.
 
 ### Stage and publish the guarded GitHub Release
 
