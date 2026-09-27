@@ -105,6 +105,18 @@ try{
     if([bool]$firstExercise.retry-or-not(Test-Path -LiteralPath $firstExercise.owner -PathType Leaf)){throw 'SM-20E first exercise entry did not create an owned root.'}
     $retryExercise=Enter-VllmSm20eExerciseRoot -Workspace $exerciseWorkspace -State $exerciseState -Confirm:$false
     if(-not[bool]$retryExercise.retry-or-not([string]$retryExercise.root).Equals([string]$firstExercise.root,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E incomplete exercise did not resume from its owned root.'}
+
+    $retryCache=Join-Path ([string]$firstExercise.root) 'clean-cache'
+    $handoffRoot=Join-Path $retryCache '.handoff'
+    $ownedGeneration=Join-Path $handoffRoot '0123456789abcdef0123456789abcdef'
+    $foreignEntry=Join-Path $handoffRoot 'foreign-entry'
+    [void][IO.Directory]::CreateDirectory((Join-Path $ownedGeneration 'distribution'))
+    [IO.File]::WriteAllText((Join-Path $ownedGeneration 'distribution\leftover.txt'),'owned-leftover',[Text.UTF8Encoding]::new($false))
+    [void][IO.Directory]::CreateDirectory($foreignEntry)
+    [IO.File]::WriteAllText((Join-Path $foreignEntry 'keep.txt'),'foreign',[Text.UTF8Encoding]::new($false))
+    $removed=Clear-VllmSm20eOwnedHandoffResidue -CacheRoot $retryCache
+    if([int]$removed-ne1-or(Test-Path -LiteralPath $ownedGeneration)-or-not(Test-Path -LiteralPath $foreignEntry -PathType Container)){throw 'SM-20E retry handoff cleanup did not selectively remove only the owned GUID generation.'}
+    Write-Host 'SM20E_HANDOFF_RETRY_CLEANUP_OK'
     [IO.File]::WriteAllText([string]$firstExercise.proof,'{}',[Text.UTF8Encoding]::new($false))
     Assert-Fails { Enter-VllmSm20eExerciseRoot -Workspace $exerciseWorkspace -State $exerciseState -Confirm:$false | Out-Null } 'already completed'
     Remove-Item -LiteralPath ([string]$firstExercise.proof) -Force
@@ -126,6 +138,7 @@ try{
     $exerciseBlock=$top.Substring($exerciseStart)
     if($exerciseBlock.IndexOf('-GitSourceUrl',[StringComparison]::OrdinalIgnoreCase)-ge0){throw 'SM-20E trusted Exercise must not override canonical Git transport.'}
     if($exerciseBlock.IndexOf('Invoke-VllmReleaseAcquisition',[StringComparison]::Ordinal)-lt0-or$exerciseBlock.IndexOf('Invoke-VllmSm20eHandoffProof',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Exercise mode does not compose the production acquisition/handoff path.'}
+    if($exerciseBlock.IndexOf('Clear-VllmSm20eOwnedHandoffResidue',[StringComparison]::Ordinal)-lt0){throw 'SM-20E Exercise retry does not clean owned stale handoff generations.'}
     Write-Host 'SM20E_OPERATOR_SURFACE_OK'
 
     Write-Host 'RELEASE_ACQUISITION_ACCEPTANCE_CONTRACT_OK'
