@@ -147,9 +147,9 @@ switch($Mode){
         $context=Get-VllmSm20eVerifiedLocalContext -Repository $repository -Workspace $workspaceFull -State $state
         $verification=Get-VllmSm20ePublishedVerification -State $state -LocalContext $context -GhExecutable $GhExecutable
         $exerciseRoot=Join-Path $workspaceFull 'exercise'
-        if(Test-Path -LiteralPath $exerciseRoot){throw "SM-20E exercise root must be absent before trusted proof: $exerciseRoot"}
-        if(-not$PSCmdlet.ShouldProcess($exerciseRoot,'Run trusted network acquisition, recovery, exact reacquisition, and local handoff proof')){return}
-        [void][IO.Directory]::CreateDirectory($exerciseRoot)
+        if(-not$PSCmdlet.ShouldProcess($exerciseRoot,'Run or resume trusted network acquisition, recovery, exact reacquisition, and local handoff proof')){return}
+        $exerciseSession=Enter-VllmSm20eExerciseRoot -Workspace $workspaceFull -State $state -Confirm:$false
+        $exerciseRoot=[string]$exerciseSession.root
         $cleanCache=Join-Path $exerciseRoot 'clean-cache'
         $recoveryCache=Join-Path $exerciseRoot 'recovery-cache'
         $allowed=Join-Path $workspaceFull 'signing\allowed-signers'
@@ -187,7 +187,7 @@ switch($Mode){
             recovery_update_script=[string]$recoveryHandoff.update.script_path
             completed_utc=(Get-Date).ToUniversalTime().ToString('o')
         }
-        $proofPath=Join-Path $exerciseRoot 'sm20e-proof.json'
+        $proofPath=[string]$exerciseSession.proof
         $null=Write-VllmAtomicJsonFile -Path $proofPath -Value $proof -Depth 10
         Write-Sm20eResult -Result ([pscustomobject][ordered]@{
             state='accepted';release=$state.release;tag=$state.tag;project_commit=$state.project_commit;tag_object=$state.tag_object
