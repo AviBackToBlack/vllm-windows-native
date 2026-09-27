@@ -136,7 +136,7 @@ switch($Mode){
 
     'Verify' {
         $state=Read-VllmSm20eState -Workspace $workspaceFull
-        $null=Assert-VllmSm19dOperatorRepositoryState -Repository $repository -RepositorySlug $script:VllmSm20eRepositorySlug -ExpectedCommit ([string]$state.project_commit) -GhExecutable $GhExecutable
+        $null=Assert-VllmSm20eCurrentMainForExistingFixture -Repository $repository -RepositorySlug $script:VllmSm20eRepositorySlug -PreparedCommit ([string]$state.project_commit) -GhExecutable $GhExecutable
         $null=Test-VllmSm20ePrivateKeyAbsent -Workspace $workspaceFull
         $context=Get-VllmSm20eVerifiedLocalContext -Repository $repository -Workspace $workspaceFull -State $state
         $verification=Get-VllmSm20ePublishedVerification -State $state -LocalContext $context -GhExecutable $GhExecutable
@@ -148,7 +148,7 @@ switch($Mode){
 
     'Exercise' {
         $state=Read-VllmSm20eState -Workspace $workspaceFull
-        $null=Assert-VllmSm19dOperatorRepositoryState -Repository $repository -RepositorySlug $script:VllmSm20eRepositorySlug -ExpectedCommit ([string]$state.project_commit) -GhExecutable $GhExecutable
+        $null=Assert-VllmSm20eCurrentMainForExistingFixture -Repository $repository -RepositorySlug $script:VllmSm20eRepositorySlug -PreparedCommit ([string]$state.project_commit) -GhExecutable $GhExecutable
         $null=Test-VllmSm20ePrivateKeyAbsent -Workspace $workspaceFull
         $context=Get-VllmSm20eVerifiedLocalContext -Repository $repository -Workspace $workspaceFull -State $state
         $verification=Get-VllmSm20ePublishedVerification -State $state -LocalContext $context -GhExecutable $GhExecutable

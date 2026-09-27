@@ -160,6 +160,41 @@ function Read-VllmSm20eState {
     $state
 }
 
+function Assert-VllmSm20ePreparedCommitAncestor {
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$PreparedCommit,
+        [Parameter(Mandatory)][string]$HeadCommit
+    )
+    $root=[IO.Path]::GetFullPath($Repository)
+    if($PreparedCommit-cnotmatch'^[0-9a-f]{40}$'-or$HeadCommit-cnotmatch'^[0-9a-f]{40}$'){throw 'SM-20E prepared/head commit identity is invalid.'}
+    $resolvedPrepared=(Invoke-Git -Repository $root -Arguments @('rev-parse',($PreparedCommit+'^{commit}')) -Capture).Trim().ToLowerInvariant()
+    if(-not$resolvedPrepared.Equals($PreparedCommit,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E prepared commit does not resolve to the exact expected commit.'}
+    $oldErrorActionPreference=$ErrorActionPreference
+    try{
+        $ErrorActionPreference='Continue'
+        $output=@(& git -C $root -c core.longpaths=true merge-base --is-ancestor $PreparedCommit $HeadCommit 2>&1)
+        $exit=$LASTEXITCODE
+    }finally{$ErrorActionPreference=$oldErrorActionPreference}
+    if($exit-ne0){
+        if($exit-eq1){throw "SM-20E current main is not a descendant of the prepared fixture commit: prepared=$PreparedCommit current=$HeadCommit"}
+        throw "Unable to validate SM-20E prepared commit ancestry (exit $exit): $($output -join [Environment]::NewLine)"
+    }
+    $true
+}
+
+function Assert-VllmSm20eCurrentMainForExistingFixture {
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$RepositorySlug,
+        [Parameter(Mandatory)][string]$PreparedCommit,
+        [string]$GhExecutable='gh'
+    )
+    $head=Assert-VllmSm19dOperatorRepositoryState -Repository $Repository -RepositorySlug $RepositorySlug -GhExecutable $GhExecutable
+    $null=Assert-VllmSm20ePreparedCommitAncestor -Repository $Repository -PreparedCommit $PreparedCommit -HeadCommit $head
+    $head
+}
+
 function Get-VllmSm20eVerifiedLocalContext {
     param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$Workspace,[Parameter(Mandatory)]$State)
     $allowed=Join-Path ([IO.Path]::GetFullPath($Workspace)) 'signing\allowed-signers'
