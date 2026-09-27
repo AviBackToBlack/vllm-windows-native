@@ -129,7 +129,7 @@ try{
     $null=New-Item -ItemType Junction -Path $junctionRoot -Target $junctionTarget -ErrorAction Stop
     Assert-Fails { Clear-VllmSm20eOwnedHandoffResidue -CacheRoot $junctionCache | Out-Null } 'not a regular directory'
     if(-not(Test-Path -LiteralPath $sentinel -PathType Leaf)){throw 'SM-20E retry cleanup followed a reparse-point handoff root outside the cache boundary.'}
-    Remove-Item -LiteralPath $junctionRoot -Force
+    [IO.Directory]::Delete($junctionRoot)
 
     $helperSource=Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\release-acquisition-acceptance.ps1') -Raw
     $helperStart=$helperSource.IndexOf('function Clear-VllmSm20eOwnedHandoffResidue',[StringComparison]::Ordinal)
