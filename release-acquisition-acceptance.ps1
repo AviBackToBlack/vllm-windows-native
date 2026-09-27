@@ -59,9 +59,11 @@ switch($Mode){
         $target="$workspaceFull tag=$($script:VllmSm20eTag) commit=$commit"
         if(-not$PSCmdlet.ShouldProcess($target,'Prepare reviewed non-production SM-20E fixture and local signed tag')){return}
         $tagCreated=$false
+        $workspaceCreated=$false
         $privateKey=Join-Path $workspaceFull 'signing\acceptance-ed25519'
         try{
             [void][IO.Directory]::CreateDirectory($workspaceFull)
+            $workspaceCreated=$true
             $wheelPath=Join-Path (Join-Path $workspaceFull 'input') $script:VllmSm20eWheelName
             $wheel=New-VllmSm20eSyntheticWheel -Path $wheelPath -Confirm:$false
             $artifacts=Join-Path $workspaceFull 'artifacts'
@@ -97,9 +99,13 @@ switch($Mode){
                 wheel_sha256=$script:VllmSm20eWheelSha256;asset_count=$plan.Count;state_file=$statePath
             }) -Marker 'SM20E_PREPARE_OK'
         }catch{
-            if($tagCreated){try{Invoke-Git -Repository $repository -Arguments @('tag','-d',$script:VllmSm20eTag)}catch{Write-Verbose ('Unable to remove failed SM-20E local tag: '+$_.Exception.Message)}}
-            if(Test-Path -LiteralPath $privateKey){try{Remove-VllmSm19dPrivateSigningKey -PrivateKeyPath $privateKey -Confirm:$false}catch{Write-Verbose ('Unable to remove failed SM-20E private key: '+$_.Exception.Message)}}
-            throw
+            $prepareFailure=$_
+            if($tagCreated){try{Invoke-Git -Repository $repository -Arguments @('tag','-d',$script:VllmSm20eTag)}catch{Write-Warning -WarningAction Continue ('Unable to remove failed SM-20E local tag: '+$_.Exception.Message)}}
+            if(Test-Path -LiteralPath $privateKey){try{Remove-VllmSm19dPrivateSigningKey -PrivateKeyPath $privateKey -Confirm:$false}catch{Write-Warning -WarningAction Continue ('Unable to remove failed SM-20E private key: '+$_.Exception.Message)}}
+            if($workspaceCreated-and(Test-Path -LiteralPath $workspaceFull)){
+                try{Remove-Item -LiteralPath $workspaceFull -Recurse -Force -ErrorAction Stop}catch{Write-Warning -WarningAction Continue ('SM-20E Prepare failed and owned workspace cleanup was incomplete: '+$_.Exception.Message)}
+            }
+            throw $prepareFailure
         }
     }
 
