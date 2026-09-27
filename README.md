@@ -276,6 +276,21 @@ Use `-WhatIf` on `update-release.ps1` for the existing non-mutating update plan,
 
 The handoff re-binds the cache receipt to the in-memory verified acquisition result, pins the four verified release assets while materialization/lifecycle execution is active, revalidates the authenticated release/runtime manifest digests and wheel identity, accepts only the exact manifest-declared canonical ZIP members, writes the materialized files through pinned file/directory handles, and keeps read-only handles open through lifecycle execution. The materialized entrypoints therefore see their own verified distribution as `$PSScriptRoot`, preserving the existing installer/updater source-payload validation without moving any network trust into those transaction engines. The temporary `<CacheRoot>\.handoff\<generation>\` tree is guarded and removed after success or failure.
 
+### Maintainer-only SM-20E trusted acceptance
+
+SM-20E is a one-shot **non-production** network acceptance fixture. It is not the public v1.0 release and must remain a prerelease. Its reviewed identity is fixed to `release/sm20e-acceptance-20260927-01`; the fixture uses a deterministic synthetic native wheel while reusing the canonical production release format and real distribution payload.
+
+Run these modes only from a clean checked-out `main` after the SM-20E acceptance slice has merged, with the workspace outside the repository:
+
+```powershell
+.\release-acquisition-acceptance.ps1 -Mode Prepare  -Workspace 'C:\AI\vLLM-sm20e-acceptance' -Confirm:$false
+.\release-acquisition-acceptance.ps1 -Mode Publish  -Workspace 'C:\AI\vLLM-sm20e-acceptance' -Confirm:$false
+.\release-acquisition-acceptance.ps1 -Mode Verify   -Workspace 'C:\AI\vLLM-sm20e-acceptance'
+.\release-acquisition-acceptance.ps1 -Mode Exercise -Workspace 'C:\AI\vLLM-sm20e-acceptance' -Confirm:$false
+```
+
+`Prepare` creates the canonical four release assets, an ephemeral software SSH signer, and the exact local annotated tag; it deletes the private key before writing the durable acceptance state. `Publish` pushes only that exact tag and publishes the marker-owned immutable prerelease through the existing guarded release machinery. `Verify` is read-only. `Exercise` uses the real canonical GitHub/Git transport and SM-20 acquisition implementation from both an empty cache and deliberately stale/partial/untrusted local state, performs exact install/update handoff proof without granting lifecycle mutation authority, proves idempotent exact reacquisition, and preserves unknown untrusted siblings as audit evidence.
+
 ### Stage and publish the guarded GitHub Release
 
 SM-19C adds the mutation surface, but it deliberately does not create or sign the release tag and does not enable repository release immutability. Before staging, the repository must already have immutable releases enabled, the reviewed project commit must still be the remote `main` tip, and the canonical annotated SSH-signed release tag must already exist both locally and on GitHub. Run the commands from a clean checkout of `main` at that exact commit with an authenticated `gh` CLI and an independently pinned allowed-signers file.
