@@ -37,7 +37,10 @@ function Assert-Sm20eWorkspaceOutsideRepository {
 }
 
 function Set-Sm20ePublishedState {
+    [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='Low')]
     param([Parameter(Mandatory)][string]$WorkspacePath,[Parameter(Mandatory)]$State,[Parameter(Mandatory)]$Remote)
+    $statePath=Join-Path ([IO.Path]::GetFullPath($WorkspacePath)) $script:VllmSm20eStateFile
+    if(-not$PSCmdlet.ShouldProcess($statePath,'Record verified immutable SM-20E publication state')){return $State}
     $State.published=$true
     $State.release_id=[int64]$Remote.id
     $State.release_url=[string]$Remote.html_url
@@ -116,9 +119,9 @@ switch($Mode){
             $null=Invoke-VllmPublishGitHubRelease -RepositorySlug $script:VllmSm20eRepositorySlug -Release ([string]$state.release) -Tag ([string]$state.tag) -ProjectCommit $commit -TagObject ([string]$state.tag_object) -AssetPlan ([object[]]$context.asset_plan) -GhExecutable $GhExecutable
         }else{throw "SM-20E stage returned unsupported state: $($stage.state)"}
         $verification=Invoke-VllmBoundedRetry -Attempts 5 -DelayMilliseconds 1500 -Action {
-            Get-VllmSm20ePublishedVerification -Workspace $workspaceFull -State $state -LocalContext $context -GhExecutable $GhExecutable
+            Get-VllmSm20ePublishedVerification -State $state -LocalContext $context -GhExecutable $GhExecutable
         }
-        $state=Set-Sm20ePublishedState -WorkspacePath $workspaceFull -State $state -Remote $verification.remote
+        $state=Set-Sm20ePublishedState -WorkspacePath $workspaceFull -State $state -Remote $verification.remote -Confirm:$false
         Write-Sm20eResult -Result ([pscustomobject][ordered]@{
             state='published';release=$state.release;tag=$state.tag;project_commit=$commit;tag_object=$state.tag_object
             release_id=[int64]$state.release_id;release_url=[string]$state.release_url;asset_count=[int]$verification.attestation.asset_count
@@ -130,7 +133,7 @@ switch($Mode){
         $null=Assert-VllmSm19dOperatorRepositoryState -Repository $repository -RepositorySlug $script:VllmSm20eRepositorySlug -ExpectedCommit ([string]$state.project_commit) -GhExecutable $GhExecutable
         $null=Test-VllmSm20ePrivateKeyAbsent -Workspace $workspaceFull
         $context=Get-VllmSm20eVerifiedLocalContext -Repository $repository -Workspace $workspaceFull -State $state
-        $verification=Get-VllmSm20ePublishedVerification -Workspace $workspaceFull -State $state -LocalContext $context -GhExecutable $GhExecutable
+        $verification=Get-VllmSm20ePublishedVerification -State $state -LocalContext $context -GhExecutable $GhExecutable
         Write-Sm20eResult -Result ([pscustomobject][ordered]@{
             state='verified';release=$state.release;tag=$state.tag;project_commit=$state.project_commit;tag_object=$state.tag_object
             release_id=[int64]$verification.remote.id;release_url=[string]$verification.remote.html_url;asset_count=[int]$verification.attestation.asset_count
@@ -142,7 +145,7 @@ switch($Mode){
         $null=Assert-VllmSm19dOperatorRepositoryState -Repository $repository -RepositorySlug $script:VllmSm20eRepositorySlug -ExpectedCommit ([string]$state.project_commit) -GhExecutable $GhExecutable
         $null=Test-VllmSm20ePrivateKeyAbsent -Workspace $workspaceFull
         $context=Get-VllmSm20eVerifiedLocalContext -Repository $repository -Workspace $workspaceFull -State $state
-        $verification=Get-VllmSm20ePublishedVerification -Workspace $workspaceFull -State $state -LocalContext $context -GhExecutable $GhExecutable
+        $verification=Get-VllmSm20ePublishedVerification -State $state -LocalContext $context -GhExecutable $GhExecutable
         $exerciseRoot=Join-Path $workspaceFull 'exercise'
         if(Test-Path -LiteralPath $exerciseRoot){throw "SM-20E exercise root must be absent before trusted proof: $exerciseRoot"}
         if(-not$PSCmdlet.ShouldProcess($exerciseRoot,'Run trusted network acquisition, recovery, exact reacquisition, and local handoff proof')){return}
@@ -155,7 +158,7 @@ switch($Mode){
         if(-not([string]$clean.project_commit).Equals([string]$state.project_commit,[StringComparison]::OrdinalIgnoreCase)-or-not([string]$clean.tag_object).Equals([string]$state.tag_object,[StringComparison]::OrdinalIgnoreCase)-or-not([string]$clean.wheel_sha256).Equals($script:VllmSm20eWheelSha256,[StringComparison]::OrdinalIgnoreCase)){throw 'SM-20E clean acquisition identity mismatch.'}
         $cleanHandoff=Invoke-VllmSm20eHandoffProof -Acquisition $clean
 
-        $untrusted=New-VllmSm20eUntrustedRecoveryState -CacheRoot $recoveryCache
+        $untrusted=New-VllmSm20eUntrustedRecoveryState -CacheRoot $recoveryCache -Confirm:$false
         $recovered=Invoke-VllmReleaseAcquisition -RepositorySlug $script:VllmSm20eRepositorySlug -Tag ([string]$state.tag) -AllowedSignersPath $allowed -CacheRoot $recoveryCache -GhExecutable $GhExecutable -ExpectedPrincipal ([string]$state.principal) -ExpectedFingerprint ([string]$state.key_fingerprint)
         if(-not(Test-Path -LiteralPath $untrusted.staging -PathType Container)-or-not(Test-Path -LiteralPath $untrusted.garbage -PathType Container)){throw 'SM-20E recovery acquisition removed unknown untrusted state.'}
         $receiptBefore=[Convert]::ToBase64String([IO.File]::ReadAllBytes([string]$recovered.receipt_path))
