@@ -107,8 +107,8 @@
     },
     {
       "path": "scripts/update-planner.ps1",
-      "size_bytes": 45641,
-      "sha256": "2B0AD20BBA0E499FA5E5C58359071CDF81A8AABBF8FD71F0BF4FE7A6B4D00E26"
+      "size_bytes": 44979,
+      "sha256": "0283015459679B7BD6294AD640EED34A9A571963A2CBBC1812D3526C3F67C492"
     },
     {
       "path": "scripts/update-staging.ps1",
@@ -117,13 +117,13 @@
     },
     {
       "path": "scripts/update-transaction.ps1",
-      "size_bytes": 62541,
-      "sha256": "AEA4D2ECE457F28DA0B979DCB71FB6463F62B84EF09359CAD64F10CD432A42C8"
+      "size_bytes": 62539,
+      "sha256": "C26C7D1B2EA4EBD5F6CCBC93F15071E2C2BEB32A902D7E427C275E133767A510"
     },
     {
       "path": "scripts/update-integration.ps1",
-      "size_bytes": 56314,
-      "sha256": "49954ABF94EFC361AEB8146F8280D9A24A8449CD065D1CAF98A33D9A39343556"
+      "size_bytes": 56309,
+      "sha256": "949345B736ED6069E585B05895881C14E80F66D5F78E49892CC82979C20C21F1"
     },
     {
       "path": "scripts/env.ps1",
