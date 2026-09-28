@@ -65,8 +65,8 @@ function Write-InterruptedTransactionState {
         transaction_id=$TransactionId
         phase=$Phase
         target=Join-Path $Root 'runtime\venv'
-        staging=Join-Path $Root 'runtime\.venv-dependencies-staging'
-        backup=Join-Path $Root 'runtime\.venv-dependencies-backup'
+        staging=Join-Path $Root 'runtime\.ds'
+        backup=Join-Path $Root 'runtime\.db'
         transaction_receipt=Join-Path $Root 'forensic\runtime-dependencies-transaction-v0.27.1.json'
         dependency_receipt=Join-Path $Root 'forensic\runtime-dependencies-v0.27.1.json'
         base_venv_receipt=Join-Path $Root 'forensic\venv-bootstrap-v0.27.1.json'
@@ -87,8 +87,8 @@ function Assert-ColoramaReady {
 function Assert-NoDependencyTransactionArtifacts {
     param([Parameter(Mandatory)][string]$Root)
     foreach($path in @(
-        (Join-Path $Root 'runtime\.venv-dependencies-backup'),
-        (Join-Path $Root 'runtime\.venv-dependencies-staging'),
+        (Join-Path $Root 'runtime\.db'),
+        (Join-Path $Root 'runtime\.ds'),
         (Join-Path $Root 'forensic\runtime-dependencies-transaction-v0.27.1.json')
     )){if(Test-Path -LiteralPath $path){throw "Dependency transaction artifact was left behind: $path"}}
 }
@@ -158,8 +158,8 @@ try {
     if((Get-Content -LiteralPath $dependencyReceipt -Raw) -ne $dependencyReceiptRaw){throw 'Dependency receipt restore after deterministic-field drift failed.'}
     Write-Host 'DEPENDENCY_RECEIPT_EXACT_SCHEMA_REJECTION_OK'
 
-    $stagingPath=Join-Path $root 'runtime\.venv-dependencies-staging'
-    $backupPath=Join-Path $root 'runtime\.venv-dependencies-backup'
+    $stagingPath=Join-Path $root 'runtime\.ds'
+    $backupPath=Join-Path $root 'runtime\.db'
     [void][IO.Directory]::CreateDirectory($stagingPath)
     [IO.File]::WriteAllText((Join-Path $stagingPath 'partial.marker'),'PARTIAL',[Text.Encoding]::ASCII)
     $tx=[guid]::NewGuid().ToString('D')

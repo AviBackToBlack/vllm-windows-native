@@ -58,10 +58,10 @@ function Write-FinalFixtureManifest {
     if($LASTEXITCODE -ne 0 -or $rows.Count -ne 2 -or $rows[0] -ne 'colorama==0.4.6' -or $rows[1] -ne 'vllm==0.0.1'){throw "Unexpected final distributions: $($rows -join ', ')"}
     if(Test-Path -LiteralPath (Join-Path $Root 'Lib\site-packages\pip') -PathType Container){throw 'pip was unexpectedly installed.'}
 }
-function Assert-NoArtifacts {param([string]$Root);foreach($p in @('runtime\.venv-vllm-staging','runtime\.venv-vllm-backup','forensic\runtime-vllm-transaction-v0.27.1.json')){if(Test-Path -LiteralPath (Join-Path $Root $p)){throw "vLLM transaction artifact remained: $p"}}}
+function Assert-NoArtifacts {param([string]$Root);foreach($p in @('runtime\.vs','runtime\.vb','forensic\runtime-vllm-transaction-v0.27.1.json')){if(Test-Path -LiteralPath (Join-Path $Root $p)){throw "vLLM transaction artifact remained: $p"}}}
 function Write-InterruptedState {
     param([string]$Root,[string]$ManifestPath,[string]$TransactionId,[ValidateSet('materializing','prepared')][string]$Phase)
-    $m=Get-Content $ManifestPath -Raw|ConvertFrom-Json;$state=[ordered]@{schema_version=1;component='vllm-runtime-transaction';milestone=[string]$m.milestone;platform=[string]$m.platform;transaction_id=$TransactionId;phase=$Phase;target=Join-Path $Root 'runtime\venv';staging=Join-Path $Root 'runtime\.venv-vllm-staging';backup=Join-Path $Root 'runtime\.venv-vllm-backup';transaction_receipt=Join-Path $Root 'forensic\runtime-vllm-transaction-v0.27.1.json';final_receipt=Join-Path $Root 'forensic\runtime-vllm-v0.27.1.json';predecessor_receipt=Join-Path $Root 'forensic\runtime-dependencies-v0.27.1.json';manifest=[IO.Path]::GetFullPath($ManifestPath);lock_sha256=[string]$m.lock.sha256;wheel_sha256=[string]$m.project_wheel.sha256}
+    $m=Get-Content $ManifestPath -Raw|ConvertFrom-Json;$state=[ordered]@{schema_version=1;component='vllm-runtime-transaction';milestone=[string]$m.milestone;platform=[string]$m.platform;transaction_id=$TransactionId;phase=$Phase;target=Join-Path $Root 'runtime\venv';staging=Join-Path $Root 'runtime\.vs';backup=Join-Path $Root 'runtime\.vb';transaction_receipt=Join-Path $Root 'forensic\runtime-vllm-transaction-v0.27.1.json';final_receipt=Join-Path $Root 'forensic\runtime-vllm-v0.27.1.json';predecessor_receipt=Join-Path $Root 'forensic\runtime-dependencies-v0.27.1.json';manifest=[IO.Path]::GetFullPath($ManifestPath);lock_sha256=[string]$m.lock.sha256;wheel_sha256=[string]$m.project_wheel.sha256}
     [IO.File]::WriteAllText([string]$state.transaction_receipt,($state|ConvertTo-Json -Depth 6),[Text.UTF8Encoding]::new($false));return [string]$state.transaction_receipt
 }
 $outer=Get-TestEnvironmentSnapshot
@@ -86,8 +86,8 @@ try{
     Test-ExpectedFailure -Action {& $bootstrapVllm -ManifestPath $final -InstallationRoot $root -WheelPath $badWheel -Json|Out-Null} -Name 'wheel-hash-mismatch' -ExpectedMessage 'wheel size mismatch';if((Get-Content $marker -Raw).Trim() -ne 'KEEP'){throw 'Bad wheel validation mutated runtime.'};Write-Host 'VLLM_BAD_WHEEL_REJECTED_PRE_MUTATION'
     $o=$receiptRaw|ConvertFrom-Json;$o.vllm_version='9.9.9';[IO.File]::WriteAllText($receipt,($o|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false));Test-ExpectedFailure -Action {& $bootstrapVllm -ManifestPath $final -InstallationRoot $root -WheelPath $wheel -Json|Out-Null} -Name 'receipt-drift' -ExpectedMessage 'receipt exists but runtime does not match';[IO.File]::WriteAllText($receipt,$receiptRaw,[Text.UTF8Encoding]::new($false));Write-Host 'VLLM_RECEIPT_DRIFT_REJECTED'
     $fake=Join-Path $target 'Lib\site-packages\surprise_package-1.0.dist-info';[void][IO.Directory]::CreateDirectory($fake);[IO.File]::WriteAllText((Join-Path $fake 'METADATA'),"Metadata-Version: 2.1`nName: surprise-package`nVersion: 1.0`n",[Text.UTF8Encoding]::new($false));Test-ExpectedFailure -Action {& $bootstrapVllm -ManifestPath $final -InstallationRoot $root -WheelPath $wheel -Json|Out-Null} -Name 'unexpected-final-distribution' -ExpectedMessage 'receipt exists but runtime does not match';Remove-Item $fake -Recurse -Force;Assert-FinalReady -Root $target;Write-Host 'VLLM_FAIL_CLOSED_DRIFT_OK'
-    $staging=Join-Path $root 'runtime\.venv-vllm-staging'
-    $backup=Join-Path $root 'runtime\.venv-vllm-backup'
+    $staging=Join-Path $root 'runtime\.vs'
+    $backup=Join-Path $root 'runtime\.vb'
     [void][IO.Directory]::CreateDirectory($staging)
     [IO.File]::WriteAllText((Join-Path $staging 'partial.marker'),'PARTIAL',[Text.Encoding]::ASCII)
     $tx=[guid]::NewGuid().ToString('D')

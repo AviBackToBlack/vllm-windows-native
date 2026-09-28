@@ -134,6 +134,25 @@ function Test-VllmUpdateRecordedReleaseIdentityEqual {
     return $true
 }
 
+function Test-VllmUpdatePinnedLegacySourceRelease {
+    param([Parameter(Mandatory)]$Release,[Parameter(Mandatory)][string]$ManifestSha256)
+    if ($ManifestSha256.ToUpperInvariant() -ne 'C790BC8D40F38174687F136393DAC37FAB3BCAFD56257E423A252AF257121C15') { return $false }
+    if ([string]$Release.release -ne 'v0.27.1-native-windows-single-gpu-sm120' -or [string]$Release.platform -ne 'windows-x86_64') { return $false }
+    if ([string]$Release.upstream.repository -ne 'https://github.com/vllm-project/vllm.git' -or [string]$Release.upstream.tag -ne 'v0.27.1' -or [string]$Release.upstream.commit -ne '6e448d0ea9bf3d88d898b65449ca6dc2aec170ac') { return $false }
+    if ([string]$Release.windows_patchset.implementation_commit -ne '9f18048a2052072166ccc3b0ffef364e72bb4d11' -or [string]$Release.windows_patchset.tree -ne '115fa3e10d4b5a45c3e647cb343680a1fc743d18' -or ([string]$Release.windows_patchset.patch_sha256).ToUpperInvariant() -ne '08416EBB43632A0AC485839644A98E875A4AD9EBC49BE193DA25AB804AE6A272') { return $false }
+    if ([string]$Release.wheel.filename -ne 'vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl' -or [string]$Release.wheel.version -ne '0.27.2.dev0+g6e448d0ea.d20260909' -or [int64]$Release.wheel.size_bytes -ne 176769951 -or ([string]$Release.wheel.sha256).ToUpperInvariant() -ne '66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6') { return $false }
+    return $true
+}
+
+function Assert-VllmUpdateRequiredLifecycleDistribution {
+    param([Parameter(Mandatory)][hashtable]$Distribution,[Parameter(Mandatory)]$Release,[Parameter(Mandatory)][string]$ManifestSha256,[switch]$RequireUpdaterPlanner)
+    $legacySource = (-not $RequireUpdaterPlanner) -and (Test-VllmUpdatePinnedLegacySourceRelease -Release $Release -ManifestSha256 $ManifestSha256)
+    $required = @('install.ps1','start.ps1','update.ps1','uninstall.ps1','scripts/common.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md')
+    if (-not $legacySource) { $required += 'scripts/lifecycle.ps1' }
+    if ($RequireUpdaterPlanner) { $required += @('scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/update-transaction.ps1','scripts/update-integration.ps1') }
+    foreach ($relative in $required) { [void](Get-VllmUpdateDistributionEntry -Map $Distribution -RelativePath $relative -Label 'Required lifecycle distribution file') }
+}
+
 function Assert-VllmUpdateNoProtectedOverlap {
     param(
         [Parameter(Mandatory)][string]$InstallationRoot,
@@ -252,11 +271,7 @@ function Get-VllmUpdateReleaseContext {
         RelativePath=$selfRelative; Path=$manifestPath; Size=$manifestIdentity.Size; Sha256=$manifestIdentity.Sha256
     }
 
-    $requiredLifecycleFiles = @('install.ps1','start.ps1','update.ps1','uninstall.ps1','scripts/common.ps1','scripts/lifecycle.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md')
-    if ($RequireUpdaterPlanner) { $requiredLifecycleFiles += @('scripts/update-planner.ps1','scripts/update-staging.ps1','scripts/update-transaction.ps1','scripts/update-integration.ps1') }
-    foreach ($required in $requiredLifecycleFiles) {
-        [void](Get-VllmUpdateDistributionEntry -Map $distribution -RelativePath $required -Label 'Required lifecycle distribution file')
-    }
+    Assert-VllmUpdateRequiredLifecycleDistribution -Distribution $distribution -Release $release -ManifestSha256 $manifestIdentity.Sha256 -RequireUpdaterPlanner:$RequireUpdaterPlanner
 
     $pythonOwned = Read-VllmUpdateOwnedJson -Distribution $distribution -RelativePath ([string]$release.orchestration.python_manifest) -Label 'Python bootstrap manifest'
     $uvOwned = Read-VllmUpdateOwnedJson -Distribution $distribution -RelativePath ([string]$release.orchestration.uv_manifest) -Label 'uv bootstrap manifest'

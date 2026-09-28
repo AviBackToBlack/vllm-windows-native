@@ -63,6 +63,20 @@ try{
         Get-VllmUpdateReleaseContext -ReleaseManifestPath $legacyManifest -InstallationRoot $base -ModelsRoot $models -RequireUpdaterPlanner|Out-Null
     } -Name 'legacy-source-not-valid-as-updater-target' -Expected 'missing required lifecycle-owned path'
     Write-Host 'UPDATE_LEGACY_SOURCE_COMPATIBILITY_OK'
+    $pinnedLegacyRelease=[pscustomobject]@{
+        release='v0.27.1-native-windows-single-gpu-sm120';platform='windows-x86_64'
+        upstream=[pscustomobject]@{repository='https://github.com/vllm-project/vllm.git';tag='v0.27.1';commit='6e448d0ea9bf3d88d898b65449ca6dc2aec170ac'}
+        windows_patchset=[pscustomobject]@{implementation_commit='9f18048a2052072166ccc3b0ffef364e72bb4d11';tree='115fa3e10d4b5a45c3e647cb343680a1fc743d18';patch_sha256='08416EBB43632A0AC485839644A98E875A4AD9EBC49BE193DA25AB804AE6A272'}
+        wheel=[pscustomobject]@{filename='vllm-0.27.2.dev0+g6e448d0ea.d20260909-cp313-cp313-win_amd64.whl';version='0.27.2.dev0+g6e448d0ea.d20260909';size_bytes=176769951;sha256='66201EF4566E7B312D3663786EB03FBA5F67E37981118322C581EDDAF98958B6'}
+    }
+    $legacyLifecyclePaths=@('install.ps1','start.ps1','update.ps1','uninstall.ps1','scripts/common.ps1','scripts/env.ps1','config.example.psd1','LICENSE','THIRD_PARTY_NOTICES.md')
+    $legacyLifecycleMap=Get-TestMap @($legacyLifecyclePaths|ForEach-Object{Get-TestDistribution $_ ('A'*64)})
+    Assert-VllmUpdateRequiredLifecycleDistribution -Distribution $legacyLifecycleMap -Release $pinnedLegacyRelease -ManifestSha256 'C790BC8D40F38174687F136393DAC37FAB3BCAFD56257E423A252AF257121C15'
+    $tamperedLegacy=$pinnedLegacyRelease|ConvertTo-Json -Depth 10|ConvertFrom-Json;$tamperedLegacy.wheel.sha256=('B'*64)
+    Test-ExpectedFailure -Action {Assert-VllmUpdateRequiredLifecycleDistribution -Distribution $legacyLifecycleMap -Release $tamperedLegacy -ManifestSha256 'C790BC8D40F38174687F136393DAC37FAB3BCAFD56257E423A252AF257121C15'} -Name 'unpinned-legacy-lifecycle-shape' -Expected 'scripts\lifecycle.ps1'
+    Test-ExpectedFailure -Action {Assert-VllmUpdateRequiredLifecycleDistribution -Distribution $legacyLifecycleMap -Release $pinnedLegacyRelease -ManifestSha256 ('0'*64)} -Name 'wrong-digest-legacy-lifecycle-shape' -Expected 'scripts\lifecycle.ps1'
+    Test-ExpectedFailure -Action {Assert-VllmUpdateRequiredLifecycleDistribution -Distribution $legacyLifecycleMap -Release $pinnedLegacyRelease -ManifestSha256 'C790BC8D40F38174687F136393DAC37FAB3BCAFD56257E423A252AF257121C15' -RequireUpdaterPlanner} -Name 'legacy-not-valid-as-updater-target' -Expected 'scripts\lifecycle.ps1'
+    Write-Host 'UPDATE_PINNED_LEGACY_SOURCE_LIFECYCLE_OK'
     function Test-ReservedDistributionRejection {
         param([string]$RelativePath,[string]$Name)
         $fixtureRoot=Join-Path $base ('reserved-'+$Name)

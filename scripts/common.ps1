@@ -674,6 +674,69 @@ function Assert-VllmManagedChildPhysicalLocation {
     return $actual
 }
 
+function Assert-VllmTreeNoReparsePoints {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$Label = 'Managed tree'
+    )
+    $root = Get-VllmNormalizedPath $Path
+    $entry = Get-VllmPathEntryInfo -Path $root
+    if (-not $entry.Exists -or -not $entry.IsDirectory) { throw "$Label is missing or is not a directory: $root" }
+    if ($entry.IsReparsePoint) { throw "$Label root is a reparse point: $root" }
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($root)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($child in Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop) {
+            $childEntry = Get-VllmPathEntryInfo -Path $child.FullName
+            if (-not $childEntry.Exists) { throw "$Label entry disappeared during validation: $($child.FullName)" }
+            if ($childEntry.IsReparsePoint) { throw "$Label contains a reparse point: $($child.FullName)" }
+            if ($childEntry.IsDirectory) { $pending.Push($childEntry.Path) }
+        }
+    }
+}
+
+function Get-VllmBootstrapCacheDirectory {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][string]$CacheRelativePath,
+        [string]$SharedCacheOwnerRoot = '',
+        [switch]$Offline
+    )
+    $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    $relative = Assert-VllmSafeRelativePath -RelativePath $CacheRelativePath -Label 'Bootstrap cache path'
+    if ([string]::IsNullOrWhiteSpace($SharedCacheOwnerRoot)) {
+        $cache = Join-Path $root $relative
+        [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $cache -RelativePath $relative)
+        return $cache
+    }
+    if (-not $Offline) { throw 'SharedCacheOwnerRoot is accepted only for offline materialization.' }
+    $owner = Assert-VllmSafeInstallationRoot -InstallationRoot $SharedCacheOwnerRoot
+    if ($owner.Equals($root,[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SharedCacheOwnerRoot must identify a distinct committed installation root.'
+    }
+    $statePath = Join-Path $owner 'state\install-state.json'
+    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        throw "Shared cache owner has no committed install state: $statePath"
+    }
+    try { $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json }
+    catch { throw "Shared cache owner install state is malformed: $statePath" }
+    if ([string]$state.component -ne 'install-state' -or -not [bool]$state.ready -or
+        -not (Get-VllmNormalizedPath ([string]$state.install_root)).Equals($owner,[StringComparison]::OrdinalIgnoreCase)) {
+        throw "Shared cache owner is not a ready committed installation root: $owner"
+    }
+    $cache = Join-Path $owner $relative
+    [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $owner -Path $cache -RelativePath $relative)
+    if (-not (Test-Path -LiteralPath $cache -PathType Container)) {
+        throw "Shared managed cache is missing: $cache"
+    }
+    if ((Test-VllmPathInsideOrEqual -Path $cache -Parent $root -Physical) -or
+        (Test-VllmPathInsideOrEqual -Path $root -Parent $cache -Physical)) {
+        throw "Shared managed cache must not overlap the materialization root: $cache"
+    }
+    Assert-VllmTreeNoReparsePoints -Path $cache -Label 'Shared managed cache'
+    return $cache
+}
 function Assert-VllmExistingManagedTopLevelLocations {
     param([Parameter(Mandatory)][string]$InstallationRoot)
     $root = Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot

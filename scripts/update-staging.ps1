@@ -9,11 +9,12 @@ function Get-VllmUpdateStagingLayout {
     $tx=[guid]::Empty
     if(-not[guid]::TryParse($TransactionId,[ref]$tx)-or$tx-eq[guid]::Empty){throw 'Update staging transaction_id must be a non-empty GUID.'}
     $id=$tx.ToString('D').ToLowerInvariant()
+    $transactionKey=$tx.ToString('N').Substring(0,12).ToLowerInvariant()
     $workspaceRelative='work\update-transaction'
-    $transactionRelative=$workspaceRelative+'\'+$id
-    $stagingRelative=$transactionRelative+'\staging'
-    $distributionRelative=$stagingRelative+'\distribution'
-    $managedRelative=$stagingRelative+'\managed'
+    $transactionRelative=$workspaceRelative+'\'+$transactionKey
+    $stagingRelative=$transactionRelative+'\s'
+    $distributionRelative=$stagingRelative+'\d'
+    $managedRelative=$stagingRelative+'\g'
     return [pscustomobject][ordered]@{
         TransactionId=$id;InstallationRoot=$root
         WorkspaceRelative=$workspaceRelative;WorkspaceRoot=(Join-Path $root $workspaceRelative)
