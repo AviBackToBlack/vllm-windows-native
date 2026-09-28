@@ -241,6 +241,10 @@ namespace VllmWindowsNative {
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
 
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CreateDirectory(string lpPathName, IntPtr lpSecurityAttributes);
+
         private static SafeFileHandle OpenPath(string path) {
             SafeFileHandle handle = CreateFile(
                 path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -312,6 +316,12 @@ namespace VllmWindowsNative {
         public static void FlushFile(SafeFileHandle handle) {
             if (handle == null || handle.IsInvalid) throw new ArgumentException("Invalid file handle.");
             if (!FlushFileBuffers(handle)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        public static void CreateDirectoryExclusive(string path) {
+            if (!CreateDirectory(path, IntPtr.Zero)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
         }
 
         public static void MoveReplaceWriteThrough(string source, string destination) {

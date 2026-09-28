@@ -97,8 +97,8 @@
     },
     {
       "path": "scripts/common.ps1",
-      "size_bytes": 41180,
-      "sha256": "AF98EA2C83D3BBF8CBB8B2C17341D35C852720AFDFFDF27BE90C08B6860AF5F4"
+      "size_bytes": 41631,
+      "sha256": "A5B5BE508CE4245760889AC692D65F150F0FF3895B9CD85723F4F5F764F8E985"
     },
     {
       "path": "scripts/lifecycle.ps1",
@@ -117,8 +117,8 @@
     },
     {
       "path": "scripts/update-transaction.ps1",
-      "size_bytes": 62539,
-      "sha256": "C26C7D1B2EA4EBD5F6CCBC93F15071E2C2BEB32A902D7E427C275E133767A510"
+      "size_bytes": 65388,
+      "sha256": "1FD20464DBD735D40C59E4D5D71E1E397D1A9ABA054CC09EE51DB27197DD326F"
     },
     {
       "path": "scripts/update-integration.ps1",

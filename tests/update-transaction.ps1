@@ -236,6 +236,42 @@ Invoke-TestScenario -Name 'missing-parent-snapshot-race-refusal' -Body {
 }
 Write-Host 'UPDATE_RECORDED_MISSING_PARENT_SNAPSHOT_OK'
 
+Invoke-TestScenario -Name 'missing-parent-activation-race-preserved' -Body {
+    param($scenario)
+    [void](Open-TestScenario -Scenario $scenario)
+    Stage-TestScenario -Scenario $scenario
+    $callbacks=Get-TestCallbacks -Scenario $scenario
+    $externalParent=Join-Path $scenario.Root 'docs\provenance'
+    [void][IO.Directory]::CreateDirectory($externalParent)
+    $parameters=@{
+        InstallationRoot=$scenario.Root
+        TargetInstallState=$scenario.TargetState
+        ValidateTargetState=$callbacks.ValidateState
+        ValidateGeneration=$callbacks.ValidateGeneration
+        ValidateTargetLive=$callbacks.ValidateTargetLive
+    }
+    Test-ExpectedFailure -Action {
+        Invoke-VllmUpdateTransactionActivation @parameters|Out-Null
+    } -Name 'missing-parent-activation-race' -Expected 'without transaction creation evidence'
+    if(-not(Test-Path -LiteralPath $externalParent -PathType Container)){throw 'Activation race rollback deleted an externally created parent.'}
+    $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $scenario.Root
+    if($null-eq$journal){throw 'Activation race unexpectedly removed transaction evidence.'}
+    if(@($journal.created_parent_relatives).Count-ne0){throw 'Activation race falsely recorded the external parent as transaction-created.'}
+    Remove-Item -LiteralPath $externalParent -Force
+    $recovery=Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root -ValidateGeneration $callbacks.ValidateGeneration
+    if(-not[bool]$recovery.recovered-or[string]$recovery.generation-ne'source'){throw 'Activation race did not recover after the external parent was removed.'}
+    Assert-ScenarioSource -Scenario $scenario
+    Assert-TransactionEvidenceAbsent -Scenario $scenario
+}
+Write-Host 'UPDATE_EXTERNAL_PARENT_RACE_PRESERVED_OK'
+
+$retireMetadata=[pscustomobject]@{class='retire';missing_parent_relatives=@('docs\provenance')}
+Test-ExpectedFailure -Action {
+    [void](Assert-VllmUpdateActivationMissingParentMetadata -Entry $retireMetadata -RelativePath 'docs\provenance\b.txt')
+} -Name 'retire-missing-parent-metadata' -Expected 'Retire activation must not record missing live parents'
+Write-Host 'UPDATE_RETIRE_PARENT_METADATA_REJECTED_OK'
+
+
 function Invoke-PreCommitFaultCase {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -257,6 +293,13 @@ function Invoke-PreCommitFaultCase {
             FaultPoint=$caseFaultPoint
         }
         Test-ExpectedFailure -Action {Invoke-VllmUpdateTransactionActivation @parameters|Out-Null} -Name $caseName -Expected "FAULT_INJECTED:$caseFaultPoint"
+        if($caseFaultPoint-eq'BeforeStateCommit'){
+            $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $scenario.Root
+            $created=@($journal.created_parent_relatives)
+            if($created.Count-ne1-or-not(Test-VllmUpdateRelativePathEqual -A ([string]$created[0]) -B 'docs\provenance')){
+                throw 'BeforeStateCommit journal did not persist transaction-created parent ownership.'
+            }
+        }
         $state=Read-VllmUpdateInstallStateForRecovery -InstallationRoot $scenario.Root
         if(-not([string]$state.GenerationId).Equals([string]$scenario.SourceGeneration,[StringComparison]::OrdinalIgnoreCase)){
             throw "$caseName unexpectedly changed the authoritative generation before commit."
