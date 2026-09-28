@@ -68,8 +68,8 @@
   },
   "materialization": {
     "target_relative_path": "runtime/venv",
-    "staging_relative_path": "runtime/.venv-vllm-staging",
-    "backup_relative_path": "runtime/.venv-vllm-backup",
+    "staging_relative_path": "runtime/.vs",
+    "backup_relative_path": "runtime/.vb",
     "cache_relative_path": "cache/uv",
     "predecessor_manifest": "manifests/runtime/dependencies-v0.27.1-windows-x86_64.json",
     "predecessor_receipt_relative_path": "forensic/runtime-dependencies-v0.27.1.json",

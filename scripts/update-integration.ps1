@@ -282,13 +282,6 @@ function Initialize-VllmUpdateRuntimeMaterialization {
     Copy-VllmUpdateIntegrationTree -InstallationRoot $paths.InstallationRoot -Source $sourceUv -Destination (Join-Path $isolatedRoot $uvRelative)
     if(-not(Test-Path -LiteralPath $sourceCache -PathType Container)){throw "Reused uv cache is missing: $sourceCache"}
     Assert-VllmUpdateManagedTreeNoReparsePoints -Path $sourceCache -Label 'Reused uv cache'
-    $isolatedCache=Join-Path $isolatedRoot $cacheRelative
-    $cacheParent=Split-Path -Parent $isolatedCache
-    [void][IO.Directory]::CreateDirectory($cacheParent)
-    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $paths.InstallationRoot -Path $cacheParent -Label 'Isolated uv cache parent')
-    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $paths.InstallationRoot -Path $isolatedCache -Label 'Isolated uv cache destination')
-    Copy-Item -LiteralPath $sourceCache -Destination $isolatedCache -Recurse
-    [void](Assert-VllmUpdateIntegrationDestinationPath -InstallationRoot $paths.InstallationRoot -Path $isolatedCache -Label 'Copied isolated uv cache')
 
     [pscustomobject][ordered]@{
         Paths=$paths
@@ -316,10 +309,12 @@ function Invoke-VllmUpdateRuntimeMaterialization {
         ManifestPath=(Join-Path $payloadRoot ([string]$release.orchestration.venv_manifest));InstallationRoot=$isolatedRoot;Json=$true
     })
     [void](Invoke-VllmUpdateIntegrationScript -Script (Join-Path $payloadRoot 'bootstrap-dependencies.ps1') -Parameters @{
-        ManifestPath=(Join-Path $payloadRoot ([string]$release.orchestration.dependency_manifest));InstallationRoot=$isolatedRoot;Offline=$true;Json=$true
+        ManifestPath=(Join-Path $payloadRoot ([string]$release.orchestration.dependency_manifest));InstallationRoot=$isolatedRoot
+        SharedCacheOwnerRoot=$materialization.Paths.InstallationRoot;Offline=$true;Json=$true
     })
     $final=Invoke-VllmUpdateIntegrationScript -Script (Join-Path $payloadRoot 'bootstrap-vllm.ps1') -Parameters @{
-        ManifestPath=(Join-Path $payloadRoot ([string]$release.orchestration.runtime_manifest));InstallationRoot=$isolatedRoot;WheelPath=$WheelPath;Offline=$true;Json=$true
+        ManifestPath=(Join-Path $payloadRoot ([string]$release.orchestration.runtime_manifest));InstallationRoot=$isolatedRoot
+        SharedCacheOwnerRoot=$materialization.Paths.InstallationRoot;WheelPath=$WheelPath;Offline=$true;Json=$true
     }
 
     $runtimeRelative=[string]$release.orchestration.runtime_root
@@ -480,6 +475,7 @@ function Get-VllmUpdateProvisionalManagedActivationPlan {
             $result.Add([pscustomobject][ordered]@{
                 class=$class;kind=$kind;role=$role;relative_path=$relative
                 source=$source;target=$null;stage_relative=$null;backup_relative=$null
+                missing_parent_relatives=@()
             })
             continue
         }
@@ -487,10 +483,12 @@ function Get-VllmUpdateProvisionalManagedActivationPlan {
         if([string]::IsNullOrWhiteSpace([string]$item.TargetContract)){throw "Managed target contract is empty: $relative"}
         $stageRelative=[string]$paths.ManagedRelative+'\'+$relative
         $backupRelative=if($class-eq'replace'){[string]$paths.BackupManagedRelative+'\'+$relative}else{$null}
+        $missingParents=@(Get-VllmUpdateMissingParentRelatives -InstallationRoot $paths.InstallationRoot -RelativePath $relative)
         $result.Add([pscustomobject][ordered]@{
             class=$class;kind=$kind;role=$role;relative_path=$relative
             source=$source;target=$null;target_contract=[string]$item.TargetContract
             stage_relative=$stageRelative;backup_relative=$backupRelative
+            missing_parent_relatives=@($missingParents)
         })
     }
     $result.ToArray()
@@ -911,22 +909,6 @@ function Get-VllmUpdateWheelDeepestProjectedPath {
     }finally{$archive.Dispose()}
 }
 
-function Get-VllmUpdateWheelDeepestInternalPath {
-    param([Parameter(Mandatory)][string]$WheelPath)
-    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
-    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-    $wheel=Get-VllmNormalizedPath $WheelPath
-    $archive=[IO.Compression.ZipFile]::OpenRead($wheel)
-    try{
-        $max=''
-        foreach($entry in $archive.Entries){
-            if([string]::IsNullOrWhiteSpace([string]$entry.Name)){continue}
-            $relative=([string]$entry.FullName).Replace('/','\')
-            if($relative.Length-gt$max.Length){$max=$relative}
-        }
-        return $max
-    }finally{$archive.Dispose()}
-}
 
 function Assert-VllmUpdateRuntimeMaterializationPathBudget {
     param(
@@ -946,7 +928,9 @@ function Assert-VllmUpdateRuntimeMaterializationPathBudget {
     $runtimeRelative=[string]$TargetContext.Release.orchestration.runtime_root
     $cacheRelative=[string]$TargetContext.DependencyManifest.materialization.cache_relative_path
     $dependencyStageRelative=[string]$TargetContext.DependencyManifest.materialization.staging_relative_path
+    $dependencyBackupRelative=[string]$TargetContext.DependencyManifest.materialization.backup_relative_path
     $runtimeStageRelative=[string]$TargetContext.RuntimeManifest.materialization.staging_relative_path
+    $runtimeBackupRelative=[string]$TargetContext.RuntimeManifest.materialization.backup_relative_path
 
     $candidates=@(
         [pscustomobject]@{Label='isolated Python';Path=(Join-Path (Join-Path $isolatedRoot $pythonRelative) $pythonExeRelative)},
@@ -965,22 +949,21 @@ function Assert-VllmUpdateRuntimeMaterializationPathBudget {
 
     $pythonDeep=Get-VllmUpdateDeepestRelativePath -Root ([string]$SourceContext.Committed.State.python.root) -Label 'Python'
     $uvDeep=Get-VllmUpdateDeepestRelativePath -Root ([string]$SourceContext.Committed.State.uv.root) -Label 'uv'
-    $cacheDeep=Get-VllmUpdateDeepestRelativePath -Root (Join-Path $InstallationRoot $cacheRelative) -Label 'uv cache'
+    $cacheRoot=Join-Path $InstallationRoot $cacheRelative
+    $cacheDeep=Get-VllmUpdateDeepestRelativePath -Root $cacheRoot -Label 'uv cache'
     $runtimeDeep=Get-VllmUpdateDeepestRelativePath -Root ([string]$SourceContext.Committed.State.runtime.root) -Label 'runtime'
     $wheelDeep=Get-VllmUpdateWheelDeepestProjectedPath -WheelPath $WheelPath
     if($wheelDeep.Length-gt$runtimeDeep.Length){$runtimeDeep=$wheelDeep}
-    $wheelInternalDeep=Get-VllmUpdateWheelDeepestInternalPath -WheelPath $WheelPath
-    $uvArchiveKeyBudget='x'.PadRight(64,[char]'x')
-    $wheelCacheDeep=Join-Path (Join-Path 'archive-v0' $uvArchiveKeyBudget) $wheelInternalDeep
-    if($wheelCacheDeep.Length-gt$cacheDeep.Length){$cacheDeep=$wheelCacheDeep}
 
     Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $pythonRelative) -DeepestRelativePath $pythonDeep -Label 'isolated Python tree'
     Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $uvRelative) -DeepestRelativePath $uvDeep -Label 'isolated uv tree'
-    Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot (Join-Path $isolatedRoot $cacheRelative) -DeepestRelativePath $cacheDeep -Label 'isolated uv cache tree'
+    Assert-VllmUpdateProjectedTreePathBudget -DestinationRoot $cacheRoot -DeepestRelativePath $cacheDeep -Label 'live reused uv cache tree'
     foreach($destination in @(
         [pscustomobject]@{Label='isolated runtime tree';Root=(Join-Path $isolatedRoot $runtimeRelative)},
         [pscustomobject]@{Label='dependency staging tree';Root=(Join-Path $isolatedRoot $dependencyStageRelative)},
+        [pscustomobject]@{Label='dependency backup tree';Root=(Join-Path $isolatedRoot $dependencyBackupRelative)},
         [pscustomobject]@{Label='vLLM staging tree';Root=(Join-Path $isolatedRoot $runtimeStageRelative)},
+        [pscustomobject]@{Label='vLLM backup tree';Root=(Join-Path $isolatedRoot $runtimeBackupRelative)},
         [pscustomobject]@{Label='transaction managed-stage tree';Root=(Join-Path $layout.ManagedRoot $runtimeRelative)},
         [pscustomobject]@{Label='transaction managed-backup tree';Root=(Join-Path $paths.BackupManagedRoot $runtimeRelative)}
     )){

@@ -35,6 +35,12 @@ try{
     [void][IO.Directory]::CreateDirectory($installation)
     $tx=[guid]::NewGuid().ToString('D')
     $layout=Get-VllmUpdateStagingLayout -InstallationRoot $installation -TransactionId $tx
+    $key=([guid]$tx).ToString('N').Substring(0,12).ToLowerInvariant()
+    if([string]$layout.TransactionRelative-ne('work\update-transaction\'+$key)){throw 'Update staging transaction path is not using the compact transaction key.'}
+    if([string]$layout.StagingRelative-ne([string]$layout.TransactionRelative+'\s')){throw 'Update staging root is not compact.'}
+    if([string]$layout.DistributionRelative-ne([string]$layout.StagingRelative+'\d')){throw 'Update distribution staging root is not compact.'}
+    if([string]$layout.ManagedRelative-ne([string]$layout.StagingRelative+'\g')){throw 'Update managed staging root is not compact.'}
+    Write-Host 'UPDATE_STAGING_COMPACT_LAYOUT_OK'
     Test-ExpectedFailure -Action {Initialize-VllmUpdateStagingDirectories -Layout $layout|Out-Null} -Name 'missing-transaction-workspace' -Expected 'workspace is missing'
 
     [void][IO.Directory]::CreateDirectory($layout.TransactionRoot)

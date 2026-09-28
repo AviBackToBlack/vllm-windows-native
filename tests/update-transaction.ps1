@@ -48,6 +48,7 @@ function Get-TestScenario {
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'state'))
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'models'))
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'payload'))
+    [void][IO.Directory]::CreateDirectory((Join-Path $root 'docs'))
     [void][IO.Directory]::CreateDirectory($targetRoot)
 
     $liveA=Join-Path $root 'payload\a.txt'
@@ -66,18 +67,18 @@ function Get-TestScenario {
 
     $distribution=@(
         [pscustomobject]@{Class='replace';RelativePath='payload\a.txt';Source=$sourceA;Target=$newA},
-        [pscustomobject]@{Class='add';RelativePath='payload\b.txt';Source=$null;Target=$newB}
+        [pscustomobject]@{Class='add';RelativePath='docs\provenance\b.txt';Source=$null;Target=$newB}
     )
     $map=@{}
     $map[(Get-VllmUpdateRelativeKey 'payload\a.txt')]=[pscustomobject]@{RelativePath='payload\a.txt';Path=$targetA;Size=$newA.Size;Sha256=$newA.Sha256}
-    $map[(Get-VllmUpdateRelativeKey 'payload\b.txt')]=[pscustomobject]@{RelativePath='payload\b.txt';Path=$targetB;Size=$newB.Size;Sha256=$newB.Sha256}
+    $map[(Get-VllmUpdateRelativeKey 'docs\provenance\b.txt')]=[pscustomobject]@{RelativePath='docs\provenance\b.txt';Path=$targetB;Size=$newB.Size;Sha256=$newB.Sha256}
 
     [pscustomobject][ordered]@{
         Base=$Base
         Root=$root
         ModelsRoot=(Join-Path $root 'models')
         LiveA=$liveA
-        LiveB=(Join-Path $root 'payload\b.txt')
+        LiveB=(Join-Path $root 'docs\provenance\b.txt')
         TargetA=$targetA
         TargetB=$targetB
         SourceA=$sourceA
@@ -124,6 +125,8 @@ function Assert-ScenarioSource {
     if((Get-VllmUpdateTransactionFileState -Path $Scenario.LiveB -TargetIdentity $targetB)-ne'missing'){
         throw 'Synthetic add target exists in source generation.'
     }
+    if(Test-Path -LiteralPath (Join-Path $Scenario.Root 'docs\provenance')){throw 'Synthetic rollback left the transaction-created live parent directory.'}
+    if(-not(Test-Path -LiteralPath (Join-Path $Scenario.Root 'docs') -PathType Container)){throw 'Synthetic rollback removed the pre-existing docs parent.'}
 }
 
 function Assert-ScenarioTarget {
@@ -215,6 +218,59 @@ Invoke-TestScenario -Name 'happy-path' -Body {
     Assert-TransactionEvidenceAbsent -Scenario $scenario
 }
 Write-Host 'UPDATE_TRANSACTION_HAPPY_OK'
+Invoke-TestScenario -Name 'missing-parent-snapshot-race-refusal' -Body {
+    param($scenario)
+    $txid=[guid]::NewGuid().ToString('D')
+    $activation=@(Get-VllmUpdateActivationPlan -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -TransactionId $txid -DistributionPlan $scenario.Distribution)
+    $add=@($activation|Where-Object{[string]$_.relative_path -eq 'docs\provenance\b.txt'})
+    if($add.Count-ne1){throw 'Synthetic missing-parent activation entry was not found.'}
+    $parents=@(Get-VllmUpdateActivationMissingParentRelatives -Entry $add[0])
+    if($parents.Count-ne1-or-not(Test-VllmUpdateRelativePathEqual -A ([string]$parents[0]) -B 'docs\provenance')){
+        throw 'Synthetic missing-parent metadata did not capture docs\provenance.'
+    }
+    [void][IO.Directory]::CreateDirectory((Join-Path $scenario.Root 'docs\provenance'))
+    Test-ExpectedFailure -Action {
+        Open-VllmUpdateTransaction -InstallationRoot $scenario.Root -ModelsRoot $scenario.ModelsRoot -SourceIdentity $scenario.SourceIdentity -TargetIdentity $scenario.TargetIdentity -ActivationPlan $activation -TransactionId $txid|Out-Null
+    } -Name 'missing-parent-source-snapshot-race' -Expected 'snapshot differs from source generation'
+    Assert-TransactionEvidenceAbsent -Scenario $scenario
+}
+Write-Host 'UPDATE_RECORDED_MISSING_PARENT_SNAPSHOT_OK'
+
+Invoke-TestScenario -Name 'missing-parent-activation-race-preserved' -Body {
+    param($scenario)
+    [void](Open-TestScenario -Scenario $scenario)
+    Stage-TestScenario -Scenario $scenario
+    $callbacks=Get-TestCallbacks -Scenario $scenario
+    $externalParent=Join-Path $scenario.Root 'docs\provenance'
+    [void][IO.Directory]::CreateDirectory($externalParent)
+    $parameters=@{
+        InstallationRoot=$scenario.Root
+        TargetInstallState=$scenario.TargetState
+        ValidateTargetState=$callbacks.ValidateState
+        ValidateGeneration=$callbacks.ValidateGeneration
+        ValidateTargetLive=$callbacks.ValidateTargetLive
+    }
+    Test-ExpectedFailure -Action {
+        Invoke-VllmUpdateTransactionActivation @parameters|Out-Null
+    } -Name 'missing-parent-activation-race' -Expected 'without transaction creation evidence'
+    if(-not(Test-Path -LiteralPath $externalParent -PathType Container)){throw 'Activation race rollback deleted an externally created parent.'}
+    $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $scenario.Root
+    if($null-eq$journal){throw 'Activation race unexpectedly removed transaction evidence.'}
+    if(@($journal.created_parent_relatives).Count-ne0){throw 'Activation race falsely recorded the external parent as transaction-created.'}
+    Remove-Item -LiteralPath $externalParent -Force
+    $recovery=Invoke-VllmUpdateTransactionRecovery -InstallationRoot $scenario.Root -ValidateGeneration $callbacks.ValidateGeneration
+    if(-not[bool]$recovery.recovered-or[string]$recovery.generation-ne'source'){throw 'Activation race did not recover after the external parent was removed.'}
+    Assert-ScenarioSource -Scenario $scenario
+    Assert-TransactionEvidenceAbsent -Scenario $scenario
+}
+Write-Host 'UPDATE_EXTERNAL_PARENT_RACE_PRESERVED_OK'
+
+$retireMetadata=[pscustomobject]@{class='retire';missing_parent_relatives=@('docs\provenance')}
+Test-ExpectedFailure -Action {
+    [void](Assert-VllmUpdateActivationMissingParentMetadata -Entry $retireMetadata -RelativePath 'docs\provenance\b.txt')
+} -Name 'retire-missing-parent-metadata' -Expected 'Retire activation must not record missing live parents'
+Write-Host 'UPDATE_RETIRE_PARENT_METADATA_REJECTED_OK'
+
 
 function Invoke-PreCommitFaultCase {
     param(
@@ -237,6 +293,13 @@ function Invoke-PreCommitFaultCase {
             FaultPoint=$caseFaultPoint
         }
         Test-ExpectedFailure -Action {Invoke-VllmUpdateTransactionActivation @parameters|Out-Null} -Name $caseName -Expected "FAULT_INJECTED:$caseFaultPoint"
+        if($caseFaultPoint-eq'BeforeStateCommit'){
+            $journal=Read-VllmUpdateTransactionJournal -InstallationRoot $scenario.Root
+            $created=@($journal.created_parent_relatives)
+            if($created.Count-ne1-or-not(Test-VllmUpdateRelativePathEqual -A ([string]$created[0]) -B 'docs\provenance')){
+                throw 'BeforeStateCommit journal did not persist transaction-created parent ownership.'
+            }
+        }
         $state=Read-VllmUpdateInstallStateForRecovery -InstallationRoot $scenario.Root
         if(-not([string]$state.GenerationId).Equals([string]$scenario.SourceGeneration,[StringComparison]::OrdinalIgnoreCase)){
             throw "$caseName unexpectedly changed the authoritative generation before commit."
@@ -810,8 +873,8 @@ try{
         PythonManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='python\managed\python';python_executable='python.exe'}}
         UvManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='uv\managed\uv';uv_executable='uv.exe'}}
         Release=[pscustomobject]@{orchestration=[pscustomobject]@{runtime_root='runtime\venv'}}
-        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage'}}
-        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage'}}
+        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage';backup_relative_path='work\dependency-backup'}}
+        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage';backup_relative_path='work\runtime-backup'}}
     }
     Test-ExpectedFailure -Action {
         Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $budgetRoot -TransactionId $txid -SourceContext $sourceContext -TargetContext $targetContext -WheelPath $wheel
@@ -820,6 +883,35 @@ try{
     if(Test-Path -LiteralPath $budgetBase){Remove-Item -LiteralPath $budgetBase -Recurse -Force}
 }
 Write-Host 'UPDATE_DEEP_TREE_PATH_BUDGET_OK'
+$productionRoot='D:\AI\vLLM'
+$productionTx=[guid]::NewGuid().ToString('D')
+$productionProbeRoot=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-production-budget-'+[guid]::NewGuid().ToString('N'))
+try{
+    [void][IO.Directory]::CreateDirectory($productionProbeRoot)
+    $productionPaths=Get-VllmUpdateTransactionPaths -InstallationRoot $productionProbeRoot -TransactionId $productionTx
+    $dependencyMaterialization=(Get-Content -LiteralPath (Join-Path $repoRoot 'manifests\runtime\dependencies-v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json).materialization
+    $runtimeMaterialization=(Get-Content -LiteralPath (Join-Path $repoRoot 'manifests\runtime\vllm-runtime-v0.27.1-windows-x86_64.json') -Raw|ConvertFrom-Json).materialization
+    $deepTorchRelative='Lib\site-packages\torch-2.13.0+cu130.dist-info\licenses\third_party\kineto\libkineto\third_party\dynolog\third_party\prometheus-cpp\3rdparty\civetweb\src\third_party\duktape-1.5.2\LICENSE.txt'
+    $roots=@(
+        [pscustomobject]@{Label='materialization';Relative=([string]$productionPaths.MaterializationRelative+'\r\runtime\venv')},
+        [pscustomobject]@{Label='dependency-stage';Relative=([string]$productionPaths.MaterializationRelative+'\r\'+[string]$dependencyMaterialization.staging_relative_path)},
+        [pscustomobject]@{Label='dependency-backup';Relative=([string]$productionPaths.MaterializationRelative+'\r\'+[string]$dependencyMaterialization.backup_relative_path)},
+        [pscustomobject]@{Label='vllm-stage';Relative=([string]$productionPaths.MaterializationRelative+'\r\'+[string]$runtimeMaterialization.staging_relative_path)},
+        [pscustomobject]@{Label='vllm-backup';Relative=([string]$productionPaths.MaterializationRelative+'\r\'+[string]$runtimeMaterialization.backup_relative_path)},
+        [pscustomobject]@{Label='managed-stage';Relative=([string]$productionPaths.ManagedRelative+'\runtime\venv')},
+        [pscustomobject]@{Label='managed-backup';Relative=([string]$productionPaths.BackupManagedRelative+'\runtime\venv')}
+    )
+    $lengths=New-Object System.Collections.Generic.List[int]
+    foreach($candidate in $roots){
+        $projected=$productionRoot.TrimEnd('\')+'\'+[string]$candidate.Relative+'\'+$deepTorchRelative
+        $lengths.Add($projected.Length)
+        if($projected.Length-ge260){throw "Canonical production-root path budget regressed for $($candidate.Label): $($projected.Length) >= 260 :: $projected"}
+    }
+    $maxLength=($lengths|Measure-Object -Maximum).Maximum
+    Write-Host "UPDATE_PRODUCTION_ROOT_PATH_BUDGET_OK max_length=$maxLength root=$productionRoot"
+}finally{
+    if(Test-Path -LiteralPath $productionProbeRoot){Remove-Item -LiteralPath $productionProbeRoot -Recurse -Force}
+}
 
 Invoke-TestScenario -Name 'empty-activation-plan-refusal' -Body {
     param($scenario)
@@ -873,7 +965,7 @@ try{
     $paths=Get-VllmUpdateTransactionPaths -InstallationRoot $installRoot -TransactionId $txid
     $isolatedRoot=Join-Path $paths.MaterializationRoot 'r'
     $runtimePrefix=(Join-Path (Join-Path $isolatedRoot 'runtime\venv') 'Lib\site-packages')
-    $cachePrefix=Join-Path (Join-Path $isolatedRoot 'cache\uv') (Join-Path 'archive-v0' ('x'.PadRight(64,[char]'x')))
+    $cachePrefix=Join-Path $cacheRoot (Join-Path 'archive-v0' ('x'.PadRight(64,[char]'x')))
     $minInternal=[Math]::Max(12,260-($cachePrefix.Length+1))
     if(($runtimePrefix.Length+1+$minInternal)-ge260){throw 'Wheel-cache path-budget fixture cannot isolate cache projection from runtime projection.'}
     $internal='vllm/'+('d'.PadRight($minInternal-8,[char]'d'))+'.py'
@@ -904,16 +996,51 @@ try{
         PythonManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='python\managed\python';python_executable='python.exe'}}
         UvManifest=[pscustomobject]@{install=[pscustomobject]@{managed_relative_path='uv\managed\uv';uv_executable='uv.exe'}}
         Release=[pscustomobject]@{orchestration=[pscustomobject]@{runtime_root='runtime\venv'}}
-        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage'}}
-        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage'}}
+        DependencyManifest=[pscustomobject]@{materialization=[pscustomobject]@{cache_relative_path='cache\uv';staging_relative_path='work\dependency-stage';backup_relative_path='work\dependency-backup'}}
+        RuntimeManifest=[pscustomobject]@{materialization=[pscustomobject]@{staging_relative_path='work\runtime-stage';backup_relative_path='work\runtime-backup'}}
     }
-    Test-ExpectedFailure -Action {
-        Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $installRoot -TransactionId $txid -SourceContext $sourceContext -TargetContext $targetContext -WheelPath $wheel
-    } -Name 'incoming-wheel-cache-path' -Expected 'isolated uv cache tree'
+    Assert-VllmUpdateRuntimeMaterializationPathBudget -InstallationRoot $installRoot -TransactionId $txid -SourceContext $sourceContext -TargetContext $targetContext -WheelPath $wheel
+    $bootstrapVllm=Get-Content -LiteralPath (Join-Path $repoRoot 'bootstrap-vllm.ps1') -Raw
+    if($bootstrapVllm.IndexOf('pip install $wheelResolved --python $stagingPython --no-deps --no-index --link-mode copy --no-python-downloads --no-config --no-cache',[StringComparison]::Ordinal)-lt0){
+        throw 'Local project-wheel install must bypass the shared uv cache.'
+    }
 }finally{
     if(Test-Path -LiteralPath $wheelCacheBase){Remove-Item -LiteralPath $wheelCacheBase -Recurse -Force}
 }
-Write-Host 'UPDATE_INCOMING_WHEEL_CACHE_PATH_BUDGET_OK'
+Write-Host 'UPDATE_LOCAL_WHEEL_NO_CACHE_PATH_BUDGET_OK'
+$sharedCacheBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-shared-cache-'+[guid]::NewGuid().ToString('N'))
+try{
+    $owner=Join-Path $sharedCacheBase 'owner'
+    $isolated=Join-Path $owner 'work\materialized'
+    $cache=Join-Path $owner 'cache\uv'
+    $stateDir=Join-Path $owner 'state'
+    foreach($dir in @($isolated,$cache,$stateDir)){[void][IO.Directory]::CreateDirectory($dir)}
+    [IO.File]::WriteAllText((Join-Path $cache 'entry.bin'),'cache',[Text.Encoding]::ASCII)
+    $state=[ordered]@{component='install-state';ready=$true;install_root=$owner}
+    [IO.File]::WriteAllText((Join-Path $stateDir 'install-state.json'),($state|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+
+    $resolved=Get-VllmBootstrapCacheDirectory -InstallationRoot $isolated -CacheRelativePath 'cache\uv' -SharedCacheOwnerRoot $owner -Offline
+    if(-not(Get-VllmNormalizedPath $resolved).Equals((Get-VllmNormalizedPath $cache),[StringComparison]::OrdinalIgnoreCase)){throw 'Shared cache helper did not resolve the committed live cache.'}
+    Test-ExpectedFailure -Action {
+        Get-VllmBootstrapCacheDirectory -InstallationRoot $isolated -CacheRelativePath 'cache\uv' -SharedCacheOwnerRoot $owner|Out-Null
+    } -Name 'shared-cache-online-refusal' -Expected 'only for offline'
+
+    $outside=Join-Path $sharedCacheBase 'outside';[void][IO.Directory]::CreateDirectory($outside)
+    $pivot=Join-Path $cache 'pivot';New-Item -ItemType Junction -Path $pivot -Target $outside|Out-Null
+    Test-ExpectedFailure -Action {
+        Get-VllmBootstrapCacheDirectory -InstallationRoot $isolated -CacheRelativePath 'cache\uv' -SharedCacheOwnerRoot $owner -Offline|Out-Null
+    } -Name 'shared-cache-reparse-refusal' -Expected 'reparse point'
+    Remove-Item -LiteralPath $pivot -Force
+
+    $state.ready=$false
+    [IO.File]::WriteAllText((Join-Path $stateDir 'install-state.json'),($state|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+    Test-ExpectedFailure -Action {
+        Get-VllmBootstrapCacheDirectory -InstallationRoot $isolated -CacheRelativePath 'cache\uv' -SharedCacheOwnerRoot $owner -Offline|Out-Null
+    } -Name 'shared-cache-uncommitted-owner-refusal' -Expected 'not a ready committed'
+}finally{
+    if(Test-Path -LiteralPath $sharedCacheBase){Remove-Item -LiteralPath $sharedCacheBase -Recurse -Force}
+}
+Write-Host 'UPDATE_SHARED_CACHE_OWNER_GUARDS_OK'
 $liveGuardBase=Join-Path ([IO.Path]::GetTempPath()) ('vllm-update-live-guard-'+[guid]::NewGuid().ToString('N'))
 try{
     $installRoot=Join-Path $liveGuardBase 'install'

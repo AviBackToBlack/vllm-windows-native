@@ -12,8 +12,8 @@ function Get-VllmUpdateTransactionPaths {
     }
     $id=$guid.ToString('D').ToLowerInvariant()
     $layout=Get-VllmUpdateStagingLayout -InstallationRoot $root -TransactionId $id
-    $backupRelative=[string]$layout.TransactionRelative+'\backup'
-    $backupDistributionRelative=$backupRelative+'\distribution'
+    $backupRelative=[string]$layout.TransactionRelative+'\b'
+    $backupDistributionRelative=$backupRelative+'\d'
     [pscustomobject][ordered]@{
         TransactionId=$id
         InstallationRoot=$root
@@ -35,8 +35,8 @@ function Get-VllmUpdateTransactionPaths {
         BackupRoot=(Join-Path $root $backupRelative)
         BackupDistributionRelative=$backupDistributionRelative
         BackupDistributionRoot=(Join-Path $root $backupDistributionRelative)
-        BackupManagedRelative=($backupRelative+'\managed')
-        BackupManagedRoot=(Join-Path $root ($backupRelative+'\managed'))
+        BackupManagedRelative=($backupRelative+'\g')
+        BackupManagedRoot=(Join-Path $root ($backupRelative+'\g'))
     }
 }
 
@@ -77,6 +77,110 @@ function Get-VllmUpdateActivationEntryRole {
     param([Parameter(Mandatory)]$Entry)
     if($Entry.PSObject.Properties.Name -contains 'role'){return [string]$Entry.role}
     return 'distribution'
+}
+
+function Get-VllmUpdateActivationMissingParentRelatives {
+    param([Parameter(Mandatory)]$Entry)
+    if($Entry.PSObject.Properties.Name -contains 'missing_parent_relatives'){
+        return @($Entry.missing_parent_relatives)
+    }
+    return @()
+}
+
+function Get-VllmUpdateMissingParentRelatives {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][string]$RelativePath
+    )
+    $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    $relative=Assert-VllmSafeRelativePath -RelativePath $RelativePath -Label 'Update live path'
+    $missing=New-Object System.Collections.Generic.List[string]
+    $cursor=Split-Path -Parent $relative
+    while(-not[string]::IsNullOrWhiteSpace($cursor)){
+        $path=Join-Path $root $cursor
+        $entry=Get-VllmPathEntryInfo -Path $path
+        if($entry.Exists){
+            if(-not$entry.IsDirectory-or$entry.IsReparsePoint){throw "Update live parent is not a safe directory: $path"}
+            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $path -RelativePath $cursor)
+            break
+        }
+        $missing.Add($cursor)
+        $cursor=Split-Path -Parent $cursor
+    }
+    $result=$missing.ToArray()
+    [array]::Reverse($result)
+    return @($result)
+}
+
+function Assert-VllmUpdateActivationMissingParentMetadata {
+    param(
+        [Parameter(Mandatory)]$Entry,
+        [Parameter(Mandatory)][string]$RelativePath
+    )
+    $parents=@(Get-VllmUpdateActivationMissingParentRelatives -Entry $Entry)
+    if([string]$Entry.class-eq'retire'-and$parents.Count-ne0){throw 'Retire activation must not record missing live parents.'}
+    $seen=@{}
+    $lastDepth=0
+    foreach($value in $parents){
+        $parent=Assert-VllmSafeRelativePath -RelativePath ([string]$value) -Label 'Update missing live parent'
+        $prefix=$parent.TrimEnd('\')+'\'
+        if(-not$RelativePath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){
+            throw "Recorded missing live parent is not an ancestor of activation path '$RelativePath': $parent"
+        }
+        $key=Get-VllmUpdateRelativeKey $parent
+        if($seen.ContainsKey($key)){throw "Duplicate recorded missing live parent: $parent"}
+        $seen[$key]=$true
+        $depth=($parent -split '[\\/]').Count
+        if($depth-le$lastDepth){throw "Recorded missing live parents are not ordered ancestor-first for '$RelativePath'."}
+        $lastDepth=$depth
+    }
+    return @($parents)
+}
+
+function Assert-VllmUpdateActivationSourceParentSnapshot {
+    param(
+        [Parameter(Mandatory)][string]$InstallationRoot,
+        [Parameter(Mandatory)][object[]]$Plan
+    )
+    $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
+    foreach($item in @($Plan)){
+        if([string]$item.class-eq'retire'){continue}
+        $relative=[string]$item.relative_path
+        $recorded=@(Get-VllmUpdateActivationMissingParentRelatives -Entry $item)
+        $actual=@(Get-VllmUpdateMissingParentRelatives -InstallationRoot $root -RelativePath $relative)
+        if($recorded.Count-ne$actual.Count){
+            throw "Recorded missing live parent snapshot differs from source generation for '$relative'."
+        }
+        for($i=0;$i-lt$actual.Count;$i++){
+            if(-not(Test-VllmUpdateRelativePathEqual -A ([string]$recorded[$i]) -B ([string]$actual[$i]))){
+                throw "Recorded missing live parent snapshot differs from source generation for '$relative'."
+            }
+        }
+    }
+}
+
+function Assert-VllmUpdateCreatedParentJournalMetadata {
+    param([Parameter(Mandatory)]$Journal)
+    $allowed=@{}
+    foreach($item in @($Journal.activation_plan)){
+        foreach($value in @(Get-VllmUpdateActivationMissingParentRelatives -Entry $item)){
+            $parent=Assert-VllmSafeRelativePath -RelativePath ([string]$value) -Label 'Update journal missing live parent'
+            $allowed[(Get-VllmUpdateRelativeKey $parent)]=$parent
+        }
+    }
+    $created=@($Journal.created_parent_relatives)
+    if([string]$Journal.phase-in@('materializing','prepared')-and$created.Count-ne0){
+        throw 'Update transaction records created live parents before activation.'
+    }
+    $seen=@{}
+    foreach($value in $created){
+        $parent=Assert-VllmSafeRelativePath -RelativePath ([string]$value) -Label 'Update transaction-created live parent'
+        $key=Get-VllmUpdateRelativeKey $parent
+        if($seen.ContainsKey($key)){throw "Duplicate transaction-created live parent: $parent"}
+        if(-not$allowed.ContainsKey($key)){throw "Transaction-created live parent was not recorded missing by the activation plan: $parent"}
+        $seen[$key]=$true
+    }
+    return @($created)
 }
 
 function Assert-VllmUpdateTransactionObjectIdentity {
@@ -139,6 +243,7 @@ function Get-VllmUpdateActivationPlan {
 
         $stageRelative=if($class-in@('replace','add')){[string]$paths.DistributionRelative+'\'+$relative}else{$null}
         $backupRelative=if($class-eq'replace'){[string]$paths.BackupDistributionRelative+'\'+$relative}else{$null}
+        $missingParents=if($class-in@('replace','add')){@(Get-VllmUpdateMissingParentRelatives -InstallationRoot $paths.InstallationRoot -RelativePath $relative)}else{@()}
         $result.Add([pscustomobject][ordered]@{
             class=$class
             kind='file'
@@ -148,6 +253,7 @@ function Get-VllmUpdateActivationPlan {
             target=$target
             stage_relative=$stageRelative
             backup_relative=$backupRelative
+            missing_parent_relatives=@($missingParents)
         })
     }
     $result.ToArray()
@@ -166,10 +272,15 @@ function Assert-VllmUpdateTransactionActivationPlan {
         $legacy=@('class','relative_path','source','target','stage_relative','backup_relative')
         $extended=@('class','kind','role','relative_path','source','target','stage_relative','backup_relative')
         $provisional=@('class','kind','role','relative_path','source','target','target_contract','stage_relative','backup_relative')
+        $extendedParents=@($extended+'missing_parent_relatives')
+        $provisionalParents=@($provisional+'missing_parent_relatives')
         $isLegacy=-not[bool](Compare-Object ($names|Sort-Object) ($legacy|Sort-Object))
         $isExtended=-not[bool](Compare-Object ($names|Sort-Object) ($extended|Sort-Object))
-        $isProvisional=-not[bool](Compare-Object ($names|Sort-Object) ($provisional|Sort-Object))
-        if(-not$isLegacy-and-not$isExtended-and-not$isProvisional){
+        $isExtendedParents=-not[bool](Compare-Object ($names|Sort-Object) ($extendedParents|Sort-Object))
+        $isProvisionalLegacy=-not[bool](Compare-Object ($names|Sort-Object) ($provisional|Sort-Object))
+        $isProvisionalParents=-not[bool](Compare-Object ($names|Sort-Object) ($provisionalParents|Sort-Object))
+        $isProvisional=$isProvisionalLegacy-or$isProvisionalParents
+        if(-not$isLegacy-and-not$isExtended-and-not$isExtendedParents-and-not$isProvisional){
             throw 'Update transaction activation entry has unexpected properties.'
         }
         if($isProvisional-and[string]::IsNullOrWhiteSpace([string]$item.target_contract)){
@@ -184,6 +295,7 @@ function Assert-VllmUpdateTransactionActivationPlan {
         if([string]::IsNullOrWhiteSpace($role)){throw 'Activation role is empty.'}
 
         $relative=Assert-VllmSafeRelativePath -RelativePath ([string]$item.relative_path) -Label 'Update transaction activation path'
+        [void](Assert-VllmUpdateActivationMissingParentMetadata -Entry $item -RelativePath $relative)
         Assert-VllmUpdateOrdinaryPathNotLifecycleOwned -InstallationRoot $Paths.InstallationRoot -RelativePath $relative -Label 'Update transaction activation path'
         Assert-VllmUpdateNoProtectedOverlap -InstallationRoot $Paths.InstallationRoot -ModelsRoot $ModelsRoot -RelativePath $relative -Label 'Update transaction activation path'
         $key=Get-VllmUpdateRelativeKey $relative
@@ -232,7 +344,7 @@ function Assert-VllmUpdateTransactionJournal {
     Assert-VllmLifecycleExactProperties -Value $Journal -Expected @(
         'schema_version','component','platform','transaction_id','phase',
         'installation_root','models_root','source','target','workspace',
-        'activation_plan','created_at','updated_at'
+        'activation_plan','created_parent_relatives','created_at','updated_at'
     ) -Label 'Update transaction'
     if([int]$Journal.schema_version-ne1-or[string]$Journal.component-ne'update-transaction'-or[string]$Journal.platform-ne'windows-x86_64'){
         throw 'Update transaction has unsupported schema/component/platform.'
@@ -289,6 +401,7 @@ function Assert-VllmUpdateTransactionJournal {
     if($updated-lt$created){throw 'Update transaction updated_at precedes created_at.'}
 
     Assert-VllmUpdateTransactionActivationPlan -Plan @($Journal.activation_plan) -Paths $paths -ModelsRoot $models -Phase ([string]$Journal.phase)
+    [void](Assert-VllmUpdateCreatedParentJournalMetadata -Journal $Journal)
     return $Journal
 }
 
@@ -348,6 +461,7 @@ function Open-VllmUpdateTransaction {
     Assert-VllmUpdateTransactionGenerationIdentity -Identity $SourceIdentity -Label 'New transaction source'
     Assert-VllmUpdateTransactionGenerationIdentity -Identity $TargetIdentity -Label 'New transaction target'
     Assert-VllmUpdateTransactionActivationPlan -Plan $ActivationPlan -Paths $paths -ModelsRoot $models -Phase materializing
+    Assert-VllmUpdateActivationSourceParentSnapshot -InstallationRoot $root -Plan $ActivationPlan
 
     $now=(Get-Date).ToUniversalTime().ToString('o')
     $journal=[pscustomobject][ordered]@{
@@ -379,6 +493,7 @@ function Open-VllmUpdateTransaction {
             backup_relative=[string]$paths.BackupRelative
         }
         activation_plan=@($ActivationPlan)
+        created_parent_relatives=@()
         created_at=$now
         updated_at=$now
     }
@@ -857,6 +972,30 @@ function Restore-VllmUpdateSourceGeneration {
 
         Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $live -RelativePath $relative -Identity $item.source -Label "Restored source '$relative'"
     }
+
+    $createdParents=@{}
+    foreach($parentRelative in @(Assert-VllmUpdateCreatedParentJournalMetadata -Journal $Journal)){
+        $createdParents[(Get-VllmUpdateRelativeKey ([string]$parentRelative))]=[string]$parentRelative
+    }
+    foreach($parentRelative in @($createdParents.Values|Sort-Object {($_ -split '[\\/]').Count} -Descending)){
+        $parent=Join-Path $root ([string]$parentRelative)
+        Invoke-VllmUpdateEmptyDirectoryRemoval -InstallationRoot $root -Path $parent -RelativePath ([string]$parentRelative)
+    }
+
+    $recordedParents=@{}
+    foreach($item in @($Journal.activation_plan)){
+        foreach($parentRelative in @(Get-VllmUpdateActivationMissingParentRelatives -Entry $item)){
+            $recordedParents[(Get-VllmUpdateRelativeKey ([string]$parentRelative))]=[string]$parentRelative
+        }
+    }
+    foreach($parentKey in @($recordedParents.Keys)){
+        if($createdParents.ContainsKey($parentKey)){continue}
+        $parentRelative=[string]$recordedParents[$parentKey]
+        $parent=Join-Path $root $parentRelative
+        if((Get-VllmPathEntryInfo -Path $parent).Exists){
+            throw "Cannot complete source recovery because a recorded-missing live parent exists without transaction creation evidence: $parent"
+        }
+    }
 }
 function Invoke-VllmUpdateTransactionRecovery {
     param(
@@ -927,6 +1066,10 @@ function Invoke-VllmUpdateActivationRenames {
     $root=Assert-VllmSafeInstallationRoot -InstallationRoot $InstallationRoot
     if([string]$Journal.phase-ne'activating'){throw 'Activation renames require activating transaction phase.'}
     if($FaultPoint-eq'BeforeFirstRename'){throw 'FAULT_INJECTED:BeforeFirstRename'}
+    $createdParents=@{}
+    foreach($parentRelative in @(Assert-VllmUpdateCreatedParentJournalMetadata -Journal $Journal)){
+        $createdParents[(Get-VllmUpdateRelativeKey ([string]$parentRelative))]=[string]$parentRelative
+    }
 
     foreach($item in @($Journal.activation_plan)){
         $class=[string]$item.class
@@ -948,9 +1091,40 @@ function Invoke-VllmUpdateActivationRenames {
         [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $live -RelativePath $relative)
         Assert-VllmUpdateTransactionExactObject -InstallationRoot $root -Kind $kind -Path $stage -RelativePath ([string]$item.stage_relative) -Identity $item.target -Label "Activation staged target '$relative'"
 
+        foreach($parentRelative in @(Get-VllmUpdateActivationMissingParentRelatives -Entry $item)){
+            $parentKey=Get-VllmUpdateRelativeKey ([string]$parentRelative)
+            $parent=Join-Path $root ([string]$parentRelative)
+            if($createdParents.ContainsKey($parentKey)){
+                $parentEntry=Get-VllmPathEntryInfo -Path $parent
+                if(-not$parentEntry.Exists-or-not$parentEntry.IsDirectory-or$parentEntry.IsReparsePoint){
+                    throw "Transaction-created live parent is no longer a safe directory: $parent"
+                }
+                [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $parent -RelativePath ([string]$parentRelative))
+                continue
+            }
+            $parentEntry=Get-VllmPathEntryInfo -Path $parent
+            if($parentEntry.Exists){
+                throw "Recorded missing live parent appeared before transaction creation: $parent"
+            }
+            $parentAncestor=Split-Path -Parent $parent
+            if(-not(Test-Path -LiteralPath $parentAncestor -PathType Container)){
+                throw "Recorded missing live parent ancestor is absent during activation: $parentAncestor"
+            }
+            try{
+                [VllmWindowsNative.NativePath]::CreateDirectoryExclusive($parent)
+            }catch{
+                throw "Recorded missing live parent could not be created exclusively: $parent :: $($_.Exception.GetBaseException().Message)"
+            }
+            [void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $root -Path $parent -RelativePath ([string]$parentRelative))
+            $createdParents[$parentKey]=[string]$parentRelative
+            $Journal.created_parent_relatives=@(@($Journal.created_parent_relatives)+[string]$parentRelative)
+            $Journal.updated_at=(Get-Date).ToUniversalTime().ToString('o')
+            [void](Write-VllmUpdateTransactionJournal -InstallationRoot $root -Journal $Journal)
+        }
+
         $liveParent=Split-Path -Parent $live
         if(-not(Test-Path -LiteralPath $liveParent -PathType Container)){
-            throw "Activation live parent directory is missing; update does not create unrecorded live directories: $liveParent"
+            throw "Activation live parent directory is missing and was not recorded as absent in the source generation: $liveParent"
         }
 
         if($class-eq'replace'){

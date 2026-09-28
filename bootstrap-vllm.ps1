@@ -2,6 +2,7 @@
 param(
     [string] $ManifestPath = 'manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json',
     [string] $InstallationRoot = '',
+    [string] $SharedCacheOwnerRoot = '',
     [Parameter(Mandatory)][string] $WheelPath,
     [switch] $Force,
     [switch] $Offline,
@@ -111,6 +112,8 @@ $uvExeRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$uvManifest.in
 $targetRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.target_relative_path) -Label 'vLLM target path'
 $stagingRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.staging_relative_path) -Label 'vLLM staging path'
 $backupRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.backup_relative_path) -Label 'vLLM backup path'
+if($stagingRelative -ne 'runtime\.vs'){throw "vLLM staging path must remain runtime\.vs: $stagingRelative"}
+if($backupRelative -ne 'runtime\.vb'){throw "vLLM backup path must remain runtime\.vb: $backupRelative"}
 $cacheRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.cache_relative_path) -Label 'vLLM cache path'
 $predReceiptRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.predecessor_receipt_relative_path) -Label 'Predecessor receipt path'
 $receiptRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.receipt_relative_path) -Label 'vLLM receipt path'
@@ -292,10 +295,10 @@ try{
     $uvRoot=Join-Path $InstallationRoot $uvManagedRelative;$uvExe=Join-Path $uvRoot $uvExeRelative
     if(-not(Test-ManagedPython -Root $pythonRoot -Exe $pythonExe)){throw "Pinned managed Python is missing or invalid. Run .\bootstrap-python.ps1 -InstallationRoot '$InstallationRoot' first."}
     if(-not(Test-ManagedUv -Root $uvRoot -Exe $uvExe)){throw "Pinned managed uv is missing or invalid. Run .\bootstrap-uv.ps1 -InstallationRoot '$InstallationRoot' first."}
-    $runtimeParent=Join-Path $InstallationRoot 'runtime';$cacheDir=Join-Path $InstallationRoot $cacheRelative;$forensicDir=Join-Path $InstallationRoot 'forensic'
+    $runtimeParent=Join-Path $InstallationRoot 'runtime';$cacheDir=Get-VllmBootstrapCacheDirectory -InstallationRoot $InstallationRoot -CacheRelativePath $cacheRelative -SharedCacheOwnerRoot $SharedCacheOwnerRoot -Offline:$Offline;$forensicDir=Join-Path $InstallationRoot 'forensic'
     $targetRoot=Join-Path $InstallationRoot $targetRelative;$stagingRoot=Join-Path $InstallationRoot $stagingRelative;$backupRoot=Join-Path $InstallationRoot $backupRelative
     $predReceiptPath=Join-Path $InstallationRoot $predReceiptRelative;$receiptPath=Join-Path $InstallationRoot $receiptRelative;$transactionPath=Join-Path $InstallationRoot $transactionRelative
-    foreach($pi in @(@{Path=$runtimeParent;Relative='runtime'},@{Path=$cacheDir;Relative=$cacheRelative},@{Path=$forensicDir;Relative='forensic'},@{Path=$targetRoot;Relative=$targetRelative},@{Path=$stagingRoot;Relative=$stagingRelative},@{Path=$backupRoot;Relative=$backupRelative},@{Path=$predReceiptPath;Relative=$predReceiptRelative},@{Path=$receiptPath;Relative=$receiptRelative},@{Path=$transactionPath;Relative=$transactionRelative})){[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $pi.Path -RelativePath $pi.Relative)}
+    foreach($pi in @(@{Path=$runtimeParent;Relative='runtime'},@{Path=$forensicDir;Relative='forensic'},@{Path=$targetRoot;Relative=$targetRelative},@{Path=$stagingRoot;Relative=$stagingRelative},@{Path=$backupRoot;Relative=$backupRelative},@{Path=$predReceiptPath;Relative=$predReceiptRelative},@{Path=$receiptPath;Relative=$receiptRelative},@{Path=$transactionPath;Relative=$transactionRelative})){[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $pi.Path -RelativePath $pi.Relative)}
     foreach($d in @($runtimeParent,$cacheDir,$forensicDir)){[void][IO.Directory]::CreateDirectory($d)}
     foreach($f in @($predReceiptPath,$receiptPath,$transactionPath)){if((Test-Path -LiteralPath $f)-and-not(Test-Path -LiteralPath $f -PathType Leaf)){throw "Reserved receipt path exists but is not a file: $f"}}
     foreach($d in @($stagingRoot,$backupRoot)){if((Test-Path -LiteralPath $d)-and-not(Test-Path -LiteralPath $d -PathType Container)){throw "Reserved vLLM transaction path exists but is not a directory: $d"}}
@@ -336,7 +339,7 @@ try{
                 if($Offline){$syncArgs+='--offline'}
                 & $uvExe @syncArgs
                 if($LASTEXITCODE -ne 0){throw "uv pip sync failed with exit code $LASTEXITCODE."}
-                & $uvExe pip install $wheelResolved --python $stagingPython --no-deps --no-index --link-mode copy --no-python-downloads --no-config
+                & $uvExe pip install $wheelResolved --python $stagingPython --no-deps --no-index --link-mode copy --no-python-downloads --no-config --no-cache
                 if($LASTEXITCODE -ne 0){throw "vLLM wheel install failed with exit code $LASTEXITCODE."}
                 & $uvExe pip check --python $stagingPython --no-python-downloads --no-config
                 if($LASTEXITCODE -ne 0){throw "uv pip check failed with exit code $LASTEXITCODE."}

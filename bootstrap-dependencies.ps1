@@ -2,6 +2,7 @@
 param(
     [string] $ManifestPath = 'manifests/runtime/dependencies-v0.27.1-windows-x86_64.json',
     [string] $InstallationRoot = '',
+    [string] $SharedCacheOwnerRoot = '',
     [switch] $Force,
     [switch] $Offline,
     [switch] $Json
@@ -120,8 +121,8 @@ $stagingRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.ma
 $backupRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.backup_relative_path) -Label 'Dependency backup path'
 $transactionRelative=Assert-VllmSafeRelativePath -RelativePath ([string]$manifest.materialization.transaction_receipt_relative_path) -Label 'Dependency transaction receipt path'
 $receiptSchemaVersion=[int]$manifest.materialization.receipt_schema_version
-if($stagingRelative -ne 'runtime\.venv-dependencies-staging'){throw "Dependency staging path must remain runtime\.venv-dependencies-staging: $stagingRelative"}
-if($backupRelative -ne 'runtime\.venv-dependencies-backup'){throw "Dependency backup path must remain runtime\.venv-dependencies-backup: $backupRelative"}
+if($stagingRelative -ne 'runtime\.ds'){throw "Dependency staging path must remain runtime\.ds: $stagingRelative"}
+if($backupRelative -ne 'runtime\.db'){throw "Dependency backup path must remain runtime\.db: $backupRelative"}
 if($transactionRelative -ne 'forensic\runtime-dependencies-transaction-v0.27.1.json'){throw "Unexpected dependency transaction receipt path: $transactionRelative"}
 if($receiptSchemaVersion -ne 2){throw "Unsupported dependency receipt schema: $receiptSchemaVersion"}
 function Test-ManagedPython {
@@ -381,7 +382,7 @@ try{
     if(-not(Test-ManagedPython -Root $pythonRoot -Exe $pythonExe)){throw "Pinned managed Python is missing or invalid. Run .\bootstrap-python.ps1 -InstallationRoot '$InstallationRoot' first."}
     if(-not(Test-ManagedUv -Root $uvRoot -Exe $uvExe)){throw "Pinned managed uv is missing or invalid. Run .\bootstrap-uv.ps1 -InstallationRoot '$InstallationRoot' first."}
     $runtimeParent=Join-Path $InstallationRoot 'runtime'
-    $cacheDir=Join-Path $InstallationRoot $cacheRelative
+    $cacheDir=Get-VllmBootstrapCacheDirectory -InstallationRoot $InstallationRoot -CacheRelativePath $cacheRelative -SharedCacheOwnerRoot $SharedCacheOwnerRoot -Offline:$Offline
     $forensicDir=Join-Path $InstallationRoot 'forensic'
     $targetRoot=Join-Path $InstallationRoot $targetRelative
     $stagingRoot=Join-Path $InstallationRoot $stagingRelative
@@ -390,7 +391,7 @@ try{
     $receiptPath=Join-Path $InstallationRoot $receiptRelative
     $transactionPath=Join-Path $InstallationRoot $transactionRelative
     foreach($pathInfo in @(
-        @{Path=$runtimeParent;Relative='runtime'},@{Path=$cacheDir;Relative=$cacheRelative},@{Path=$forensicDir;Relative='forensic'},
+        @{Path=$runtimeParent;Relative='runtime'},@{Path=$forensicDir;Relative='forensic'},
         @{Path=$targetRoot;Relative=$targetRelative},@{Path=$stagingRoot;Relative=$stagingRelative},@{Path=$backupRoot;Relative=$backupRelative},
         @{Path=$baseReceiptPath;Relative=$baseReceiptRelative},@{Path=$receiptPath;Relative=$receiptRelative},@{Path=$transactionPath;Relative=$transactionRelative}
     )){[void](Assert-VllmManagedChildPhysicalLocation -InstallationRoot $InstallationRoot -Path $pathInfo.Path -RelativePath $pathInfo.Relative)}

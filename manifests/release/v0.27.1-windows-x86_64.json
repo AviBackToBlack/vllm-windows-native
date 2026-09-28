@@ -87,18 +87,18 @@
     },
     {
       "path": "bootstrap-dependencies.ps1",
-      "size_bytes": 41830,
-      "sha256": "7AE5E807136946AC76827CA94621AFBCEC99F0128A90DFABDAD68188CDA7E2AE"
+      "size_bytes": 41860,
+      "sha256": "8863518232E6E4CB42E0C9F6380D7340D985D214B524FFDBE662C9E5E2557506"
     },
     {
       "path": "bootstrap-vllm.ps1",
-      "size_bytes": 34785,
-      "sha256": "1525DD63C0E21A264D1186423D3A1FDB0FF24D6B31A46BC4B49B680C46BC6813"
+      "size_bytes": 35129,
+      "sha256": "940C208BE1ABCA4858D43FC02647DD68BB7E73951C419F8292DEBBCEC115EA0E"
     },
     {
       "path": "scripts/common.ps1",
-      "size_bytes": 37772,
-      "sha256": "67E544DFF57B95BC77389BFA5C18EEA764FF178995D1CBD3CE85C30B3C7FE150"
+      "size_bytes": 41631,
+      "sha256": "A5B5BE508CE4245760889AC692D65F150F0FF3895B9CD85723F4F5F764F8E985"
     },
     {
       "path": "scripts/lifecycle.ps1",
@@ -107,23 +107,23 @@
     },
     {
       "path": "scripts/update-planner.ps1",
-      "size_bytes": 43001,
-      "sha256": "2D254138C498FE23D045E08FB424DCB67E17774A6C17C5FE7063E54FE544DC1E"
+      "size_bytes": 44979,
+      "sha256": "0283015459679B7BD6294AD640EED34A9A571963A2CBBC1812D3526C3F67C492"
     },
     {
       "path": "scripts/update-staging.ps1",
-      "size_bytes": 17175,
-      "sha256": "3E4C0493F6E4D5C2B4DDE0232335F57227D7E03D99A662B403A83C842391E65C"
+      "size_bytes": 17237,
+      "sha256": "3BECF6F8A63B06FA410325C27FFFF2D108BD910A837BFB7A92D41ED4F09E5D62"
     },
     {
       "path": "scripts/update-transaction.ps1",
-      "size_bytes": 56155,
-      "sha256": "558F3681B9604968272F7BFE5CC5AA531B7EE342AB5A2D91A0DEB98D10DB5C8F"
+      "size_bytes": 65388,
+      "sha256": "1FD20464DBD735D40C59E4D5D71E1E397D1A9ABA054CC09EE51DB27197DD326F"
     },
     {
       "path": "scripts/update-integration.ps1",
-      "size_bytes": 57231,
-      "sha256": "1A1471FB2BD9FC216136AAF8D33B800D84417D58C54762AF3E05A4BC67987B19"
+      "size_bytes": 56309,
+      "sha256": "949345B736ED6069E585B05895881C14E80F66D5F78E49892CC82979C20C21F1"
     },
     {
       "path": "scripts/env.ps1",
@@ -167,8 +167,8 @@
     },
     {
       "path": "manifests/runtime/dependencies-v0.27.1-windows-x86_64.json",
-      "size_bytes": 6244,
-      "sha256": "EE83AF60B89BD7599DAB8CB6AFA9AC10AD90518EBBE5AF583833613A29009E70"
+      "size_bytes": 6199,
+      "sha256": "C42610DAE8FB8090DC6A36ECAA7FC7478AAD128A5A851D5A2EF83A74627D7E83"
     },
     {
       "path": "manifests/runtime/vllm-runtime-packages-v0.27.1-windows-x86_64.json",
@@ -177,8 +177,8 @@
     },
     {
       "path": "manifests/runtime/vllm-runtime-v0.27.1-windows-x86_64.json",
-      "size_bytes": 3419,
-      "sha256": "6B5D1C91849A1239B39E44E9F04BD4334BF1223464DE8AA6A2DCA41E0F17E106"
+      "size_bytes": 3390,
+      "sha256": "FD78573B682FCAE3C0B212378D8E77A6CB650AD58636588D890FEA783868EA3A"
     },
     {
       "path": "requirements/runtime-v0.27.1.in",
