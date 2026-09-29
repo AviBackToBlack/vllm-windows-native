@@ -2,7 +2,7 @@
 
 Native Windows distribution and patchset for running vLLM on Windows 11 x64 without WSL or Docker.
 
-> Status: first native-Windows single-GPU wheel candidate accepted on RTX 5090 / SM120; no supported public release yet.
+> Status: supported production release: `release/v0.27.1-native-windows-single-gpu-sm120-nvfp4`, accepted on Windows 11 x64 / RTX 5090 / Blackwell SM120.
 
 ## Project intent
 
@@ -51,15 +51,28 @@ The first accepted milestone is intentionally narrow: it is a proven baseline, n
 | MSVC | 19.44.35228 |
 | Torch | 2.13.0+cu130 |
 | Triton-Windows | 3.7.1.post27 |
+| NVFP4 | `Inferact/Qwen3.8-27B-NVFP4` accepted with `CutlassNvFp4LinearKernel` on SM120 |
 | FlashAttention | FA2 accepted on SM120; FA3 intentionally absent |
 | DeepGEMM | Windows plumbing accepted; upstream kernels do not provide an SM120 GEMM backend |
 | Multi-GPU / NCCL / TP / PP | Not accepted yet |
 
 The exact machine-readable pins live in [`manifests/runtime/v0.27.1-rtx5090-sm120.json`](manifests/runtime/v0.27.1-rtx5090-sm120.json).
 
-## Install the accepted managed runtime
+## Install the supported public release
 
-`install.ps1` is the supported top-level runtime installer for the accepted Windows x64 milestone. The project wheel is still caller-supplied until release publication is implemented:
+The supported consumer path is exact-tag acquisition plus lifecycle handoff. Use a trusted copy of this repository's acquisition tooling and an independently obtained/pinned copy of `config/release-allowed-signers`; do not bootstrap the trust root from the release being acquired.
+
+```powershell
+.\install-release.ps1 `
+  -Tag 'release/v0.27.1-native-windows-single-gpu-sm120-nvfp4' `
+  -AllowedSignersPath 'C:\trusted\vllm-windows-native-release-allowed-signers' `
+  -CacheRoot 'C:\AI\vLLM-acquisition-cache' `
+  -InstallationRoot 'D:\AI\vLLM'
+```
+
+`install-release.ps1` authenticates the exact annotated release tag, verifies its SSH signature against the independently pinned trust root, requires the immutable exact-four GitHub Release asset set and release attestations, downloads and re-verifies those bytes, then invokes the verified release-owned installer. There is no implicit `latest` selection.
+
+For release engineering, forensic work, or an already verified offline wheel, the lower-level `install.ps1` remains available and requires the exact canonical wheel explicitly:
 
 ```powershell
 .\install.ps1 `
@@ -368,14 +381,28 @@ The published fixture is intentionally preserved as audit evidence. Its assets a
 
 `start.ps1` launches vLLM in the foreground and applies process-local containment before the server starts.
 
+The public release's golden NVFP4 serving profile is:
+
 ```powershell
-.\start.ps1 -Model 'Qwen/Qwen3.5-0.8B' -VllmArgs @('--max-model-len', '2048', '--gpu-memory-utilization', '0.6')
+$env:VLLM_USE_FLASHINFER_SAMPLER = '0'
+.\start.ps1 `
+  -Model 'Inferact/Qwen3.8-27B-NVFP4' `
+  -VllmArgs @(
+    '--max-model-len', '32768',
+    '--kv-cache-dtype', 'fp8',
+    '--enforce-eager',
+    '--reasoning-parser', 'qwen3',
+    '--enable-auto-tool-choice',
+    '--tool-call-parser', 'qwen3_xml'
+  )
 ```
 
-By default it expects `runtime\venv\Scripts\vllm.exe` below the install root and keeps Hugging Face, vLLM, Torch/Inductor, Triton, DeepGEMM JIT and temporary state below that root. `-VllmExe` and `-ContainmentRoot` are explicit development overrides. `-ListenHost` and `-ListenPort` own the server endpoint; `VllmArgs` may not override `--host` or `--port`. `-ValidateOnly` materializes the contained directory tree and checks setup without starting vLLM, restores the caller process environment before returning, and never prints raw passthrough values. Background process ownership/service management is intentionally deferred to later lifecycle work.
+This profile was accepted on the supported RTX 5090 / SM120 target with `CutlassNvFp4LinearKernel`, OpenAI-compatible chat completion, and `qwen3_xml` tool calls.
+
+By default `start.ps1` expects `runtime\venv\Scripts\vllm.exe` below the install root and keeps Hugging Face, vLLM, Torch/Inductor, Triton, DeepGEMM JIT and temporary state below that root. `-VllmExe` and `-ContainmentRoot` are explicit development overrides. `-ListenHost` and `-ListenPort` own the server endpoint; `VllmArgs` may not override `--host` or `--port`. `-ValidateOnly` materializes the contained directory tree and checks setup without starting vLLM, restores the caller process environment before returning, and never prints raw passthrough values. Background process ownership/service management is intentionally outside the first public release scope.
 
 If Windows legacy `MAX_PATH` behavior is active (`LongPathsEnabled=0`), keep the install/containment root short. PyTorch AOT cache filenames can otherwise cross the 260-character boundary. The canonical `D:\AI\vLLM` root is intentionally short; the validation record documents the reproduced boundary.
 
-## Remaining lifecycle work
+## Scope beyond the first public release
 
-The lifecycle safety boundary is specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). Portable CPython, uv, the contained runtime venv, the accepted dependency graph, managed vLLM materialization, canonical runtime distribution ownership, install, update, and uninstall are now productized. The project-owned immutable release publication/signing contract is documented in [`docs/release-publication-design.md`](docs/release-publication-design.md); the current exact-tag network-to-local trust boundary is specified in [`docs/release-acquisition-design.md`](docs/release-acquisition-design.md). Service/process ownership remains later work.
+The lifecycle safety boundary is specified in [`docs/lifecycle-safety-contract.md`](docs/lifecycle-safety-contract.md). Portable CPython, uv, the contained runtime venv, the accepted dependency graph, managed vLLM materialization, canonical runtime distribution ownership, install, update, uninstall, immutable publication/signing, and exact-tag trusted acquisition are productized for the supported single-GPU Windows x64 scope. The release publication contract is documented in [`docs/release-publication-design.md`](docs/release-publication-design.md), and the network-to-local trust boundary in [`docs/release-acquisition-design.md`](docs/release-acquisition-design.md). Multi-GPU/NCCL/TP/PP and background service/process ownership remain outside this first public release.
