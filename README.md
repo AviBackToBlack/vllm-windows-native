@@ -2,7 +2,7 @@
 
 Native Windows distribution and patchset for running vLLM on Windows 11 x64 without WSL or Docker.
 
-> Status: production release candidate accepted on Windows 11 x64 / RTX 5090 / Blackwell SM120; intended tag `release/v0.27.1-native-windows-single-gpu-sm120-nvfp4` is pending final SM-21 publication.
+> Status: supported production release: `release/v0.27.1-native-windows-single-gpu-sm120-nvfp4`, accepted on Windows 11 x64 / RTX 5090 / Blackwell SM120 and published as an immutable GitHub Release.
 
 ## Project intent
 
@@ -58,9 +58,9 @@ The first accepted milestone is intentionally narrow: it is a proven baseline, n
 
 The exact machine-readable pins live in [`manifests/runtime/v0.27.1-rtx5090-sm120.json`](manifests/runtime/v0.27.1-rtx5090-sm120.json).
 
-## Install the production release after publication
+## Install the supported production release
 
-After the production tag and immutable GitHub Release are published, the supported consumer path is exact-tag acquisition plus lifecycle handoff. Before publication, that tag intentionally does not resolve and acquisition fails closed. Use a trusted copy of this repository's acquisition tooling and an independently obtained/pinned copy of `config/release-allowed-signers`; do not bootstrap the trust root from the release being acquired.
+The supported consumer path is exact-tag acquisition plus lifecycle handoff from the immutable GitHub Release. Use a trusted copy of this repository's acquisition tooling and an independently obtained/pinned copy of `config/release-allowed-signers`; do not bootstrap the trust root from the release being acquired.
 
 ```powershell
 .\install-release.ps1 `
