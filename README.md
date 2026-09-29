@@ -2,7 +2,7 @@
 
 Native Windows distribution and patchset for running vLLM on Windows 11 x64 without WSL or Docker.
 
-> Status: supported production release: `release/v0.27.1-native-windows-single-gpu-sm120-nvfp4`, accepted on Windows 11 x64 / RTX 5090 / Blackwell SM120.
+> Status: production release candidate accepted on Windows 11 x64 / RTX 5090 / Blackwell SM120; intended tag `release/v0.27.1-native-windows-single-gpu-sm120-nvfp4` is pending final SM-21 publication.
 
 ## Project intent
 
@@ -58,9 +58,9 @@ The first accepted milestone is intentionally narrow: it is a proven baseline, n
 
 The exact machine-readable pins live in [`manifests/runtime/v0.27.1-rtx5090-sm120.json`](manifests/runtime/v0.27.1-rtx5090-sm120.json).
 
-## Install the supported public release
+## Install the production release after publication
 
-The supported consumer path is exact-tag acquisition plus lifecycle handoff. Use a trusted copy of this repository's acquisition tooling and an independently obtained/pinned copy of `config/release-allowed-signers`; do not bootstrap the trust root from the release being acquired.
+After the production tag and immutable GitHub Release are published, the supported consumer path is exact-tag acquisition plus lifecycle handoff. Before publication, that tag intentionally does not resolve and acquisition fails closed. Use a trusted copy of this repository's acquisition tooling and an independently obtained/pinned copy of `config/release-allowed-signers`; do not bootstrap the trust root from the release being acquired.
 
 ```powershell
 .\install-release.ps1 `
@@ -381,13 +381,14 @@ The published fixture is intentionally preserved as audit evidence. Its assets a
 
 `start.ps1` launches vLLM in the foreground and applies process-local containment before the server starts.
 
-The public release's golden NVFP4 serving profile is:
+The accepted production-release candidate's golden NVFP4 serving profile is:
 
 ```powershell
 $env:VLLM_USE_FLASHINFER_SAMPLER = '0'
 .\start.ps1 `
   -Model 'Inferact/Qwen3.8-27B-NVFP4' `
   -VllmArgs @(
+    '--revision', '6128240ebaf4eaa7bad2b3d1c72c37d677c5f462',
     '--max-model-len', '32768',
     '--kv-cache-dtype', 'fp8',
     '--enforce-eager',
